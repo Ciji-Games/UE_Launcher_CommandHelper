@@ -1,4 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { listen } from '@tauri-apps/api/event';
+import { invoke } from '@tauri-apps/api/core';
 
 const LEVELS = ['Fatal', 'Error', 'Warning', 'Display', 'Log', 'Verbose', 'VeryVerbose'] as const;
 type Level = (typeof LEVELS)[number];
@@ -367,6 +369,57 @@ export function UELogAnalyzerPanel() {
     }
   }, [processText]);
 
+  // Native Tauri file-drop support (reliable on Windows).
+  useEffect(() => {
+    let unlistenDrop: (() => void) | null = null;
+    let unlistenHover: (() => void) | null = null;
+    let unlistenCancel: (() => void) | null = null;
+
+    const start = async () => {
+      try {
+        unlistenDrop = await listen<unknown>('tauri://file-drop', async (e) => {
+          const payload = e.payload as unknown;
+          // Payload shapes vary by platform / tauri version. Handle common cases.
+          const paths: string[] =
+            Array.isArray(payload)
+              ? (payload.filter((p): p is string => typeof p === 'string') as string[])
+              : typeof payload === 'object' && payload !== null && 'paths' in payload
+                ? (((payload as { paths?: unknown }).paths as unknown[])?.filter((p): p is string => typeof p === 'string') as string[])
+                : [];
+
+          const first = paths[0];
+          if (!first) return;
+          try {
+            const text = await invoke<string>('read_text_file', { path: first });
+            const fname = first.split(/[/\\]/).pop() ?? 'dropped.log';
+            await processText(text, fname);
+          } catch (err) {
+            console.error('Failed to read dropped file', err);
+          } finally {
+            setIsDragOver(false);
+          }
+        });
+
+        unlistenHover = await listen<unknown>('tauri://file-drop-hover', () => {
+          setIsDragOver(true);
+        });
+        unlistenCancel = await listen<unknown>('tauri://file-drop-cancelled', () => {
+          setIsDragOver(false);
+        });
+      } catch (err) {
+        // If file-drop isn't enabled/supported, we silently keep the in-webview DnD.
+        console.warn('Tauri file-drop listeners not available', err);
+      }
+    };
+
+    void start();
+    return () => {
+      unlistenDrop?.();
+      unlistenHover?.();
+      unlistenCancel?.();
+    };
+  }, [processText]);
+
   const attachLog = useCallback((el: HTMLDivElement | null) => {
     logRef.current = el;
     if (!el) return;
@@ -662,7 +715,17 @@ export function UELogAnalyzerPanel() {
   }
 
   return (
-    <div className="h-full min-h-0 flex flex-col overflow-hidden">
+    <div
+      className="h-full min-h-0 flex flex-col overflow-hidden relative"
+      onDragOver={(e) => {
+        e.preventDefault();
+        setIsDragOver(true);
+      }}
+      onDragLeave={(e) => {
+        if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setIsDragOver(false);
+      }}
+      onDrop={handleDrop}
+    >
       {/* Top bar */}
       <div className="flex items-center gap-3 pb-3 border-b border-slate-700/60 overflow-x-auto">
         <div className="text-sm font-medium text-slate-200 shrink-0">UE Log Analyzer</div>
@@ -695,6 +758,16 @@ export function UELogAnalyzerPanel() {
         <div className="flex-1" />
         <div className="text-xs text-slate-500 tabular-nums">{filtered.length.toLocaleString()} shown</div>
       </div>
+
+      {/* Drag overlay (works in both tabs) */}
+      {isDragOver && (
+        <div className="absolute inset-0 z-20 flex items-center justify-center bg-slate-950/40 backdrop-blur-sm">
+          <div className="rounded-lg border border-dashed border-sky-500/70 bg-slate-900/50 px-10 py-8 text-center">
+            <div className="text-sm text-sky-200">Drop to analyze</div>
+            <div className="mt-1 text-xs text-slate-400">Supported: .log, .txt</div>
+          </div>
+        </div>
+      )}
 
       {/* Navigator (kept mounted so scroll/minimap state persists across tab switches) */}
       <div className={tab === 'navigator' ? 'flex-1 min-h-0 flex overflow-hidden' : 'hidden'}>

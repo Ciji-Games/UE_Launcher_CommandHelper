@@ -19,6 +19,7 @@ pub fn run() {
             commands::batch_commit::add_to_lfs,
             commands::batch_commit::remove_from_lfs,
             commands::batch_commit::batch_commit,
+            commands::files::read_text_file,
             commands::registry::get_unreal_version_selector_path,
             commands::registry::get_installed_engine_paths,
             commands::registry::validate_engine_path,
