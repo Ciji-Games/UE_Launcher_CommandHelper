@@ -13,15 +13,17 @@ import { UProjectHelperPanel } from './UProjectHelperPanel';
 import { MovieRenderQueuePanel } from './MovieRenderQueuePanel';
 import { BatchCommitPanel } from './BatchCommitPanel';
 import { OutputLogPanel } from './OutputLogPanel';
+import { UELogAnalyzerPanel } from './UELogAnalyzerPanel';
 
 const TOOLS = [
-  { id: 'shader', label: 'Shader Booster', panel: ShaderBoosterPanel },
-  { id: 'regenerate', label: 'Regenerate Project', panel: RegenerateProjectPanel },
-  { id: 'batchcommit', label: 'Batch Commit', panel: BatchCommitPanel },
-  { id: 'umap', label: 'UMap Helper', panel: UmapHelperPanel },
-  { id: 'plugin', label: 'Plugin Helper', panel: PluginHelperPanel },
-  { id: 'uproject', label: 'UProject Helper', panel: UProjectHelperPanel },
-  { id: 'movierenderqueue', label: 'Movie Render Queue', panel: MovieRenderQueuePanel },
+  { id: 'shader', label: 'Shader Booster', panel: ShaderBoosterPanel, contentOverflow: 'auto' },
+  { id: 'regenerate', label: 'Regenerate Project', panel: RegenerateProjectPanel, contentOverflow: 'auto' },
+  { id: 'batchcommit', label: 'Batch Commit', panel: BatchCommitPanel, contentOverflow: 'auto' },
+  { id: 'umap', label: 'UMap Helper', panel: UmapHelperPanel, contentOverflow: 'auto' },
+  { id: 'plugin', label: 'Plugin Helper', panel: PluginHelperPanel, contentOverflow: 'auto' },
+  { id: 'uproject', label: 'UProject Helper', panel: UProjectHelperPanel, contentOverflow: 'auto' },
+  { id: 'movierenderqueue', label: 'Movie Render Queue', panel: MovieRenderQueuePanel, contentOverflow: 'auto' },
+  { id: 'log-analyzer', label: 'UE Log Analyzer', panel: UELogAnalyzerPanel, contentOverflow: 'hidden' },
 ] as const;
 
 type ToolId = (typeof TOOLS)[number]['id'];
@@ -31,7 +33,9 @@ export function ToolBoxTab() {
   const [showOutputLog, setShowOutputLog] = useState(false);
   const { running, shouldOpenOutputLog } = useProgress();
 
-  const SelectedPanel = TOOLS.find((t) => t.id === selectedToolId)?.panel ?? RegenerateProjectPanel;
+  const selectedTool = TOOLS.find((t) => t.id === selectedToolId);
+  const SelectedPanel = selectedTool?.panel ?? RegenerateProjectPanel;
+  const contentOverflow = selectedTool?.contentOverflow ?? 'auto';
 
   useEffect(() => {
     if (running && shouldOpenOutputLog) setShowOutputLog(true);
@@ -66,7 +70,11 @@ export function ToolBoxTab() {
         </div>
 
         {/* Right: Content panel */}
-        <div className="flex-1 min-w-0 min-h-0 rounded-lg border border-slate-600/60 bg-slate-800/30 p-6 overflow-y-auto">
+        <div
+          className={`flex-1 min-w-0 min-h-0 rounded-lg border border-slate-600/60 bg-slate-800/30 p-6 ${
+            contentOverflow === 'hidden' ? 'overflow-hidden' : 'overflow-y-auto'
+          }`}
+        >
           <SelectedPanel />
         </div>
       </div>
