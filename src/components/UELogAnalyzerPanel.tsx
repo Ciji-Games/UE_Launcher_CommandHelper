@@ -66,25 +66,69 @@ interface ParsedLine {
 
 function normalizeLevel(lvl: string | undefined): Level {
   if (!lvl) return 'Log';
-  if ((LEVELS as readonly string[]).includes(lvl)) return lvl as Level;
-  return 'Log';
+  const key = lvl.toLowerCase();
+  const map: Record<string, Level> = {
+    fatal: 'Fatal',
+    error: 'Error',
+    warning: 'Warning',
+    display: 'Display',
+    log: 'Log',
+    verbose: 'Verbose',
+    veryverbose: 'VeryVerbose',
+  };
+  return map[key] ?? 'Log';
+}
+
+/** Infer level from launcher output log / plain text (no UE frame prefix). */
+function inferLevelFromRaw(raw: string): Level | null {
+  const t = raw.trim();
+  const bracket = t.match(/^\[(ERROR|WARNING|WARN|FATAL)\]\s*(.*)$/i);
+  if (bracket) {
+    const tag = bracket[1].toUpperCase();
+    if (tag === 'ERROR') return 'Error';
+    if (tag === 'FATAL') return 'Fatal';
+    return 'Warning';
+  }
+  const solo = t.match(/^(Fatal|Error|Warning|Display|Verbose|VeryVerbose):\s+/i);
+  if (solo) return normalizeLevel(solo[1]);
+  if (/:\s*Fatal:\s/i.test(t)) return 'Fatal';
+  if (/:\s*Error:\s/i.test(t)) return 'Error';
+  if (/:\s*Warning:\s/i.test(t)) return 'Warning';
+  const lower = t.toLowerCase();
+  if (lower.includes('[fatal]')) return 'Fatal';
+  if (lower.includes('[error]')) return 'Error';
+  if (lower.includes('[warning]') || lower.includes('[warn]')) return 'Warning';
+  return null;
+}
+
+function applyInferredLevel(line: ParsedLine): ParsedLine {
+  if (line.lvl !== 'Log') return line;
+  const inferred = inferLevelFromRaw(line.raw);
+  return inferred ? { ...line, lvl: inferred } : line;
 }
 
 function parseLine(raw: string, idx: number): ParsedLine {
+  const bracket = raw.match(/^\[(ERROR|WARNING|WARN|FATAL)\]\s*(.*)$/i);
+  if (bracket) {
+    const tag = bracket[1].toUpperCase();
+    const lvl: Level = tag === 'ERROR' ? 'Error' : tag === 'FATAL' ? 'Fatal' : 'Warning';
+    return { idx, raw, ts: null, frame: null, cat: null, lvl, msg: bracket[2] || raw };
+  }
+
   const b = raw.match(/^\[(\d{4}\.\d{2}\.\d{2}-\d{2}\.\d{2}\.\d{2}:\d{3})\]\[\s*(\d+)\](.*)/s);
   if (b) {
     const ts = b[1];
     const frame = parseInt(b[2], 10);
     const rest = b[3];
     const c = rest.match(/^([\w]+(?:\[[^\]]*\])*)(?:: (Fatal|Error|Warning|Display|Verbose|VeryVerbose))?: (.*)$/s);
-    if (c) return { idx, raw, ts, frame, cat: c[1], lvl: normalizeLevel(c[2]), msg: c[3] };
+    if (c) return applyInferredLevel({ idx, raw, ts, frame, cat: c[1], lvl: normalizeLevel(c[2]), msg: c[3] });
     const f = rest.match(/^(\w+)\s(.*)$/s);
-    if (f) return { idx, raw, ts, frame, cat: f[1], lvl: 'Log', msg: f[2] };
-    return { idx, raw, ts, frame, cat: null, lvl: 'Log', msg: rest };
+    if (f) return applyInferredLevel({ idx, raw, ts, frame, cat: f[1], lvl: 'Log', msg: f[2] });
+    return applyInferredLevel({ idx, raw, ts, frame, cat: null, lvl: 'Log', msg: rest });
   }
-  const s = raw.match(/^([\w]+(?:\[[^\]]*\])*)(?:: (Fatal|Error|Warning|Display|Verbose|VeryVerbose))?: (.*)$/);
-  if (s) return { idx, raw, ts: null, frame: null, cat: s[1], lvl: normalizeLevel(s[2]), msg: s[3] };
-  return { idx, raw, ts: null, frame: null, cat: null, lvl: 'Log', msg: raw };
+  const s = raw.match(/^([\w]+(?:\[[^\]]*\])*)(?:: (Fatal|Error|Warning|Display|Verbose|VeryVerbose))?: (.*)$/s);
+  if (s) return applyInferredLevel({ idx, raw, ts: null, frame: null, cat: s[1], lvl: normalizeLevel(s[2]), msg: s[3] });
+  return applyInferredLevel({ idx, raw, ts: null, frame: null, cat: null, lvl: 'Log', msg: raw });
 }
 
 interface ExtractedStats {
@@ -275,6 +319,219 @@ function SectionLabel({ children }: { children: React.ReactNode }) {
   return <div className="text-[10px] uppercase tracking-widest text-slate-500">{children}</div>;
 }
 
+type CategorySummary = {
+  name: string;
+  lineCount: number;
+  warnCount: number;
+  errCount: number;
+};
+
+function CategoryFilterModal({
+  open,
+  onClose,
+  categories,
+  uncategorizedCount,
+  enabled,
+  onToggle,
+  onSetCategoriesEnabled,
+}: {
+  open: boolean;
+  onClose: () => void;
+  categories: CategorySummary[];
+  uncategorizedCount: number;
+  enabled: Record<string, boolean>;
+  onToggle: (category: string) => void;
+  onSetCategoriesEnabled: (names: string[], value: boolean) => void;
+}) {
+  const [query, setQuery] = useState('');
+
+  useEffect(() => {
+    if (open) setQuery('');
+  }, [open]);
+
+  useEffect(() => {
+    if (!open) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose();
+    };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, [open, onClose]);
+
+  const filteredCategories = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    if (!q) return categories;
+    return categories.filter((c) => c.name.toLowerCase().includes(q));
+  }, [categories, query]);
+
+  if (!open) return null;
+
+  const enabledCount = categories.filter((c) => enabled[c.name] !== false).length;
+  const shownEnabledCount = filteredCategories.filter((c) => enabled[c.name] !== false).length;
+  const isFiltering = query.trim().length > 0;
+
+  const bulkBtn =
+    'rounded-md px-2.5 py-1 text-xs bg-slate-700/60 text-slate-200 hover:bg-slate-600/60 transition-colors shrink-0';
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-3 sm:p-6 backdrop-blur-sm"
+      onClick={onClose}
+      role="presentation"
+    >
+      <div
+        className="flex w-full max-w-4xl max-h-[min(88vh,720px)] flex-col rounded-lg border border-slate-600/80 bg-slate-900 shadow-xl"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="category-filter-title"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-center justify-between gap-3 border-b border-slate-700/60 px-4 py-3 shrink-0">
+          <div>
+            <h3 id="category-filter-title" className="text-sm font-semibold text-slate-100">
+              Log categories
+            </h3>
+            <p className="text-xs text-slate-500 mt-0.5 tabular-nums">
+              {enabledCount.toLocaleString()} / {categories.length.toLocaleString()} enabled
+              {uncategorizedCount > 0 && ` · ${uncategorizedCount.toLocaleString()} uncategorized`}
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            className="rounded p-1.5 text-slate-400 hover:text-slate-100 hover:bg-slate-800 transition-colors"
+            aria-label="Close"
+          >
+            <span className="text-lg leading-none">×</span>
+          </button>
+        </div>
+
+        <div className="shrink-0 border-b border-slate-700/40 px-4 py-3 space-y-2.5">
+          <input
+            type="search"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder="Filter categories…"
+            className="w-full rounded-md bg-slate-950/50 border border-slate-700/60 px-3 py-2 text-sm text-slate-200 placeholder:text-slate-600 outline-none focus:ring-2 focus:ring-sky-500/30"
+            autoFocus
+          />
+          <div className="flex flex-wrap items-center gap-2">
+            <button type="button" onClick={() => onSetCategoriesEnabled(categories.map((c) => c.name), true)} className={bulkBtn}>
+              All
+            </button>
+            <button type="button" onClick={() => onSetCategoriesEnabled(categories.map((c) => c.name), false)} className={bulkBtn}>
+              None
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                for (const { name } of filteredCategories) {
+                  onToggle(name);
+                }
+              }}
+              disabled={filteredCategories.length === 0}
+              className={`${bulkBtn} disabled:opacity-40 disabled:cursor-not-allowed`}
+              title="Toggle each visible category"
+            >
+              Invert shown
+            </button>
+            {isFiltering && (
+              <>
+                <span className="w-px h-4 bg-slate-600/80 shrink-0" aria-hidden />
+                <button
+                  type="button"
+                  onClick={() => onSetCategoriesEnabled(filteredCategories.map((c) => c.name), true)}
+                  className={bulkBtn}
+                >
+                  All shown
+                </button>
+                <button
+                  type="button"
+                  onClick={() => onSetCategoriesEnabled(filteredCategories.map((c) => c.name), false)}
+                  className={bulkBtn}
+                >
+                  None shown
+                </button>
+              </>
+            )}
+            <span className="ml-auto text-xs text-slate-500 tabular-nums">
+              {isFiltering
+                ? `${shownEnabledCount}/${filteredCategories.length} on · ${filteredCategories.length} shown`
+                : `${categories.length} total`}
+            </span>
+          </div>
+        </div>
+
+        <div className="flex-1 min-h-0 overflow-y-auto px-4 py-3">
+          {categories.length === 0 ? (
+            <p className="text-sm text-slate-500 py-8 text-center">No categories detected in this log.</p>
+          ) : filteredCategories.length === 0 ? (
+            <p className="text-sm text-slate-500 py-8 text-center">No categories match &quot;{query.trim()}&quot;.</p>
+          ) : (
+            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-1.5">
+              {filteredCategories.map(({ name, lineCount, warnCount, errCount }) => {
+                const on = enabled[name] !== false;
+                const statsTitle = [
+                  `${lineCount.toLocaleString()} lines`,
+                  warnCount > 0 ? `${warnCount.toLocaleString()} warnings` : '',
+                  errCount > 0 ? `${errCount.toLocaleString()} errors` : '',
+                ]
+                  .filter(Boolean)
+                  .join(', ');
+                return (
+                  <button
+                    key={name}
+                    type="button"
+                    onClick={() => onToggle(name)}
+                    className={`min-w-0 rounded-md border px-2 py-1.5 text-left transition-colors ${
+                      on
+                        ? 'border-sky-500/45 bg-sky-900/30 text-slate-100 hover:bg-sky-900/45'
+                        : 'border-slate-700/50 bg-slate-950/50 text-slate-500 hover:border-slate-600/60 hover:text-slate-400'
+                    }`}
+                    title={`${name} — ${statsTitle}`}
+                  >
+                    <div className="font-mono text-[10px] leading-tight truncate">{name}</div>
+                    <div className="flex items-center gap-1.5 mt-0.5 text-[10px] tabular-nums">
+                      <span className={on ? 'text-sky-300/70' : 'text-slate-600'}>{lineCount.toLocaleString()}</span>
+                      {warnCount > 0 && (
+                        <span className="inline-flex items-center gap-0.5 text-amber-400" title={`${warnCount} warnings`}>
+                          <span className="w-1.5 h-1.5 rounded-full bg-amber-400 shrink-0" aria-hidden />
+                          {warnCount.toLocaleString()}
+                        </span>
+                      )}
+                      {errCount > 0 && (
+                        <span className="inline-flex items-center gap-0.5 text-red-400" title={`${errCount} errors`}>
+                          <span className="w-1.5 h-1.5 rounded-full bg-red-400 shrink-0" aria-hidden />
+                          {errCount.toLocaleString()}
+                        </span>
+                      )}
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+          )}
+          {uncategorizedCount > 0 && categories.length > 0 && (
+            <p className="text-[11px] text-slate-500 pt-3 mt-2 border-t border-slate-800/80">
+              Lines without a category are always visible in the log view.
+            </p>
+          )}
+        </div>
+
+        <div className="shrink-0 border-t border-slate-700/60 px-4 py-3 flex gap-2">
+          <button
+            type="button"
+            onClick={onClose}
+            className="flex-1 rounded-md px-3 py-2 text-sm bg-sky-600/70 text-sky-50 hover:bg-sky-500/70 transition-colors"
+          >
+            Done
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export function UELogAnalyzerPanel() {
   const { pendingImport, clearPendingImport } = useLogAnalyzerImport();
   const [lines, setLines] = useState<ParsedLine[]>([]);
@@ -294,7 +551,8 @@ export function UELogAnalyzerPanel() {
     Verbose: true,
     VeryVerbose: false,
   });
-  const [catFlt, setCatFlt] = useState<string>('all');
+  const [catEnabled, setCatEnabled] = useState<Record<string, boolean>>({});
+  const [categoryModalOpen, setCategoryModalOpen] = useState(false);
   const [search, setSearch] = useState('');
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
 
@@ -315,6 +573,7 @@ export function UELogAnalyzerPanel() {
     setStats(null);
     setFileName(fname);
     setCollapsed({ init: true });
+    setCatEnabled({});
     setScrollTop(0);
 
     const raw = text.split('\n');
@@ -481,23 +740,68 @@ export function UELogAnalyzerPanel() {
     return c;
   }, [lines]);
 
-  const cats = useMemo(() => {
-    const c: Record<string, number> = {};
-    for (const l of lines) if (l.cat) c[l.cat] = (c[l.cat] ?? 0) + 1;
-    return Object.entries(c).sort((a, b) => b[1] - a[1]);
+  const cats = useMemo<CategorySummary[]>(() => {
+    const c: Record<string, { lineCount: number; warnCount: number; errCount: number }> = {};
+    for (const l of lines) {
+      if (!l.cat) continue;
+      const entry = c[l.cat] ?? { lineCount: 0, warnCount: 0, errCount: 0 };
+      entry.lineCount += 1;
+      if (l.lvl === 'Warning') entry.warnCount += 1;
+      if (l.lvl === 'Fatal' || l.lvl === 'Error') entry.errCount += 1;
+      c[l.cat] = entry;
+    }
+    return Object.entries(c)
+      .map(([name, s]) => ({ name, ...s }))
+      .sort((a, b) => b.lineCount - a.lineCount);
   }, [lines]);
+
+  const uncategorizedCount = useMemo(() => lines.filter((l) => !l.cat).length, [lines]);
+
+  const enabledCategoryCount = useMemo(
+    () => cats.filter((c) => catEnabled[c.name] !== false).length,
+    [cats, catEnabled]
+  );
+
+  useEffect(() => {
+    setCatEnabled((prev) => {
+      const next = { ...prev };
+      let changed = false;
+      for (const { name } of cats) {
+        if (!(name in next)) {
+          next[name] = true;
+          changed = true;
+        }
+      }
+      return changed ? next : prev;
+    });
+  }, [cats]);
 
   const filtered = useMemo(() => {
     let r = lines.filter((l) => lvlFlt[l.lvl] !== false);
-    if (catFlt !== 'all') r = r.filter((l) => l.cat === catFlt);
+    r = r.filter((l) => !l.cat || catEnabled[l.cat] !== false);
     if (search.trim()) {
       const q = search.toLowerCase();
       r = r.filter((l) => l.raw.toLowerCase().includes(q));
     }
     return r;
-  }, [lines, lvlFlt, catFlt, search]);
+  }, [lines, lvlFlt, catEnabled, search]);
+
+  const toggleCategory = useCallback((category: string) => {
+    setCatEnabled((p) => ({ ...p, [category]: p[category] === false }));
+  }, []);
+
+  const setCategoriesEnabled = useCallback((names: string[], value: boolean) => {
+    setCatEnabled((p) => {
+      const next = { ...p };
+      for (const n of names) next[n] = value;
+      return next;
+    });
+  }, []);
+
+  const hasFrameNumbers = useMemo(() => lines.some((l) => l.frame !== null), [lines]);
 
   const frameGroups = useMemo<FrameGroup[]>(() => {
+    if (!hasFrameNumbers) return [];
     const fi = filtered.findIndex((l) => l.frame !== null);
     const initLines = fi === -1 ? filtered : filtered.slice(0, fi);
     const mainLines = fi === -1 ? [] : filtered.slice(fi);
@@ -532,9 +836,12 @@ export function UELogAnalyzerPanel() {
       }
     }
     return gs;
-  }, [filtered]);
+  }, [filtered, hasFrameNumbers]);
 
   const renderItems = useMemo<RenderItem[]>(() => {
+    if (!hasFrameNumbers) {
+      return filtered.map((line): RenderItem => ({ type: 'ln', line }));
+    }
     const items: RenderItem[] = [];
     for (const g of frameGroups) {
       const wl = g.lines.reduce<Level>((w, l) => (levelSeverity[l.lvl] > levelSeverity[w] ? l.lvl : w), 'VeryVerbose');
@@ -553,7 +860,7 @@ export function UELogAnalyzerPanel() {
       if (!collapsed[g.fk]) for (const l of g.lines) items.push({ type: 'ln', line: l });
     }
     return items;
-  }, [frameGroups, collapsed]);
+  }, [frameGroups, collapsed, filtered, hasFrameNumbers]);
 
   const totalH = renderItems.length * IH;
   const si = Math.max(0, Math.floor(scrollTop / IH) - 60);
@@ -646,14 +953,14 @@ export function UELogAnalyzerPanel() {
   }, [frameGroups]);
 
   const stickyHdr = useMemo<Extract<RenderItem, { type: 'hdr' }> | null>(() => {
-    if (renderItems.length === 0) return null;
+    if (!hasFrameNumbers || renderItems.length === 0) return null;
     const topIdx = Math.min(renderItems.length - 1, Math.floor(scrollTop / IH) + 1);
     for (let i = topIdx; i >= 0; i--) {
       const it = renderItems[i];
       if (it.type === 'hdr') return collapsed[it.fk] ? null : it;
     }
     return null;
-  }, [renderItems, scrollTop, collapsed]);
+  }, [renderItems, scrollTop, collapsed, hasFrameNumbers]);
 
   if (loading) {
     return (
@@ -830,30 +1137,29 @@ export function UELogAnalyzerPanel() {
 
             <div>
               <SectionLabel>Category</SectionLabel>
-              <select
-                value={catFlt}
-                onChange={(e) => setCatFlt(e.target.value)}
-                className="mt-1 w-full rounded-md bg-slate-900/40 border border-slate-700/60 px-2.5 py-2 text-sm text-slate-200 outline-none focus:ring-2 focus:ring-sky-500/30"
-              >
-                <option value="all">All categories</option>
-                {cats.slice(0, 80).map(([c, n]) => (
-                  <option key={c} value={c}>
-                    {c} ({n})
-                  </option>
-                ))}
-              </select>
-            </div>
-
-            <div className="pt-1">
-              <SectionLabel>Frame Tree</SectionLabel>
               <button
                 type="button"
-                onClick={toggleAll}
-                className="mt-1 w-full text-left rounded-md px-2.5 py-2 text-sm bg-slate-900/40 border border-slate-700/60 text-slate-200 hover:bg-slate-800/40 transition-colors"
+                onClick={() => setCategoryModalOpen(true)}
+                className="mt-1 w-full rounded-md px-2.5 py-2 text-sm text-left bg-slate-900/40 border border-slate-700/60 text-slate-200 hover:bg-slate-800/40 transition-colors"
               >
-                {frameGroups.every((g) => collapsed[g.fk]) ? '▶ Expand All' : '▼ Collapse All'}
+                {cats.length === 0
+                  ? 'No categories'
+                  : `${enabledCategoryCount} / ${cats.length} categories`}
               </button>
             </div>
+
+            {hasFrameNumbers && (
+              <div className="pt-1">
+                <SectionLabel>Frame Tree</SectionLabel>
+                <button
+                  type="button"
+                  onClick={toggleAll}
+                  className="mt-1 w-full text-left rounded-md px-2.5 py-2 text-sm bg-slate-900/40 border border-slate-700/60 text-slate-200 hover:bg-slate-800/40 transition-colors"
+                >
+                  {frameGroups.every((g) => collapsed[g.fk]) ? '▶ Expand All' : '▼ Collapse All'}
+                </button>
+              </div>
+            )}
           </div>
 
           {/* Log area */}
@@ -946,6 +1252,16 @@ export function UELogAnalyzerPanel() {
       <div className={tab === 'statistics' ? 'flex-1 min-h-0 flex overflow-hidden' : 'hidden'}>
         {stats && <StatsPanel stats={stats} lvlCounts={lvlCounts} cats={cats} total={lines.length} />}
       </div>
+
+      <CategoryFilterModal
+        open={categoryModalOpen}
+        onClose={() => setCategoryModalOpen(false)}
+        categories={cats}
+        uncategorizedCount={uncategorizedCount}
+        enabled={catEnabled}
+        onToggle={toggleCategory}
+        onSetCategoriesEnabled={setCategoriesEnabled}
+      />
     </div>
   );
 }
@@ -991,7 +1307,7 @@ function StatsPanel({
 }: {
   stats: ExtractedStats;
   lvlCounts: Record<Level, number>;
-  cats: Array<[string, number]>;
+  cats: CategorySummary[];
   total: number;
 }) {
   const QN: Record<string, string> = {
@@ -1168,18 +1484,18 @@ function StatsPanel({
 
           <Card title="Top Categories">
             <div className="max-h-72 overflow-y-auto pr-1">
-              {cats.slice(0, 30).map(([c, n]) => (
-                <div key={c} className="flex items-center gap-2 text-sm py-1">
-                  <span className="text-slate-500 w-40 truncate" title={c}>
-                    {c}
+              {cats.slice(0, 30).map((c) => (
+                <div key={c.name} className="flex items-center gap-2 text-sm py-1">
+                  <span className="text-slate-500 w-40 truncate" title={c.name}>
+                    {c.name}
                   </span>
                   <div className="flex-1 h-2 rounded bg-slate-800 overflow-hidden">
                     <div
                       className="h-full bg-sky-500/40"
-                      style={{ width: `${cats.length > 0 ? (n / cats[0][1]) * 100 : 0}%` }}
+                      style={{ width: `${cats.length > 0 ? (c.lineCount / cats[0].lineCount) * 100 : 0}%` }}
                     />
                   </div>
-                  <span className="text-slate-200 tabular-nums w-14 text-right">{n.toLocaleString()}</span>
+                  <span className="text-slate-200 tabular-nums w-14 text-right">{c.lineCount.toLocaleString()}</span>
                 </div>
               ))}
             </div>
