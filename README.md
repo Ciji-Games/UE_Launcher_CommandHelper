@@ -53,6 +53,8 @@ Build output: `Build/release/bundle/msi/` (or `target/release/bundle/` depending
 ## License
 
 Polyform Noncommercial 1.0.0 — use allowed for non-commercial purposes only. See [LICENSE](LICENSE) for details.
+> [!NOTE]
+> This license apply to the launcher, not whatever Unreal Engine project you launch with it. I do not allow the commercial use of the launcher app.
 
 ## Disclaimer
 

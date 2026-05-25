@@ -14,6 +14,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { useLog } from '../contexts/LogContext';
+import { useLogAnalyzerImportOptional } from '../contexts/LogAnalyzerImportContext';
 import { useProgress } from '../contexts/ProgressContext';
 
 export interface LogEvent {
@@ -77,6 +78,7 @@ const SCROLL_THRESHOLD = 24;
 
 export function OutputLogPanel() {
   const { lines, appendLine, clearLog } = useLog();
+  const logAnalyzerImport = useLogAnalyzerImportOptional();
   const { running, percent, elapsedMs, stepProgress, finishProgress, requestStop } = useProgress();
   const scrollRef = useRef<HTMLDivElement>(null);
   const isAtBottomRef = useRef(true);
@@ -121,6 +123,11 @@ export function OutputLogPanel() {
   const handleClear = () => {
     isAtBottomRef.current = true;
     clearLog();
+  };
+
+  const handleSendToVisualizer = () => {
+    const text = lines.map((e) => e.line).join('\n');
+    logAnalyzerImport?.sendToVisualizer(text, 'output-log.txt');
   };
 
   const handleCopy = async () => {
@@ -191,6 +198,17 @@ export function OutputLogPanel() {
           >
             Clear
           </button>
+          {logAnalyzerImport && (
+            <button
+              type="button"
+              onClick={handleSendToVisualizer}
+              disabled={lines.length === 0}
+              className="rounded-md px-3 py-1 text-sm bg-sky-700/50 text-sky-100 hover:bg-sky-600/60 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+              title="Open UE Log Analyzer with the full output log"
+            >
+              Send to Analyzer
+            </button>
+          )}
         </div>
       </div>
       <div

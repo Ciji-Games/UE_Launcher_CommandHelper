@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { listen } from '@tauri-apps/api/event';
 import { invoke } from '@tauri-apps/api/core';
+import { useLogAnalyzerImport } from '../contexts/LogAnalyzerImportContext';
 
 const LEVELS = ['Fatal', 'Error', 'Warning', 'Display', 'Log', 'Verbose', 'VeryVerbose'] as const;
 type Level = (typeof LEVELS)[number];
@@ -276,6 +276,7 @@ function SectionLabel({ children }: { children: React.ReactNode }) {
 }
 
 export function UELogAnalyzerPanel() {
+  const { pendingImport, clearPendingImport } = useLogAnalyzerImport();
   const [lines, setLines] = useState<ParsedLine[]>([]);
   const [stats, setStats] = useState<ExtractedStats | null>(null);
   const [loading, setLoading] = useState(false);
@@ -346,9 +347,23 @@ export function UELogAnalyzerPanel() {
     [processText]
   );
 
+  const loadDroppedPath = useCallback(
+    async (path: string) => {
+      try {
+        const text = await invoke<string>('read_text_file', { path });
+        const fname = path.split(/[/\\]/).pop() ?? 'dropped.log';
+        await processText(text, fname);
+      } catch {
+        // Drop failed (permissions, missing file, etc.)
+      }
+    },
+    [processText]
+  );
+
   const handleDrop = useCallback(
     (e: React.DragEvent<HTMLDivElement>) => {
       e.preventDefault();
+      e.stopPropagation();
       setIsDragOver(false);
       const f = e.dataTransfer?.files?.[0];
       if (!f) return;
@@ -369,56 +384,45 @@ export function UELogAnalyzerPanel() {
     }
   }, [processText]);
 
-  // Native Tauri file-drop support (reliable on Windows).
   useEffect(() => {
-    let unlistenDrop: (() => void) | null = null;
-    let unlistenHover: (() => void) | null = null;
-    let unlistenCancel: (() => void) | null = null;
+    if (!pendingImport) return;
+    const { text, fileName } = pendingImport;
+    clearPendingImport();
+    void processText(text, fileName);
+  }, [pendingImport, processText, clearPendingImport]);
+
+  // Tauri v2 native file drop (tauri://file-drop* events are v1 and do not fire here).
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
 
     const start = async () => {
       try {
-        unlistenDrop = await listen<unknown>('tauri://file-drop', async (e) => {
-          const payload = e.payload as unknown;
-          // Payload shapes vary by platform / tauri version. Handle common cases.
-          const paths: string[] =
-            Array.isArray(payload)
-              ? (payload.filter((p): p is string => typeof p === 'string') as string[])
-              : typeof payload === 'object' && payload !== null && 'paths' in payload
-                ? (((payload as { paths?: unknown }).paths as unknown[])?.filter((p): p is string => typeof p === 'string') as string[])
-                : [];
-
-          const first = paths[0];
-          if (!first) return;
-          try {
-            const text = await invoke<string>('read_text_file', { path: first });
-            const fname = first.split(/[/\\]/).pop() ?? 'dropped.log';
-            await processText(text, fname);
-          } catch (err) {
-            console.error('Failed to read dropped file', err);
-          } finally {
-            setIsDragOver(false);
+        const { getCurrentWindow } = await import('@tauri-apps/api/window');
+        const win = getCurrentWindow();
+        unlisten = await win.onDragDropEvent((event) => {
+          const p = event.payload;
+          if (p.type === 'over') {
+            setIsDragOver(true);
+            return;
           }
-        });
-
-        unlistenHover = await listen<unknown>('tauri://file-drop-hover', () => {
-          setIsDragOver(true);
-        });
-        unlistenCancel = await listen<unknown>('tauri://file-drop-cancelled', () => {
+          if (p.type === 'drop') {
+            setIsDragOver(false);
+            const first = p.paths?.[0];
+            if (first) void loadDroppedPath(first);
+            return;
+          }
           setIsDragOver(false);
         });
-      } catch (err) {
-        // If file-drop isn't enabled/supported, we silently keep the in-webview DnD.
-        console.warn('Tauri file-drop listeners not available', err);
+      } catch {
+        // Native drop unavailable; HTML drop handler remains as fallback.
       }
     };
 
     void start();
     return () => {
-      unlistenDrop?.();
-      unlistenHover?.();
-      unlistenCancel?.();
+      unlisten?.();
     };
-  }, [processText]);
+  }, [loadDroppedPath]);
 
   const attachLog = useCallback((el: HTMLDivElement | null) => {
     logRef.current = el;

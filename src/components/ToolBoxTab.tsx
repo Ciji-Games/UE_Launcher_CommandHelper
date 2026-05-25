@@ -3,8 +3,9 @@
  * Step 10: Two-column layout with ToolGroup panels. Step 11: UmapHelper.
  */
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { useProgress } from '../contexts/ProgressContext';
+import { LogAnalyzerImportProvider } from '../contexts/LogAnalyzerImportContext';
 import { RegenerateProjectPanel } from './RegenerateProjectPanel';
 import { UmapHelperPanel } from './UmapHelperPanel';
 import { ShaderBoosterPanel } from './ShaderBoosterPanel';
@@ -41,7 +42,12 @@ export function ToolBoxTab() {
     if (running && shouldOpenOutputLog) setShowOutputLog(true);
   }, [running, shouldOpenOutputLog]);
 
+  const openLogAnalyzer = useCallback(() => {
+    setSelectedToolId('log-analyzer');
+  }, []);
+
   return (
+    <LogAnalyzerImportProvider onOpenAnalyzer={openLogAnalyzer}>
     <div className="flex flex-col gap-6 flex-1 min-h-0">
       {/* Tool area - fixed 60% of vertical space for stable layout when switching tools */}
       <div
@@ -106,5 +112,6 @@ export function ToolBoxTab() {
         )}
       </div>
     </div>
+    </LogAnalyzerImportProvider>
   );
 }
