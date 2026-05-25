@@ -3,8 +3,9 @@
  * Step 10: Two-column layout with ToolGroup panels. Step 11: UmapHelper.
  */
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { useProgress } from '../contexts/ProgressContext';
+import { LogAnalyzerImportProvider } from '../contexts/LogAnalyzerImportContext';
 import { RegenerateProjectPanel } from './RegenerateProjectPanel';
 import { UmapHelperPanel } from './UmapHelperPanel';
 import { ShaderBoosterPanel } from './ShaderBoosterPanel';
@@ -13,15 +14,17 @@ import { UProjectHelperPanel } from './UProjectHelperPanel';
 import { MovieRenderQueuePanel } from './MovieRenderQueuePanel';
 import { BatchCommitPanel } from './BatchCommitPanel';
 import { OutputLogPanel } from './OutputLogPanel';
+import { UELogAnalyzerPanel } from './UELogAnalyzerPanel';
 
 const TOOLS = [
-  { id: 'shader', label: 'Shader Booster', panel: ShaderBoosterPanel },
-  { id: 'regenerate', label: 'Regenerate Project', panel: RegenerateProjectPanel },
-  { id: 'batchcommit', label: 'Batch Commit', panel: BatchCommitPanel },
-  { id: 'umap', label: 'UMap Helper', panel: UmapHelperPanel },
-  { id: 'plugin', label: 'Plugin Helper', panel: PluginHelperPanel },
-  { id: 'uproject', label: 'UProject Helper', panel: UProjectHelperPanel },
-  { id: 'movierenderqueue', label: 'Movie Render Queue', panel: MovieRenderQueuePanel },
+  { id: 'shader', label: 'Shader Booster', panel: ShaderBoosterPanel, contentOverflow: 'auto' },
+  { id: 'regenerate', label: 'Regenerate Project', panel: RegenerateProjectPanel, contentOverflow: 'auto' },
+  { id: 'batchcommit', label: 'Batch Commit', panel: BatchCommitPanel, contentOverflow: 'auto' },
+  { id: 'umap', label: 'UMap Helper', panel: UmapHelperPanel, contentOverflow: 'auto' },
+  { id: 'plugin', label: 'Plugin Helper', panel: PluginHelperPanel, contentOverflow: 'auto' },
+  { id: 'uproject', label: 'UProject Helper', panel: UProjectHelperPanel, contentOverflow: 'auto' },
+  { id: 'movierenderqueue', label: 'Movie Render Queue', panel: MovieRenderQueuePanel, contentOverflow: 'auto' },
+  { id: 'log-analyzer', label: 'UE Log Analyzer', panel: UELogAnalyzerPanel, contentOverflow: 'hidden' },
 ] as const;
 
 type ToolId = (typeof TOOLS)[number]['id'];
@@ -31,13 +34,20 @@ export function ToolBoxTab() {
   const [showOutputLog, setShowOutputLog] = useState(false);
   const { running, shouldOpenOutputLog } = useProgress();
 
-  const SelectedPanel = TOOLS.find((t) => t.id === selectedToolId)?.panel ?? RegenerateProjectPanel;
+  const selectedTool = TOOLS.find((t) => t.id === selectedToolId);
+  const SelectedPanel = selectedTool?.panel ?? RegenerateProjectPanel;
+  const contentOverflow = selectedTool?.contentOverflow ?? 'auto';
 
   useEffect(() => {
     if (running && shouldOpenOutputLog) setShowOutputLog(true);
   }, [running, shouldOpenOutputLog]);
 
+  const openLogAnalyzer = useCallback(() => {
+    setSelectedToolId('log-analyzer');
+  }, []);
+
   return (
+    <LogAnalyzerImportProvider onOpenAnalyzer={openLogAnalyzer}>
     <div className="flex flex-col gap-6 flex-1 min-h-0">
       {/* Tool area - fixed 60% of vertical space for stable layout when switching tools */}
       <div
@@ -66,7 +76,11 @@ export function ToolBoxTab() {
         </div>
 
         {/* Right: Content panel */}
-        <div className="flex-1 min-w-0 min-h-0 rounded-lg border border-slate-600/60 bg-slate-800/30 p-6 overflow-y-auto">
+        <div
+          className={`flex-1 min-w-0 min-h-0 rounded-lg border border-slate-600/60 bg-slate-800/30 p-6 ${
+            contentOverflow === 'hidden' ? 'overflow-hidden' : 'overflow-y-auto'
+          }`}
+        >
           <SelectedPanel />
         </div>
       </div>
@@ -98,5 +112,6 @@ export function ToolBoxTab() {
         )}
       </div>
     </div>
+    </LogAnalyzerImportProvider>
   );
 }

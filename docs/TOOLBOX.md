@@ -50,6 +50,18 @@ Build and package plugins from projects with a Plugins folder. Select project, p
 
 Queue and run Movie Render Queue jobs from the command line. Configure project, map, sequence, and output settings.
 
+### UE Log Analyzer
+
+Analyze Unreal Engine `.log` / `.txt` files locally with:
+
+- A virtualized log navigator grouped by initialization and frame number
+- Fast filters (level, category, full-text)
+- A minimap for quickly jumping through warnings/errors
+- A **Statistics** view that extracts common session details (hardware, RHI, scalability, FPS/GPU timing when present)
+
+> [!NOTE]
+> This tool is **separate from the Output Log** at the bottom of the ToolBox tab and does not modify it.
+
 ## Output Log
 
 The collapsible **Output Log** at the bottom shows real-time output from running tools.
