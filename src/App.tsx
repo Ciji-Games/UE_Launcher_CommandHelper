@@ -47,6 +47,12 @@ const TABS = [
 function App() {
   const [activeTab, setActiveTab] = useState<'launcher' | 'toolbox' | 'scheduler' | 'links'>('launcher');
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [schedulerOutputOpenSignal, setSchedulerOutputOpenSignal] = useState(0);
+
+  const openSchedulerWithOutput = () => {
+    setActiveTab('scheduler');
+    setSchedulerOutputOpenSignal((prev) => prev + 1);
+  };
 
   return (
     <SettingsProvider>
@@ -113,7 +119,12 @@ function App() {
 
               {/* Tab content - overflow-visible so dropdowns can overflow in all tabs */}
               <div className="flex min-h-0 flex-1 flex-col overflow-visible">
-                {activeTab === 'launcher' && <LauncherTab onOpenSettings={() => setSettingsOpen(true)} />}
+                {activeTab === 'launcher' && (
+                  <LauncherTab
+                    onOpenSettings={() => setSettingsOpen(true)}
+                    onOpenSchedulerWithOutput={openSchedulerWithOutput}
+                  />
+                )}
                 {activeTab === 'toolbox' && (
                   <div className="flex min-h-0 flex-1 flex-col">
                     <ToolBoxTab />
@@ -121,7 +132,7 @@ function App() {
                 )}
                 {activeTab === 'scheduler' && (
                   <div className="flex min-h-0 flex-1 flex-col">
-                    <SchedulerTab />
+                    <SchedulerTab outputOpenSignal={schedulerOutputOpenSignal} />
                   </div>
                 )}
                 {activeTab === 'links' && <LinksTab />}
