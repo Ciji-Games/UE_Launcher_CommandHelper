@@ -68,7 +68,8 @@ export function ProjectsProvider({ children }: { children: React.ReactNode }) {
         return;
       }
 
-      // Re-validate engine paths: if engine no longer exists on disk, re-analyse project
+      // Re-check project engine/version data on deep refresh so UI reflects .uproject changes.
+      // If an existing engine path disappeared, force re-analysis as well.
       const enginePathsToCheck = [...new Set(
         valid
           .filter((p) => p.engineInstallPath && p.engineInstallPath !== 'Unknown')
@@ -84,20 +85,21 @@ export function ProjectsProvider({ children }: { children: React.ReactNode }) {
 
       const withValidEngines = await Promise.all(
         valid.map(async (p) => {
-          if (
+          const enginePathMissing =
             p.engineInstallPath &&
             p.engineInstallPath !== 'Unknown' &&
-            !existingEngineSet.has(p.engineInstallPath)
-          ) {
-            try {
-              return await invoke<ProjectInfo>('analyse_uproject', {
-                path: p.projectPath,
-              });
-            } catch {
+            !existingEngineSet.has(p.engineInstallPath);
+
+          try {
+            return await invoke<ProjectInfo>('analyse_uproject', {
+              path: p.projectPath,
+            });
+          } catch {
+            if (enginePathMissing) {
               return { ...p, engineInstallPath: 'Unknown' };
             }
+            return p;
           }
-          return p;
         })
       );
 
