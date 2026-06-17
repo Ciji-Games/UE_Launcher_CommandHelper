@@ -19,6 +19,16 @@ const levelTextClass: Record<Level, string> = {
   VeryVerbose: 'text-slate-500',
 };
 
+const levelSvgColor: Record<Level, string> = {
+  Fatal: '#fb7185',
+  Error: '#f87171',
+  Warning: '#fcd34d',
+  Display: '#94a3b8',
+  Log: '#cbd5e1',
+  Verbose: '#94a3b8',
+  VeryVerbose: '#64748b',
+};
+
 const levelBorderClass: Record<Level, string> = {
   Fatal: 'border-l-rose-500/70',
   Error: 'border-l-red-500/60',
@@ -292,7 +302,89 @@ function calcStat(arr: number[]): { n: number; avg: number; med: number; min: nu
   return { n, avg, med: s[Math.floor(n / 2)], min: s[0], max: s[n - 1] };
 }
 
-type AnalyzerTab = 'navigator' | 'statistics';
+type AnalyzerTab = 'navigator' | 'statistics' | 'summary';
+
+type SummaryCard = {
+  key: string;
+  pattern: string;
+  total: number;
+  levels: Record<Level, number>;
+  categories: Record<string, number>;
+  differences: Record<string, number>;
+};
+
+function normalizeSummaryPattern(msg: string): string {
+  const withTargetedRules = msg
+    .replace(
+      /Material\s+'[^']+'\s+expects texture\s+'[^']+'\s+to be Virtual/gi,
+      "Material '<material>' expects texture '<texture>' to be Virtual"
+    )
+    .replace(/MemberName=\+"[^"]+"/g, 'MemberName=+"<name>"')
+    .replace(/Name="\([^"]+\)"/g, 'Name="(<name>)"')
+    .replace(/Pins\(Binding="[^"]+"\)/g, 'Pins(Binding="<binding>")')
+    .replace(/Binding="[^"]+"/g, 'Binding="<binding>"')
+    .replace(/MemberGuid\(([^)]*)\)/g, (_full, inner: string) => `MemberGuid(${inner.replace(/-?\d+/g, '<num>')})`)
+    .replace(/\(0x[0-9A-Fa-f]+\)/g, '(<hex>)')
+    .replace(/\b0x[0-9A-Fa-f]+\b/g, '<hex>')
+    .replace(/(SelectActor:[^(]*\()([^)]+?)(\)\s+Flags:)/g, (_m, p1: string, actor: string, p3: string) => {
+      return `${p1}${actor.replace(/\d+/g, '<num>')}${p3}`;
+    });
+
+  return withTargetedRules
+    .replace(/\b[A-F0-9]{16,}\b/g, '<hash>')
+    .replace(/\b\d+(?:\.\d+)?\b/g, '<num>')
+    .replace(/\/[A-Za-z0-9_./-]+/g, '<asset>')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function extractSummaryDifferences(msg: string): string[] {
+  const found = new Set<string>();
+  const quotedMatches = msg.match(/'[^']+'/g) ?? [];
+  for (const q of quotedMatches) found.add(q);
+  const quotedDoubleMatches = msg.match(/"[^"]+"/g) ?? [];
+  for (const q of quotedDoubleMatches) found.add(q);
+  const assetMatches = msg.match(/\/[A-Za-z0-9_./-]+/g) ?? [];
+  for (const asset of assetMatches) found.add(asset);
+  const hexMatches = msg.match(/\b0x[0-9A-Fa-f]+\b/g) ?? [];
+  for (const h of hexMatches) found.add(h);
+  const objectWithNumberMatches = msg.match(/\b[A-Za-z_][A-Za-z0-9_]*\d+[A-Za-z0-9_]*\b/g) ?? [];
+  for (const v of objectWithNumberMatches) found.add(v);
+  const hashMatches = msg.match(/\b[A-F0-9]{16,}\b/g) ?? [];
+  for (const hash of hashMatches) found.add(hash);
+  return [...found];
+}
+
+function buildSummaryCards(lines: ParsedLine[]): SummaryCard[] {
+  const grouped: Record<string, SummaryCard> = {};
+  for (const line of lines) {
+    if (line.lvl !== 'Warning' && line.lvl !== 'Error' && line.lvl !== 'Fatal') continue;
+    const source = line.msg || line.raw;
+    const pattern = normalizeSummaryPattern(source);
+    if (!pattern) continue;
+    const key = `${line.lvl}|${pattern}`;
+    const existing = grouped[key];
+    const card =
+      existing ??
+      ({
+        key,
+        pattern,
+        total: 0,
+        levels: { Fatal: 0, Error: 0, Warning: 0, Display: 0, Log: 0, Verbose: 0, VeryVerbose: 0 },
+        categories: {},
+        differences: {},
+      } satisfies SummaryCard);
+    card.total += 1;
+    card.levels[line.lvl] += 1;
+    const catKey = line.cat ?? 'Uncategorized';
+    card.categories[catKey] = (card.categories[catKey] ?? 0) + 1;
+    for (const diff of extractSummaryDifferences(source)) {
+      card.differences[diff] = (card.differences[diff] ?? 0) + 1;
+    }
+    grouped[key] = card;
+  }
+  return Object.values(grouped).sort((a, b) => b.total - a.total);
+}
 
 type FrameGroup = {
   fk: string;
@@ -786,6 +878,8 @@ export function UELogAnalyzerPanel() {
     return r;
   }, [lines, lvlFlt, catEnabled, search]);
 
+  const summaryCards = useMemo(() => buildSummaryCards(filtered), [filtered]);
+
   const toggleCategory = useCallback((category: string) => {
     setCatEnabled((p) => ({ ...p, [category]: p[category] === false }));
   }, []);
@@ -1054,7 +1148,7 @@ export function UELogAnalyzerPanel() {
 
       {/* Tabs */}
       <div className="flex items-end gap-2 pt-3 pb-3 border-b border-slate-700/60">
-        {(['navigator', 'statistics'] as const).map((t) => (
+        {(['navigator', 'statistics', 'summary'] as const).map((t) => (
           <button
             key={t}
             type="button"
@@ -1154,9 +1248,10 @@ export function UELogAnalyzerPanel() {
                 <button
                   type="button"
                   onClick={toggleAll}
-                  className="mt-1 w-full text-left rounded-md px-2.5 py-2 text-sm bg-slate-900/40 border border-slate-700/60 text-slate-200 hover:bg-slate-800/40 transition-colors"
+                  className="mt-1 w-full text-left rounded-md px-2.5 py-2 text-sm bg-slate-900/40 border border-slate-700/60 text-slate-200 hover:bg-slate-800/40 transition-colors flex items-center gap-2"
                 >
-                  {frameGroups.every((g) => collapsed[g.fk]) ? '▶ Expand All' : '▼ Collapse All'}
+                  <span className={`transition-transform duration-200 inline-block ${frameGroups.every((g) => collapsed[g.fk]) ? '' : 'rotate-90'}`}>▶</span>
+                  {frameGroups.every((g) => collapsed[g.fk]) ? 'Expand All' : 'Collapse All'}
                 </button>
               </div>
             )}
@@ -1182,7 +1277,7 @@ export function UELogAnalyzerPanel() {
                   } border-l-2`}
                   title="Toggle frame group"
                 >
-                  <span className="text-slate-500">{collapsed[stickyHdr.fk] ? '▶' : '▼'}</span>
+                  <span className={`text-slate-500 transition-transform duration-200 inline-block ${collapsed[stickyHdr.fk] ? '' : 'rotate-90'}`}>▶</span>
                   <span className="text-slate-400">{stickyHdr.label}</span>
                   <span className="text-slate-600">{stickyHdr.count}</span>
                   <span className="flex-1" />
@@ -1253,6 +1348,11 @@ export function UELogAnalyzerPanel() {
         {stats && <StatsPanel stats={stats} lvlCounts={lvlCounts} cats={cats} total={lines.length} />}
       </div>
 
+      {/* Summary */}
+      <div className={tab === 'summary' ? 'flex-1 min-h-0 flex overflow-hidden' : 'hidden'}>
+        <SummaryPanel cards={summaryCards} shownCount={filtered.length} />
+      </div>
+
       <CategoryFilterModal
         open={categoryModalOpen}
         onClose={() => setCategoryModalOpen(false)}
@@ -1295,6 +1395,66 @@ function LineRow({ line, search }: { line: ParsedLine; search: string }) {
         <span className={`w-20 pr-2 text-[10px] ${levelTextClass[line.lvl]} opacity-90`}>{line.lvl}</span>
       )}
       <span className={`${levelTextClass[line.lvl]} whitespace-nowrap`}>{content}</span>
+    </div>
+  );
+}
+
+function SummaryPanel({ cards, shownCount }: { cards: SummaryCard[]; shownCount: number }) {
+  if (cards.length === 0) {
+    return (
+      <div className="flex-1 min-h-0 overflow-y-auto py-6 px-4">
+        <div className="rounded-lg border border-slate-800/70 bg-slate-950/30 p-4 text-sm text-slate-400">
+          No warning/error patterns found in the current filtered view.
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex-1 min-h-0 overflow-y-auto py-4 px-1">
+      <div className="text-xs text-slate-500 px-3 pb-3">{cards.length.toLocaleString()} issue patterns from {shownCount.toLocaleString()} visible lines</div>
+      <div className="flex flex-col gap-3 px-3 pb-4">
+        {cards.map((card) => {
+          const topCategories = Object.entries(card.categories)
+            .sort((a, b) => b[1] - a[1])
+            .slice(0, 3);
+          const diffs = Object.entries(card.differences)
+            .sort((a, b) => b[1] - a[1])
+            .slice(0, 10);
+          return (
+            <div key={card.key} className="rounded-lg border border-slate-700/60 bg-slate-950/30 p-3">
+              <div className="flex items-center gap-2">
+                <div className="text-sm text-slate-100 break-words">{card.pattern}</div>
+                <div className="flex-1" />
+                <div className="text-xs tabular-nums rounded bg-slate-800/80 px-2 py-0.5 text-slate-300">{card.total.toLocaleString()}x</div>
+              </div>
+              <div className="mt-2 flex flex-wrap items-center gap-2 text-xs">
+                {card.levels.Warning > 0 && <span className="rounded bg-amber-950/40 text-amber-300 px-2 py-0.5">Warning {card.levels.Warning}</span>}
+                {card.levels.Error > 0 && <span className="rounded bg-red-950/40 text-red-300 px-2 py-0.5">Error {card.levels.Error}</span>}
+                {card.levels.Fatal > 0 && <span className="rounded bg-rose-950/40 text-rose-300 px-2 py-0.5">Fatal {card.levels.Fatal}</span>}
+                {topCategories.map(([name, count]) => (
+                  <span key={name} className="rounded bg-slate-800/70 text-slate-300 px-2 py-0.5 truncate max-w-[16rem]" title={name}>
+                    {name} · {count}
+                  </span>
+                ))}
+              </div>
+              {diffs.length > 0 && (
+                <div className="mt-3 border-t border-slate-800/80 pt-2">
+                  <div className="text-[10px] uppercase tracking-widest text-slate-500 mb-1">Differences</div>
+                  <div className="flex flex-col gap-1.5">
+                    {diffs.map(([value, count]) => (
+                      <div key={value} className="text-xs flex items-start gap-2">
+                        <span className="text-slate-600 tabular-nums w-8 text-right">{count}x</span>
+                        <span className="text-slate-300 break-all">{value}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
     </div>
   );
 }
@@ -1454,7 +1614,7 @@ function StatsPanel({
             <div className="flex items-center gap-4">
               <svg viewBox="0 0 100 100" width={92} height={92} className="shrink-0">
                 {arcs.length === 1 ? (
-                  <circle cx="50" cy="50" r="44" fill="#38bdf8" opacity="0.35" />
+                  <circle cx="50" cy="50" r="44" fill={levelSvgColor[arcs[0].l]} stroke="rgba(15,23,42,0.7)" strokeWidth="1" />
                 ) : (
                   arcs.map((d, i) => (
                     <path
@@ -1462,8 +1622,9 @@ function StatsPanel({
                       d={`M50,50 L${d.x1.toFixed(2)},${d.y1.toFixed(2)} A44,44 0 ${d.large},1 ${d.x2.toFixed(
                         2
                       )},${d.y2.toFixed(2)} Z`}
-                      fill="#38bdf8"
-                      opacity={0.15 + Math.min(0.7, (d.v / (pTot || 1)) * 1.2)}
+                      fill={levelSvgColor[d.l]}
+                      stroke="rgba(15,23,42,0.7)"
+                      strokeWidth="1"
                     />
                   ))
                 )}

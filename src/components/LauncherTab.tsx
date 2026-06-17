@@ -21,9 +21,10 @@ import type { ProjectInfo, EngineEntry } from '../types';
 
 interface LauncherTabProps {
   onOpenSettings?: () => void;
+  onOpenSchedulerWithOutput?: () => void;
 }
 
-export function LauncherTab({ onOpenSettings }: LauncherTabProps) {
+export function LauncherTab({ onOpenSettings, onOpenSchedulerWithOutput }: LauncherTabProps) {
   const {
     projects,
     addProject,
@@ -167,7 +168,10 @@ export function LauncherTab({ onOpenSettings }: LauncherTabProps) {
               <PinnedJobCard
                 key={job.id}
                 job={job}
-                onRun={(j) => runJob(j, { stopOnFailure: true })}
+                onRun={async (j) => {
+                  onOpenSchedulerWithOutput?.();
+                  await runJob(j, { stopOnFailure: true });
+                }}
                 disabled={
                   runJobRunning ||
                   job.steps.length === 0 ||

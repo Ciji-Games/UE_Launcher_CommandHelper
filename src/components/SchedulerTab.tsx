@@ -90,7 +90,11 @@ function StepParamPanel({
   return null;
 }
 
-export function SchedulerTab() {
+interface SchedulerTabProps {
+  outputOpenSignal?: number;
+}
+
+export function SchedulerTab({ outputOpenSignal = 0 }: SchedulerTabProps) {
   const { jobs, loading, addJob, updateJob, removeJob } = useScheduledJobs();
   const { runJob, running: runJobRunning } = useRunScheduledJob();
   const umapMonitor = useProcessMonitor('umap');
@@ -108,6 +112,12 @@ export function SchedulerTab() {
   const [stopOnFailure, setStopOnFailure] = useState(true);
   const [expandedSteps, setExpandedSteps] = useState<Set<number>>(new Set([0]));
   const [showOutputLog, setShowOutputLog] = useState(false);
+
+  useEffect(() => {
+    if (outputOpenSignal > 0) {
+      setShowOutputLog(true);
+    }
+  }, [outputOpenSignal]);
 
   const selectedJob = jobs.find((j) => j.id === selectedJobId);
 
