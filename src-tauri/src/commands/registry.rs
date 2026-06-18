@@ -1,11 +1,12 @@
 //! Windows registry commands - engine paths, UnrealVersionSelector
 //! Step 5: Implement Windows registry & engine discovery
 
+use std::collections::HashMap;
 use std::path::Path;
 use tauri::async_runtime::spawn_blocking;
 
 #[cfg(windows)]
-use winreg::enums::{HKEY_CLASSES_ROOT, HKEY_LOCAL_MACHINE};
+use winreg::enums::{HKEY_CLASSES_ROOT, HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE};
 #[cfg(windows)]
 use winreg::RegKey;
 
@@ -34,6 +35,24 @@ fn editor_path_to_engine_root(editor_path: &Path) -> Option<std::path::PathBuf> 
         p = p.parent()?.to_path_buf();
     }
     Some(p)
+}
+
+/// Compute a normalized key for an editor path, used for deduplication.
+///
+/// The same engine can be reported by both the HKLM folder scan and the HKCU
+/// `Builds` registry, but with different string representations: the HKLM scan
+/// builds the path with `Path::join` (all backslashes) while the `Builds` value
+/// is stored by Epic with forward slashes (e.g. `C:/Program Files/Epic Games/UE_5.8`).
+/// A plain (even case-insensitive) string compare treats these as different, so
+/// the engine gets added twice.
+///
+/// `fs::canonicalize` resolves both representations of the same file to one
+/// identical form (also normalizing 8.3 short names, trailing separators and
+/// casing). Falls back to a lowercased string if the path can't be canonicalized.
+fn engine_dedup_key(editor_path: &Path) -> String {
+    std::fs::canonicalize(editor_path)
+        .map(|p| p.to_string_lossy().to_lowercase())
+        .unwrap_or_else(|_| editor_path.to_string_lossy().to_lowercase())
 }
 
 /// Resolve the command-line editor exe from the editor path.
@@ -135,55 +154,106 @@ pub(crate) fn discover_installed_engine_paths() -> Result<Vec<EngineEntry>, Stri
 
     #[cfg(windows)]
     {
-        const REG_BASE: &str = r"SOFTWARE\EpicGames\Unreal Engine";
-
-        let hklm = RegKey::predef(HKEY_LOCAL_MACHINE);
-        let base_key = match hklm.open_subkey(REG_BASE) {
-            Ok(k) => k,
-            Err(_) => return Ok(vec![]), // UE not installed or registry not found
-        };
-
-        // Get default engine installation directory
-        let install_dir_base: String = match base_key.get_value("INSTALLDIR") {
-            Ok(v) => v,
-            Err(_) => return Ok(vec![]),
-        };
-
         let mut engines = Vec::new();
+        // Maps a canonicalized editor path to its index in `engines`, so the same
+        // engine reported by both the HKLM folder scan and the HKCU `Builds`
+        // registry is added only once. When the `Builds` scan re-finds an engine
+        // already added by HKLM, we backfill its GUID onto the existing entry
+        // (rather than dropping it) so projects with a GUID EngineAssociation can
+        // still resolve to it.
+        let mut seen: HashMap<String, usize> = HashMap::new();
         let bin64 = ["Engine", "Binaries", "Win64"];
 
-        let base_path = Path::new(&install_dir_base);
-        if base_path.exists() && base_path.is_dir() {
-            if let Ok(entries) = std::fs::read_dir(base_path) {
-                for entry in entries.filter_map(Result::ok) {
-                    let path = entry.path();
-                    if path.is_dir() {
-                        if let Some(folder_name) = path.file_name().and_then(|n| n.to_str()) {
-                            if folder_name.starts_with("UE_") {
-                                let base = path
-                                    .join(bin64[0])
-                                    .join(bin64[1])
-                                    .join(bin64[2]);
-                                // Prefer UE5 (UnrealEditor.exe), then UE4 (UE4Editor.exe)
-                                let editor_path = base.join(UE5_EDITOR_EXE);
-                                let editor_path = if editor_path.exists() {
-                                    editor_path
-                                } else {
-                                    base.join(UE4_EDITOR_EXE)
-                                };
-                                if editor_path.exists() {
-                                    let version = read_engine_version_from_build_file(
-                                        &path,
-                                        folder_name,
-                                    );
-                                    engines.push(EngineEntry {
-                                        version,
-                                        editor_path: editor_path.to_string_lossy().to_string(),
-                                        display_name: None,
-                                        is_custom: false,
-                                        id: None,
-                                    });
+        // 1. Scan HKLM for officially installed engines (standard Epic Games Launcher installs)
+        const REG_BASE: &str = r"SOFTWARE\EpicGames\Unreal Engine";
+        let hklm = RegKey::predef(HKEY_LOCAL_MACHINE);
+        if let Ok(base_key) = hklm.open_subkey(REG_BASE) {
+            // Get default engine installation directory
+            if let Ok(install_dir_base) = base_key.get_value::<String, _>("INSTALLDIR") {
+                let base_path = Path::new(&install_dir_base);
+                if base_path.exists() && base_path.is_dir() {
+                    if let Ok(entries) = std::fs::read_dir(base_path) {
+                        for entry in entries.filter_map(Result::ok) {
+                            let path = entry.path();
+                            if path.is_dir() {
+                                if let Some(folder_name) = path.file_name().and_then(|n| n.to_str()) {
+                                    if folder_name.starts_with("UE_") {
+                                        let base = path.join(bin64[0]).join(bin64[1]).join(bin64[2]);
+                                        // Prefer UE5 (UnrealEditor.exe), then UE4 (UE4Editor.exe)
+                                        let editor_path = base.join(UE5_EDITOR_EXE);
+                                        let editor_path = if editor_path.exists() {
+                                            editor_path
+                                        } else {
+                                            base.join(UE4_EDITOR_EXE)
+                                        };
+                                        if editor_path.exists() {
+                                            let editor_path_str = editor_path.to_string_lossy().to_string();
+                                            // Deduplicate by canonicalized editor_path
+                                            let key = engine_dedup_key(&editor_path);
+                                            if !seen.contains_key(&key) {
+                                                let version = read_engine_version_from_build_file(
+                                                    &path,
+                                                    folder_name,
+                                                );
+                                                seen.insert(key, engines.len());
+                                                engines.push(EngineEntry {
+                                                    version,
+                                                    editor_path: editor_path_str,
+                                                    display_name: None,
+                                                    is_custom: false,
+                                                    id: None,
+                                                });
+                                            }
+                                        }
+                                    }
                                 }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // 2. Scan HKCU for "Builds" (GUID based association, used for custom builds and newer UE versions)
+        // Registry: HKEY_CURRENT_USER\Software\Epic Games\Unreal Engine\Builds
+        // Key: {GUID}, Value: Path to engine root
+        const REG_BUILDS: &str = r"Software\Epic Games\Unreal Engine\Builds";
+        let hkcu = RegKey::predef(HKEY_CURRENT_USER);
+        if let Ok(builds_key) = hkcu.open_subkey(REG_BUILDS) {
+            for (guid, path_val) in builds_key.enum_values().filter_map(Result::ok) {
+                let install_path_str = path_val.to_string();
+                let path = Path::new(&install_path_str);
+                if path.exists() {
+                    let base = path.join(bin64[0]).join(bin64[1]).join(bin64[2]);
+                    let editor_path = base.join(UE5_EDITOR_EXE);
+                    let editor_path = if editor_path.exists() {
+                        editor_path
+                    } else {
+                        base.join(UE4_EDITOR_EXE)
+                    };
+                    if editor_path.exists() {
+                        let editor_path_str = editor_path.to_string_lossy().to_string();
+                        // Deduplicate by canonicalized editor_path
+                        let key = engine_dedup_key(&editor_path);
+                        match seen.get(&key) {
+                            // Already added by the HKLM scan (which has no GUID).
+                            // Backfill the GUID so a project whose EngineAssociation
+                            // is this GUID can still resolve to the engine.
+                            Some(&idx) => {
+                                if engines[idx].id.is_none() {
+                                    engines[idx].id = Some(guid);
+                                }
+                            }
+                            None => {
+                                let version = read_engine_version_from_build_file(&path, "Unknown");
+                                seen.insert(key, engines.len());
+                                engines.push(EngineEntry {
+                                    version,
+                                    editor_path: editor_path_str,
+                                    display_name: None,
+                                    is_custom: true, // GUID builds are custom/source builds
+                                    id: Some(guid), // Store the GUID as the ID
+                                });
                             }
                         }
                     }

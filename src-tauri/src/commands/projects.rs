@@ -54,29 +54,42 @@ fn analyse_uproject_impl(path: String) -> Result<ProjectInfo, String> {
     let source_dir = project_dir.join("Source");
     let is_cpp = source_dir.exists();
 
-    // Match engine path from registry (project may have "5.7", engine "5.7.1")
+    // Match engine path from registry (project may have "5.7", engine "5.7.1", or a GUID)
     // Require version boundary to avoid "4" matching "41.0.0"
-    let engine_install_path = registry::discover_installed_engine_paths()
+    let installed_engines = registry::discover_installed_engine_paths()
         .ok()
-        .unwrap_or_default()
-        .into_iter()
-        .find(|e| {
-            if engine_version.is_empty() || engine_version == "Unknown" {
-                return false;
+        .unwrap_or_default();
+
+    let matched_engine = installed_engines.iter().find(|e| {
+        if engine_version.is_empty() || engine_version == "Unknown" {
+            return false;
+        }
+        // Match by GUID (id) if available
+        if let Some(id) = &e.id {
+            if id == &engine_version {
+                return true;
             }
-            e.version == engine_version
-                || (engine_version.len() <= e.version.len()
-                    && e.version.starts_with(&engine_version)
-                    && (e.version.len() == engine_version.len()
-                        || e.version.as_bytes().get(engine_version.len()) == Some(&b'.')))
-        })
-        .map(|e| e.editor_path)
+        }
+        // Match by version string
+        e.version == engine_version
+            || (engine_version.len() <= e.version.len()
+                && e.version.starts_with(&engine_version)
+                && (e.version.len() == engine_version.len()
+                    || e.version.as_bytes().get(engine_version.len()) == Some(&b'.')))
+    });
+
+    let engine_install_path = matched_engine
+        .map(|e| e.editor_path.clone())
         .unwrap_or_else(|| "Unknown".to_string());
+
+    let final_engine_version = matched_engine
+        .map(|e| e.version.clone())
+        .unwrap_or(engine_version);
 
     Ok(ProjectInfo {
         project_path: path,
         project_name,
-        engine_version,
+        engine_version: final_engine_version,
         engine_install_path,
         is_cpp,
         maps,

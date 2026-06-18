@@ -30,7 +30,7 @@ export function EnginesProvider({ children }: { children: React.ReactNode }) {
     try {
       setLoading(true);
       const registryEngines = await invoke<EngineEntry[]>('get_installed_engine_paths');
-      const disabledSet = new Set(settings.disabledEnginePaths);
+      const disabledSet = new Set(settings.disabledEnginePaths.map(p => p.toLowerCase()));
 
       const registryMapped = registryEngines.map((e) => ({
         ...e,
@@ -49,10 +49,41 @@ export function EnginesProvider({ children }: { children: React.ReactNode }) {
           id: c.id,
         }));
 
-      const allMerged = [...registryMapped, ...customEngines];
-      const filtered = allMerged.filter((e) => !disabledSet.has(e.editorPath));
+      // Deduplicate: If a custom engine has the same editorPath as a registry engine,
+      // we prefer the custom one (it might have a custom name).
+      const customPaths = new Set(customEngines.map((c) => c.editorPath.toLowerCase()));
+      const filteredRegistry = registryMapped.filter((r) => {
+        const isDuplicate = customPaths.has(r.editorPath.toLowerCase());
+        return !isDuplicate;
+      });
+
+      const allMerged = [...filteredRegistry, ...customEngines];
+
+      // Final deduplication by editorPath to ensure no duplicates at all (case-insensitive)
+      const uniqueEnginesMap = new Map<string, EngineEntry>();
+      allMerged.forEach(e => {
+        const key = e.editorPath.toLowerCase();
+        // If we already have it, prefer the one with a display name or the custom one
+        if (uniqueEnginesMap.has(key)) {
+          const existing = uniqueEnginesMap.get(key)!;
+          if (e.isCustom && !existing.isCustom) {
+            uniqueEnginesMap.set(key, e);
+          } else if (e.displayName && !existing.displayName) {
+            uniqueEnginesMap.set(key, e);
+          }
+        } else {
+          uniqueEnginesMap.set(key, e);
+        }
+      });
+
+      const deduplicatedAll = Array.from(uniqueEnginesMap.values());
+
+      const filtered = deduplicatedAll.filter((e) => {
+        // Use lowercase for case-insensitive comparison on Windows
+        return !disabledSet.has(e.editorPath.toLowerCase());
+      });
       setEngines(filtered);
-      setAllEngines(allMerged);
+      setAllEngines(deduplicatedAll);
     } catch {
       setEngines([]);
       setAllEngines([]);

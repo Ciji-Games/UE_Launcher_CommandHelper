@@ -66,13 +66,17 @@ export function SettingsPanel({ open: isOpen, onClose }: SettingsPanelProps) {
 
   const toggleEngineDisabled = useCallback(
     async (editorPath: string) => {
-      const disabled = new Set(settings.disabledEnginePaths);
-      if (disabled.has(editorPath)) {
-        disabled.delete(editorPath);
+      const lowerPath = editorPath.toLowerCase();
+      const currentDisabled = settings.disabledEnginePaths.map(p => p.toLowerCase());
+      let nextDisabled: string[];
+      
+      if (currentDisabled.includes(lowerPath)) {
+        nextDisabled = settings.disabledEnginePaths.filter(p => p.toLowerCase() !== lowerPath);
       } else {
-        disabled.add(editorPath);
+        nextDisabled = [...settings.disabledEnginePaths, editorPath];
       }
-      await setSetting('disabledEnginePaths', Array.from(disabled));
+      
+      await setSetting('disabledEnginePaths', nextDisabled);
       refreshEngines();
     },
     [settings.disabledEnginePaths, setSetting, refreshEngines]
@@ -84,7 +88,7 @@ export function SettingsPanel({ open: isOpen, onClose }: SettingsPanelProps) {
       await setSetting('customEngines', next);
       await setSetting('disabledEnginePaths', settings.disabledEnginePaths.filter((p) => {
         const eng = settings.customEngines.find((c) => c.id === id);
-        return !eng || p !== eng.editorPath;
+        return !eng || p.toLowerCase() !== eng.editorPath.toLowerCase();
       }));
       refreshEngines();
       setEditingEngineId(null);
@@ -137,6 +141,19 @@ export function SettingsPanel({ open: isOpen, onClose }: SettingsPanelProps) {
       setAddEngineError('A custom engine with this name already exists.');
       return;
     }
+    const existingPaths = new Set(settings.customEngines.map((c) => c.editorPath.toLowerCase()));
+    if (existingPaths.has(addEnginePath.toLowerCase())) {
+      setAddEngineError('This engine path is already added as a custom engine.');
+      return;
+    }
+    // Check if it's already in allEngines (registry or custom)
+    const alreadyExists = allEngines.some(e => e.editorPath.toLowerCase() === addEnginePath.toLowerCase());
+    if (alreadyExists) {
+        // If it exists but is not in customEngines, it's a registry engine.
+        // We might want to allow adding it as custom to give it a name, 
+        // but EnginesContext will deduplicate it anyway.
+        // Given the user's issue with duplicates, let's be strict or at least aware.
+    }
     const id = crypto.randomUUID();
     const newEngine: CustomEngineEntry = {
       id,
@@ -156,9 +173,15 @@ export function SettingsPanel({ open: isOpen, onClose }: SettingsPanelProps) {
   const setProjectOverride = useCallback(
     async (projectPath: string, editorPath: string) => {
       const next = { ...settings.projectEngineOverrides };
-      if (editorPath === '') {
-        delete next[projectPath];
-      } else {
+      const lowerPath = projectPath.toLowerCase();
+      // Remove any existing entry with same path (case-insensitive)
+      Object.keys(next).forEach(k => {
+        if (k.toLowerCase() === lowerPath) {
+          delete next[k];
+        }
+      });
+
+      if (editorPath !== '') {
         next[projectPath] = editorPath;
       }
       await setSetting('projectEngineOverrides', next);
@@ -259,7 +282,7 @@ export function SettingsPanel({ open: isOpen, onClose }: SettingsPanelProps) {
 
             <div className="space-y-2">
               {allEngines.map((e) => {
-                const isDisabled = settings.disabledEnginePaths.includes(e.editorPath);
+                const isDisabled = settings.disabledEnginePaths.some((p) => p.toLowerCase() === e.editorPath.toLowerCase());
                 const isCustom = e.isCustom ?? false;
                 return (
                   <div
@@ -389,7 +412,7 @@ export function SettingsPanel({ open: isOpen, onClose }: SettingsPanelProps) {
                       {p.projectName} ({p.engineVersion})
                     </span>
                     <Select
-                      value={settings.projectEngineOverrides[p.projectPath] ?? ''}
+                      value={Object.entries(settings.projectEngineOverrides).find(([path]) => path.toLowerCase() === p.projectPath.toLowerCase())?.[1] ?? ''}
                       onChange={(v) => setProjectOverride(p.projectPath, v)}
                       placeholder="Select engine"
                       options={[

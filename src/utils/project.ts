@@ -30,8 +30,13 @@ export function getProjectDisplayLabel(project: ProjectInfo): string {
  * Custom engines: "DisplayName (version)", registry: "version"
  */
 export function getEngineLabel(engine: EngineEntry): string {
-  if (engine.isCustom && engine.displayName) {
+  if (engine.displayName) {
+    // If it's a custom engine from settings, it might have a name like "My Build"
+    // If it's from HKCU builds, it might not have a name yet (displayName is None/undefined)
     return `${engine.displayName} (${engine.version})`;
+  }
+  if (engine.isCustom) {
+    return `Custom: ${engine.version}`;
   }
   return engine.version;
 }
