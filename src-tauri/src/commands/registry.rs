@@ -143,36 +143,48 @@ pub(crate) fn discover_installed_engine_paths() -> Result<Vec<EngineEntry>, Stri
             Err(_) => return Ok(vec![]), // UE not installed or registry not found
         };
 
+        // Get default engine installation directory
+        let install_dir_base: String = match base_key.get_value("INSTALLDIR") {
+            Ok(v) => v,
+            Err(_) => return Ok(vec![]),
+        };
+
         let mut engines = Vec::new();
         let bin64 = ["Engine", "Binaries", "Win64"];
-        for subkey_name in base_key.enum_keys().filter_map(Result::ok) {
-            if let Ok(sub_key) = base_key.open_subkey(&subkey_name) {
-                if let Ok(installed_dir) = sub_key.get_value::<String, _>("InstalledDirectory") {
-                    let installed_dir = installed_dir.trim();
-                    if !installed_dir.is_empty() && std::path::Path::new(installed_dir).exists() {
-                        let base = std::path::Path::new(installed_dir)
-                            .join(bin64[0])
-                            .join(bin64[1])
-                            .join(bin64[2]);
-                        // Prefer UE5 (UnrealEditor.exe), then UE4 (UE4Editor.exe)
-                        let editor_path = base.join(UE5_EDITOR_EXE);
-                        let editor_path = if editor_path.exists() {
-                            editor_path
-                        } else {
-                            base.join(UE4_EDITOR_EXE)
-                        };
-                        if editor_path.exists() {
-                            let version = read_engine_version_from_build_file(
-                                std::path::Path::new(installed_dir),
-                                &subkey_name,
-                            );
-                            engines.push(EngineEntry {
-                                version,
-                                editor_path: editor_path.to_string_lossy().to_string(),
-                                display_name: None,
-                                is_custom: false,
-                                id: None,
-                            });
+
+        let base_path = Path::new(&install_dir_base);
+        if base_path.exists() && base_path.is_dir() {
+            if let Ok(entries) = std::fs::read_dir(base_path) {
+                for entry in entries.filter_map(Result::ok) {
+                    let path = entry.path();
+                    if path.is_dir() {
+                        if let Some(folder_name) = path.file_name().and_then(|n| n.to_str()) {
+                            if folder_name.starts_with("UE_") {
+                                let base = path
+                                    .join(bin64[0])
+                                    .join(bin64[1])
+                                    .join(bin64[2]);
+                                // Prefer UE5 (UnrealEditor.exe), then UE4 (UE4Editor.exe)
+                                let editor_path = base.join(UE5_EDITOR_EXE);
+                                let editor_path = if editor_path.exists() {
+                                    editor_path
+                                } else {
+                                    base.join(UE4_EDITOR_EXE)
+                                };
+                                if editor_path.exists() {
+                                    let version = read_engine_version_from_build_file(
+                                        &path,
+                                        folder_name,
+                                    );
+                                    engines.push(EngineEntry {
+                                        version,
+                                        editor_path: editor_path.to_string_lossy().to_string(),
+                                        display_name: None,
+                                        is_custom: false,
+                                        id: None,
+                                    });
+                                }
+                            }
                         }
                     }
                 }
