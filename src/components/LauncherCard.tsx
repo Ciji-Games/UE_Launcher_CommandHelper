@@ -165,6 +165,16 @@ export function LauncherCard({ project, isEngine = false, isCustomEngine = false
     }
   };
 
+  const handleAliasReset = async () => {
+    try {
+      await onUpdateAlias?.('');
+      setAliasDraft('');
+      setEditingAlias(false);
+    } catch (e) {
+      console.error('Failed to reset project alias:', e);
+    }
+  };
+
   const displayName = project.projectAlias?.trim() || project.projectName;
 
   /* Compact engine card: same layout as non-compact but without thumbnail */
@@ -241,21 +251,35 @@ export function LauncherCard({ project, isEngine = false, isCustomEngine = false
       <div className="p-2.5 space-y-1.5">
         <div className="flex items-center justify-center gap-1 min-w-0">
           {editingAlias ? (
-            <input
-              autoFocus
-              value={aliasDraft}
-              onChange={(e) => setAliasDraft(e.target.value)}
-              onBlur={() => void handleAliasSave()}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter') void handleAliasSave();
-                if (e.key === 'Escape') {
-                  setAliasDraft(project.projectAlias ?? '');
-                  setEditingAlias(false);
-                }
-              }}
-              className="min-w-0 w-full rounded border border-sky-500/70 bg-slate-900 px-1 py-0.5 text-sm text-slate-100 text-center focus:outline-none"
-              aria-label="Project alias"
-            />
+            <div className="flex min-w-0 flex-1 items-center gap-1">
+              <input
+                autoFocus
+                value={aliasDraft}
+                onChange={(e) => setAliasDraft(e.target.value)}
+                onBlur={() => void handleAliasSave()}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') void handleAliasSave();
+                  if (e.key === 'Escape') {
+                    setAliasDraft(project.projectAlias ?? '');
+                    setEditingAlias(false);
+                  }
+                }}
+                className="min-w-0 flex-1 rounded border border-sky-500/70 bg-slate-900 px-1 py-0.5 text-sm text-slate-100 text-center focus:outline-none"
+                aria-label="Project alias"
+              />
+              <button
+                type="button"
+                onMouseDown={(e) => e.preventDefault()}
+                onClick={() => void handleAliasReset()}
+                className="shrink-0 rounded p-0.5 text-slate-500 hover:bg-slate-700 hover:text-amber-400 transition-colors"
+                title="Reset to default project name"
+                aria-label="Reset to default project name"
+              >
+                <svg xmlns="http://www.w3.org/2000/svg" className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.8} d="M4 4v5h5M20 20v-5h-5M5.5 9A7 7 0 0118 6.5L20 9M18.5 15A7 7 0 016 17.5L4 15" />
+                </svg>
+              </button>
+            </div>
           ) : (
             <h3 className="font-medium text-slate-100 truncate text-sm text-center" title={displayName}>
               {displayName}
