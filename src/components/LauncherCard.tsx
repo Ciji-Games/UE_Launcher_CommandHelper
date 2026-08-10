@@ -8,6 +8,7 @@
 import { useEffect, useState, useRef } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { convertFileSrc } from '@tauri-apps/api/core';
+import { revealItemInDir } from '@tauri-apps/plugin-opener';
 import { ASSETS } from '../config/assets';
 import type { ProjectInfo } from '../types';
 
@@ -155,6 +156,14 @@ export function LauncherCard({ project, isEngine = false, isCustomEngine = false
     onRemove?.(project.projectPath);
   };
 
+  const handleOpenProjectLocation = async () => {
+    try {
+      await revealItemInDir(project.projectPath);
+    } catch (e) {
+      console.error('Failed to open project location:', e);
+    }
+  };
+
   const handleAliasSave = async () => {
     const alias = aliasDraft.trim();
     try {
@@ -215,12 +224,12 @@ export function LauncherCard({ project, isEngine = false, isCustomEngine = false
           alt={project.projectName}
           className="absolute inset-0 w-full h-full object-cover"
         />
-        {/* Top left: trash icon (when deletable) */}
+        {/* Top right: trash icon (when deletable) */}
         {onRemove && (
           <button
             type="button"
             onClick={handleDelete}
-            className="absolute top-1.5 left-1.5 p-1 rounded-md text-slate-400 hover:text-red-400 hover:bg-slate-900/80 transition-colors"
+            className="absolute top-1.5 right-1.5 p-1 rounded-md bg-slate-900/30 text-slate-400 hover:text-red-400 hover:bg-slate-900/80 transition-colors"
             title="Remove this project from the list"
             aria-label="Remove project"
           >
@@ -229,14 +238,26 @@ export function LauncherCard({ project, isEngine = false, isCustomEngine = false
             </svg>
           </button>
         )}
-        {/* Top right: C++ icon (when C++) */}
+        {/* Top left: open project location */}
+        <button
+          type="button"
+          onClick={() => void handleOpenProjectLocation()}
+          className="absolute top-1.5 left-1.5 p-1 rounded-md bg-slate-900/30 text-slate-400 hover:text-sky-400 hover:bg-slate-900/80 transition-colors"
+          title="Open project location in File Explorer"
+          aria-label="Open project location"
+        >
+          <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" />
+          </svg>
+        </button>
+        {/* Bottom left: C++ icon (when C++) */}
         {project.isCpp && (
-          <span className="absolute top-1.5 right-1.5 p-1 rounded-md bg-slate-900/80" title="C++ project">
+          <span className="absolute bottom-1.5 left-1.5 p-1 rounded-md bg-slate-900/30" title="C++ project">
             <img src={ASSETS.cppLogo} alt="C++" className="w-4 h-4" />
           </span>
         )}
         {/* Bottom right: short engine version + custom icon */}
-        <span className="absolute bottom-1.5 right-1.5 flex items-center gap-1 px-1.5 py-0.5 rounded text-xs font-medium text-slate-300 bg-slate-900/90">
+        <span className="absolute bottom-1.5 right-1.5 flex items-center gap-1 px-1.5 py-0.5 rounded text-xs font-medium text-slate-300 bg-slate-900/30">
           {isCustomEngine && (
             <span title="Custom engine">
               <svg xmlns="http://www.w3.org/2000/svg" className="h-3.5 w-3.5 text-slate-400 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" aria-hidden>
