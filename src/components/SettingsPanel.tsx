@@ -409,7 +409,7 @@ export function SettingsPanel({ open: isOpen, onClose }: SettingsPanelProps) {
                 {projectsForOverride.map((p) => (
                   <div key={p.projectPath} className="flex items-center gap-3">
                     <span className="flex-1 min-w-0 truncate text-sm text-slate-300" title={p.projectPath}>
-                      {p.projectName} ({p.engineVersion})
+                      {p.projectAlias?.trim() || p.projectName} ({p.engineVersion})
                     </span>
                     <Select
                       value={Object.entries(settings.projectEngineOverrides).find(([path]) => path.toLowerCase() === p.projectPath.toLowerCase())?.[1] ?? ''}

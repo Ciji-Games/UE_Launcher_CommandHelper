@@ -22,7 +22,8 @@ export function getShortEngineVersion(engineVersion: string): string {
  */
 export function getProjectDisplayLabel(project: ProjectInfo): string {
   const short = getShortEngineVersion(project.engineVersion);
-  return short ? `${project.projectName} (${short})` : project.projectName;
+  const name = project.projectAlias?.trim() || project.projectName;
+  return short ? `${name} (${short})` : name;
 }
 
 /**

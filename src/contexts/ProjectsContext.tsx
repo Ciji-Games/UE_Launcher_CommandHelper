@@ -91,9 +91,10 @@ export function ProjectsProvider({ children }: { children: React.ReactNode }) {
             !existingEngineSet.has(p.engineInstallPath);
 
           try {
-            return await invoke<ProjectInfo>('analyse_uproject', {
+            const analysed = await invoke<ProjectInfo>('analyse_uproject', {
               path: p.projectPath,
             });
+            return { ...analysed, projectAlias: p.projectAlias };
           } catch {
             if (enginePathMissing) {
               return { ...p, engineInstallPath: 'Unknown' };

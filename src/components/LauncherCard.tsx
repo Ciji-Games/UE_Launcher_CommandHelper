@@ -24,15 +24,18 @@ interface LauncherCardProps {
   isEngine?: boolean;
   isCustomEngine?: boolean;
   onRemove?: (projectPath: string) => void;
+  onUpdateAlias?: (alias: string) => Promise<void>;
   ideKind?: PreferredIdeKind;
   ideExePath?: string | null;
 }
 
-export function LauncherCard({ project, isEngine = false, isCustomEngine = false, onRemove, ideKind, ideExePath }: LauncherCardProps) {
+export function LauncherCard({ project, isEngine = false, isCustomEngine = false, onRemove, onUpdateAlias, ideKind, ideExePath }: LauncherCardProps) {
   const [thumbnailSrc, setThumbnailSrc] = useState<string>(ASSETS.ueIcon);
   const [launchDisabled, setLaunchDisabled] = useState(false);
   const [dropdownOpen, setDropdownOpen] = useState(false);
   const [thumbnailReady, setThumbnailReady] = useState(isEngine);
+  const [editingAlias, setEditingAlias] = useState(false);
+  const [aliasDraft, setAliasDraft] = useState(project.projectAlias ?? '');
   const dropdownRef = useRef<HTMLDivElement>(null);
   const cardRef = useRef<HTMLDivElement>(null);
 
@@ -152,6 +155,18 @@ export function LauncherCard({ project, isEngine = false, isCustomEngine = false
     onRemove?.(project.projectPath);
   };
 
+  const handleAliasSave = async () => {
+    const alias = aliasDraft.trim();
+    try {
+      await onUpdateAlias?.(alias);
+      setEditingAlias(false);
+    } catch (e) {
+      console.error('Failed to save project alias:', e);
+    }
+  };
+
+  const displayName = project.projectAlias?.trim() || project.projectName;
+
   /* Compact engine card: same layout as non-compact but without thumbnail */
   if (isEngine) {
     return (
@@ -224,9 +239,45 @@ export function LauncherCard({ project, isEngine = false, isCustomEngine = false
       </div>
 
       <div className="p-2.5 space-y-1.5">
-        <h3 className="font-medium text-slate-100 truncate text-sm text-center" title={project.projectName}>
-          {project.projectName}
-        </h3>
+        <div className="flex items-center justify-center gap-1 min-w-0">
+          {editingAlias ? (
+            <input
+              autoFocus
+              value={aliasDraft}
+              onChange={(e) => setAliasDraft(e.target.value)}
+              onBlur={() => void handleAliasSave()}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') void handleAliasSave();
+                if (e.key === 'Escape') {
+                  setAliasDraft(project.projectAlias ?? '');
+                  setEditingAlias(false);
+                }
+              }}
+              className="min-w-0 w-full rounded border border-sky-500/70 bg-slate-900 px-1 py-0.5 text-sm text-slate-100 text-center focus:outline-none"
+              aria-label="Project alias"
+            />
+          ) : (
+            <h3 className="font-medium text-slate-100 truncate text-sm text-center" title={displayName}>
+              {displayName}
+            </h3>
+          )}
+          {onUpdateAlias && !editingAlias && (
+            <button
+              type="button"
+              onClick={() => {
+                setAliasDraft(project.projectAlias ?? '');
+                setEditingAlias(true);
+              }}
+              className="shrink-0 rounded p-0.5 text-slate-500 hover:bg-slate-700 hover:text-sky-400 transition-colors"
+              title="Edit launcher project name"
+              aria-label="Edit launcher project name"
+            >
+              <svg xmlns="http://www.w3.org/2000/svg" className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.8} d="M16.862 3.487a2.25 2.25 0 113.182 3.182L8.25 18.465 4.5 19.5l1.035-3.75L16.862 3.487z" />
+              </svg>
+            </button>
+          )}
+        </div>
 
         <div className="flex flex-col gap-1">
           {project.maps.length > 0 ? (

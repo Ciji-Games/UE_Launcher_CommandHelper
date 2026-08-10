@@ -29,6 +29,7 @@ export function LauncherTab({ onOpenSettings, onOpenSchedulerWithOutput }: Launc
     projects,
     addProject,
     removeProject,
+    updateProject,
     refresh,
     loading: projectsLoading,
     refreshing: projectsRefreshing,
@@ -149,6 +150,7 @@ export function LauncherTab({ onOpenSettings, onOpenSchedulerWithOutput }: Launc
                 key={p.projectPath}
                 project={effectiveProject}
                 onRemove={handleRemoveProject}
+                onUpdateAlias={(alias) => updateProject(p.projectPath, { projectAlias: alias || undefined })}
                 isCustomEngine={isCustomEngine}
                 ideKind={selectedIde?.kind}
                 ideExePath={selectedIde?.exe_path ?? null}

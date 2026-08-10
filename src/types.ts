@@ -5,6 +5,8 @@
 export interface ProjectInfo {
   projectPath: string;
   projectName: string;
+  /** Optional launcher-only name; backend commands continue using projectName/projectPath. */
+  projectAlias?: string;
   engineVersion: string;
   engineInstallPath: string;
   isCpp: boolean;
