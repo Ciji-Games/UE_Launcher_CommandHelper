@@ -29,6 +29,33 @@ const TOOLS = [
 
 type ToolId = (typeof TOOLS)[number]['id'];
 
+function ToolIcon({ id }: { id: ToolId }) {
+  const paths: Record<ToolId, string> = {
+    shader: 'M12 3v2m0 14v2M5.636 5.636l1.414 1.414m9.9 9.9l1.414 1.414M3 12h2m14 0h2M5.636 18.364l1.414-1.414m9.9-9.9l1.414-1.414M15.5 8.5l-1.25 3h2.25l-4 4 1.25-3h-2.25l4-4z',
+    regenerate: 'M20 11a8 8 0 00-14.9-4M4 5v4h4M4 13a8 8 0 0014.9 4M20 19v-4h-4',
+    batchcommit: 'M6 3v18m0-15h8a3 3 0 010 6H6m0 0h9a3 3 0 010 6H6',
+    umap: 'M4 6l6-3 6 3 4-2v14l-4 2-6-3-6 3-4-2V4l4 2zm6-3v14m6-11v14',
+    plugin: 'M9 7V5a3 3 0 016 0v2h2a2 2 0 012 2v2h2a3 3 0 010 6h-2v2a2 2 0 01-2 2h-2v-2a3 3 0 00-6 0v2H7a2 2 0 01-2-2v-2H3a3 3 0 010-6h2V9a2 2 0 012-2h2z',
+    uproject: 'M5 3h9l5 5v13H5V3zm9 0v5h5M8 13h8m-8 4h5',
+    movierenderqueue: 'M4 5a2 2 0 012-2h12a2 2 0 012 2v14a2 2 0 01-2 2H6a2 2 0 01-2-2V5zm0 4h16M9 3v6m6-6v6m-4 5l3 2-3 2v-4z',
+    'log-analyzer': 'M4 19V5m0 14h16M7 15l3-4 3 2 4-6',
+  };
+
+  return (
+    <svg
+      xmlns="http://www.w3.org/2000/svg"
+      className="h-4 w-4 shrink-0"
+      fill="none"
+      viewBox="0 0 24 24"
+      stroke="currentColor"
+      strokeWidth={1.5}
+      aria-hidden="true"
+    >
+      <path strokeLinecap="round" strokeLinejoin="round" d={paths[id]} />
+    </svg>
+  );
+}
+
 export function ToolBoxTab({ initialRegenerateProjectPath }: { initialRegenerateProjectPath?: string | null }) {
   const [selectedToolId, setSelectedToolId] = useState<ToolId>(TOOLS[0].id);
   const [showOutputLog, setShowOutputLog] = useState(false);
@@ -60,19 +87,20 @@ export function ToolBoxTab({ initialRegenerateProjectPath }: { initialRegenerate
         }`}
       >
         {/* Left: Vertical menu */}
-        <div className="w-44 shrink-0 flex flex-col">
+        <div className="w-60 shrink-0 flex flex-col">
           <nav className="flex flex-col gap-px rounded-lg overflow-hidden bg-slate-800/50 border border-slate-600/60">
             {TOOLS.map((tool) => (
               <button
                 key={tool.id}
                 type="button"
                 onClick={() => setSelectedToolId(tool.id)}
-                className={`px-4 py-2.5 text-left text-sm font-medium transition-colors first:rounded-t-lg last:rounded-b-lg ${
+                className={`flex items-center gap-2.5 whitespace-nowrap px-4 py-2.5 text-left text-sm font-medium transition-colors first:rounded-t-lg last:rounded-b-lg ${
                   selectedToolId === tool.id
                     ? 'bg-sky-600/60 text-sky-100'
                     : 'text-slate-400 hover:bg-slate-700/50 hover:text-slate-200'
                 }`}
               >
+                <ToolIcon id={tool.id} />
                 {tool.label}
               </button>
             ))}

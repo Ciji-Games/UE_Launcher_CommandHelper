@@ -47,6 +47,7 @@ pub fn run() {
             commands::umap::run_map_command,
             commands::umap::run_build_lighting,
             commands::uproject::run_cook,
+            commands::uproject::get_project_version,
             commands::uproject::run_package,
             commands::uproject::run_archive,
             commands::uproject::run_build,

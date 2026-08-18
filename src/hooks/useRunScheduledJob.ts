@@ -168,6 +168,8 @@ export function useRunScheduledJob() {
               clientConfig: params.config ?? 'Development',
               archiveDirectory: pkgDir,
               enginePath,
+              bumpProjectVersion: params.bumpProjectVersion ?? false,
+              projectVersion: null,
             });
           } else if (step.id === 'archive') {
             const outPath =

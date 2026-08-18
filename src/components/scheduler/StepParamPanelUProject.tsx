@@ -5,13 +5,14 @@
  * Build: project
  */
 
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { open } from '@tauri-apps/plugin-dialog';
 import { useProjects } from '../../hooks/useProjects';
 import type { ProjectInfo } from '../../types';
 import { getProjectDisplayLabel } from '../../utils/project';
 import { Select } from '../Select';
+import { previewProjectVersion } from '../../utils/projectVersion';
 
 const PLATFORMS = ['Win64', 'Linux', 'Mac'];
 const PACKAGE_CONFIGS = ['Development', 'Shipping'];
@@ -28,6 +29,8 @@ export function StepParamPanelUProject({ stepId, value, onChange }: StepParamPan
   const platform = (value.platform as string) ?? 'Win64';
   const packageConfig = (value.config as string) ?? 'Development';
   const outputPath = (value.outputPath as string) ?? (value.archiveDirectory as string) ?? '';
+  const bumpProjectVersion = (value.bumpProjectVersion as boolean) ?? false;
+  const [projectVersion, setProjectVersion] = useState('');
 
   const prevProjectRef = useRef<string | null>(null);
 
@@ -42,6 +45,17 @@ export function StepParamPanelUProject({ stepId, value, onChange }: StepParamPan
     const sep = Math.max(projectPath.lastIndexOf('/'), projectPath.lastIndexOf('\\'));
     const projectDir = sep >= 0 ? projectPath.slice(0, sep) : projectPath;
     onChange({ ...value, outputPath: `${projectDir}/Saved/StagedBuilds` });
+  }, [projectPath, stepId]);
+
+  useEffect(() => {
+    if (!projectPath || stepId !== 'package') {
+      setProjectVersion('');
+      return;
+    }
+    setProjectVersion('');
+    void invoke<string>('get_project_version', { projectPath })
+      .then(setProjectVersion)
+      .catch(() => setProjectVersion(''));
   }, [projectPath, stepId]);
 
   const handleProjectChange = async (v: string) => {
@@ -109,6 +123,22 @@ export function StepParamPanelUProject({ stepId, value, onChange }: StepParamPan
               disabled={!projectPath}
               options={PACKAGE_CONFIGS.map((c) => ({ value: c, label: c }))}
             />
+          </div>
+          <div className="rounded-lg border border-slate-600/60 bg-slate-700/30 p-3 space-y-2">
+            <label className="flex items-center gap-2 text-slate-300 text-sm cursor-pointer">
+              <input
+                type="checkbox"
+                checked={bumpProjectVersion}
+                onChange={(e) => onChange({ ...value, bumpProjectVersion: e.target.checked })}
+                disabled={!projectPath}
+                className="rounded border-slate-600 bg-slate-700 text-sky-500 focus:ring-sky-500/50"
+              />
+              Bump project version before packaging
+            </label>
+            <div className="text-sm text-slate-400">Current version: <span className="text-slate-200">{projectVersion || 'Unavailable'}</span></div>
+            {bumpProjectVersion && (
+              <div>Next run version: <span className="text-slate-200">{projectVersion ? previewProjectVersion(projectVersion) : 'Unavailable'}</span></div>
+            )}
           </div>
           <div>
             <label className="block text-sm text-slate-300 mb-1">Output path</label>

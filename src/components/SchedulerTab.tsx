@@ -147,7 +147,17 @@ export function SchedulerTab({ outputOpenSignal = 0 }: SchedulerTabProps) {
 
   const handleSave = async () => {
     if (!editingJob) return;
-    await updateJob(editingJob.id, editingJob);
+    const jobToSave: ScheduledJob = {
+      ...editingJob,
+      steps: editingJob.steps.map((step) => {
+        if (step.id !== 'package') return step;
+        const { projectVersion, newProjectVersion, ...params } = step.params;
+        void projectVersion;
+        void newProjectVersion;
+        return { ...step, params };
+      }),
+    };
+    await updateJob(editingJob.id, jobToSave);
     setEditingJob(null);
   };
 

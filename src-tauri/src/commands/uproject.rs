@@ -1,7 +1,8 @@
 //! UProject Helper - Cook, Package (BuildCookRun), Build (Compile only).
 //! Step 13: Cook Content, Package, Build commands.
 
-use std::path::Path;
+use std::fs;
+use std::path::{Path, PathBuf};
 
 use tauri::AppHandle;
 
@@ -30,6 +31,80 @@ fn platform_for_cook(platform: &str) -> &str {
         "Win64" => "Windows",
         _ => platform,
     }
+}
+
+fn default_game_ini_path(project_path: &str) -> Result<PathBuf, String> {
+    let project_dir = Path::new(project_path)
+        .parent()
+        .ok_or("Could not resolve project directory")?;
+    Ok(project_dir.join("Config").join("DefaultGame.ini"))
+}
+
+fn project_version_from_ini(contents: &str) -> Option<String> {
+    contents.lines().find_map(|line| {
+        let trimmed = line.trim();
+        let value = trimmed.strip_prefix("ProjectVersion=")?;
+        let version = value.trim();
+        (!version.is_empty()).then(|| version.to_string())
+    })
+}
+
+fn next_project_version(version: &str) -> Result<String, String> {
+    let parts: Vec<&str> = version.trim().split('.').collect();
+    if parts.len() != 3 || parts.iter().any(|part| part.is_empty() || !part.chars().all(|c| c.is_ascii_digit())) {
+        return Err(format!("ProjectVersion must use major.minor.patch format, got '{}'.", version.trim()));
+    }
+    let patch = parts[2]
+        .parse::<u32>()
+        .map_err(|_| format!("ProjectVersion patch is too large: {}", parts[2]))?
+        .checked_add(1)
+        .ok_or("ProjectVersion patch cannot be incremented")?;
+    Ok(format!("{}.{}.{}", parts[0], parts[1], patch))
+}
+
+fn replace_project_version(contents: &str, version: &str) -> Result<String, String> {
+    let mut replaced = false;
+    let mut output = String::with_capacity(contents.len() + version.len());
+    for line in contents.split_inclusive('\n') {
+        let line_without_newline = line.trim_end_matches(['\r', '\n']);
+        if !replaced && line_without_newline.trim().starts_with("ProjectVersion=") {
+            let prefix = &line[line_without_newline.len()..];
+            let indentation = &line_without_newline[..line_without_newline.len() - line_without_newline.trim_start().len()];
+            output.push_str(indentation);
+            output.push_str("ProjectVersion=");
+            output.push_str(version);
+            output.push_str(prefix);
+            replaced = true;
+        } else {
+            output.push_str(line);
+        }
+    }
+    if replaced {
+        Ok(output)
+    } else {
+        Err("DefaultGame.ini does not contain ProjectVersion".to_string())
+    }
+}
+
+#[tauri::command]
+pub fn get_project_version(project_path: String) -> Result<String, String> {
+    let ini_path = default_game_ini_path(&project_path)?;
+    let contents = fs::read_to_string(&ini_path)
+        .map_err(|e| format!("Could not read {}: {}", ini_path.display(), e))?;
+    project_version_from_ini(&contents)
+        .ok_or_else(|| format!("ProjectVersion not found in {}", ini_path.display()))
+}
+
+fn update_project_version(project_path: &str, version: &str) -> Result<(), String> {
+    if version.trim().is_empty() {
+        return Err("New project version cannot be empty".to_string());
+    }
+    let ini_path = default_game_ini_path(project_path)?;
+    let contents = fs::read_to_string(&ini_path)
+        .map_err(|e| format!("Could not read {}: {}", ini_path.display(), e))?;
+    let updated = replace_project_version(&contents, version.trim())?;
+    fs::write(&ini_path, updated)
+        .map_err(|e| format!("Could not update {}: {}", ini_path.display(), e))
 }
 
 /// Cook content: UnrealEditor-Cmd.exe "project.uproject" -run=cook -targetplatform=Windows -iterate -unattended -log
@@ -237,6 +312,8 @@ pub async fn run_package(
     client_config: String,
     archive_directory: String,
     engine_path: String,
+    bump_project_version: bool,
+    project_version: Option<String>,
     app: AppHandle,
 ) -> Result<(), String> {
     if monitor::has_blocking_processes("uproject".to_string())? {
@@ -264,6 +341,20 @@ pub async fn run_package(
         .to_str()
         .ok_or("Invalid BatchFiles path")?
         .to_string();
+
+    if bump_project_version {
+        let current_version = get_project_version(project_path.clone())?;
+        let version = match project_version.as_deref() {
+            Some(version) => version.trim().to_string(),
+            None => next_project_version(&current_version)?,
+        };
+        update_project_version(&project_path, &version)?;
+        stream_processor::emit_log(
+            &app,
+            &format!("Updated ProjectVersion from {} to {} before packaging", current_version, version),
+            Some("blue"),
+        );
+    }
 
     let args = vec![
         "BuildCookRun".to_string(),
@@ -523,4 +614,41 @@ pub async fn run_build(
     .map_err(|e| e.to_string())?;
 
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{next_project_version, project_version_from_ini, replace_project_version};
+
+    #[test]
+    fn reads_project_version_from_default_game_ini() {
+        assert_eq!(
+            project_version_from_ini("[/Script/EngineSettings.GeneralProjectSettings]\r\nProjectVersion=1.2.3\r\n"),
+            Some("1.2.3".to_string())
+        );
+    }
+
+    #[test]
+    fn replaces_project_version_preserving_line_endings() {
+        let contents = "ProjectVersion=1.2.3\r\nOtherSetting=True\r\n";
+        assert_eq!(
+            replace_project_version(contents, "1.2.4").unwrap(),
+            "ProjectVersion=1.2.4\r\nOtherSetting=True\r\n"
+        );
+    }
+
+    #[test]
+    fn rejects_ini_without_project_version() {
+        assert!(replace_project_version("[/Script/EngineSettings.GeneralProjectSettings]\n", "1.0.0").is_err());
+    }
+
+    #[test]
+    fn increments_project_version_patch() {
+        assert_eq!(next_project_version("1.2.9").unwrap(), "1.2.10");
+    }
+
+    #[test]
+    fn rejects_non_semver_project_version() {
+        assert!(next_project_version("1.2").is_err());
+    }
 }

@@ -15,6 +15,7 @@ import { ToolGroup } from './ToolGroup';
 import { Select } from './Select';
 import type { ProjectInfo } from '../types';
 import { getProjectDisplayLabel } from '../utils/project';
+import { previewProjectVersion } from '../utils/projectVersion';
 
 const UPROJECT_PROCESS_GROUP = 'uproject';
 const PLATFORMS = ['Win64', 'Linux', 'Mac'];
@@ -36,6 +37,9 @@ export function UProjectHelperPanel() {
   const [autocheckout, setAutocheckout] = useState(false);
   const [projectOnly, setProjectOnly] = useState(true);
   const [autocheckin, setAutocheckin] = useState(false);
+  const [bumpProjectVersion, setBumpProjectVersion] = useState(false);
+  const [projectVersion, setProjectVersion] = useState('');
+  const [newProjectVersion, setNewProjectVersion] = useState('');
 
   const selectedProject = projects.find((p) => p.projectPath === selectedProjectPath);
   const effectiveEnginePath =
@@ -56,6 +60,23 @@ export function UProjectHelperPanel() {
     const sep = lastSlash > backslash ? lastSlash : backslash;
     const projectDir = sep >= 0 ? selectedProjectPath.slice(0, sep) : selectedProjectPath;
     setOutputPath(`${projectDir}/Saved/StagedBuilds`);
+  }, [selectedProjectPath]);
+
+  useEffect(() => {
+    if (!selectedProjectPath) {
+      setProjectVersion('');
+      setNewProjectVersion('');
+      return;
+    }
+    void invoke<string>('get_project_version', { projectPath: selectedProjectPath })
+      .then((version) => {
+        setProjectVersion(version);
+        setNewProjectVersion(previewProjectVersion(version));
+      })
+      .catch(() => {
+        setProjectVersion('Unavailable');
+        setNewProjectVersion('');
+      });
   }, [selectedProjectPath]);
 
   const handleProjectChange = async (value: string) => {
@@ -157,6 +178,8 @@ export function UProjectHelperPanel() {
         clientConfig: packageConfig,
         archiveDirectory: pkgDir,
         enginePath,
+        bumpProjectVersion,
+        projectVersion: bumpProjectVersion ? newProjectVersion : null,
       });
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
@@ -278,6 +301,35 @@ export function UProjectHelperPanel() {
               { value: '__browse__', label: 'Browse new project...' },
             ]}
           />
+        </div>
+
+        <div className="rounded-lg border border-slate-600/60 bg-slate-700/30 p-3 space-y-2">
+          <label className="flex items-center gap-2 text-slate-300 text-sm cursor-pointer">
+            <input
+              type="checkbox"
+              checked={bumpProjectVersion}
+              onChange={(e) => setBumpProjectVersion(e.target.checked)}
+              disabled={!selectedProjectPath}
+              className="rounded border-slate-600 bg-slate-700 text-sky-500 focus:ring-sky-500/50"
+            />
+            Bump project version before packaging
+          </label>
+          {selectedProjectPath && (
+            <div className="text-sm text-slate-400">
+              <div>Current version: <span className="text-slate-200">{projectVersion || 'Reading...'}</span></div>
+              {bumpProjectVersion && (
+                <label className="flex items-center gap-2 mt-2">
+                  New version:
+                  <input
+                    type="text"
+                    value={newProjectVersion}
+                    onChange={(e) => setNewProjectVersion(e.target.value)}
+                    className="flex-1 rounded-md bg-slate-700/50 border border-slate-600 text-slate-100 px-2 py-1 focus:border-sky-500 focus:outline-none"
+                  />
+                </label>
+              )}
+            </div>
+          )}
         </div>
 
         <div className="grid grid-cols-2 gap-3">
