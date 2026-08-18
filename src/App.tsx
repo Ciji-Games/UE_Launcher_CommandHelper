@@ -52,12 +52,16 @@ function App() {
   const [schedulerOutputOpenSignal, setSchedulerOutputOpenSignal] = useState(0);
   const [quickRegenerateProjectPath, setQuickRegenerateProjectPath] = useState<string | null>(null);
   const [updateInfo, setUpdateInfo] = useState<UpdateInfo | null>(null);
+  const [updatePromptOpen, setUpdatePromptOpen] = useState(false);
   const [updateStatus, setUpdateStatus] = useState<'idle' | 'installing' | 'failed'>('idle');
   const [updateProgress, setUpdateProgress] = useState<number | null>(null);
   const [updateError, setUpdateError] = useState<string | null>(null);
 
   useEffect(() => {
-    void checkForUpdate(__APP_VERSION__).then(setUpdateInfo);
+    void checkForUpdate(__APP_VERSION__).then((info) => {
+      setUpdateInfo(info);
+      setUpdatePromptOpen(Boolean(info));
+    });
   }, []);
 
   const openSchedulerWithOutput = () => {
@@ -129,45 +133,18 @@ function App() {
                 ))}
                 <div className="ml-auto flex items-center gap-2">
                   {updateInfo && (
-                    <div className="flex items-center gap-2 text-xs">
-                      <span className="text-slate-300">v{updateInfo.version} available</span>
-                      {updateInfo.update && updateStatus !== 'failed' ? (
-                        <>
-                          <button
-                            type="button"
-                            onClick={() => void handleInstallUpdate()}
-                            disabled={updateStatus === 'installing'}
-                            className="rounded-full bg-sky-500 px-2.5 py-1 font-medium text-slate-950 shadow-sm transition-colors hover:bg-sky-400 disabled:cursor-wait disabled:opacity-60"
-                          >
-                            {updateStatus === 'installing'
-                              ? updateProgress === null
-                                ? 'Installing…'
-                                : `Installing ${updateProgress}%`
-                              : 'Install update'}
-                          </button>
-                          {updateStatus !== 'installing' && (
-                            <button type="button" onClick={() => setUpdateInfo(null)} className="text-slate-400 hover:text-slate-200">
-                              Later
-                            </button>
-                          )}
-                        </>
-                      ) : (
-                        <button
-                          type="button"
-                          onClick={async () => {
-                            try {
-                              await openUrl(updateInfo.url);
-                            } catch (error) {
-                              console.error('Failed to open update page:', error);
-                            }
-                          }}
-                          className="rounded-full bg-sky-500 px-2.5 py-1 font-medium text-slate-950 shadow-sm transition-colors hover:bg-sky-400"
-                        >
-                          Open release page
-                        </button>
-                      )}
-                      {updateError && <span className="max-w-48 truncate text-red-400" title={updateError}>{updateError}</span>}
-                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setUpdatePromptOpen(true)}
+                      className="flex items-center gap-1.5 rounded-full bg-sky-500 px-2.5 py-1 text-xs font-medium text-slate-950 shadow-sm transition-colors hover:bg-sky-400"
+                      title={`Update v${updateInfo.version} available`}
+                      aria-label={`Open update prompt for version ${updateInfo.version}`}
+                    >
+                      <span>v{updateInfo.version} available</span>
+                      <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M12 3v12m0 0l4-4m-4 4l-4-4M5 21h14" />
+                      </svg>
+                    </button>
                   )}
                   <span className="text-xs text-slate-500" title="App version">
                     v{__APP_VERSION__}
@@ -245,6 +222,58 @@ function App() {
             </div>
           </BaseLayout>
           <SettingsPanel open={settingsOpen} onClose={() => setSettingsOpen(false)} />
+          {updateInfo && updatePromptOpen && (
+            <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/60 p-4">
+              <div className="w-full max-w-sm rounded-xl border border-slate-700 bg-slate-900 p-5 shadow-2xl">
+                <div className="flex items-start justify-between gap-4">
+                  <div>
+                    <h2 className="text-base font-semibold text-slate-100">Update available</h2>
+                    <p className="mt-1 text-sm text-slate-400">Version {updateInfo.version} is ready to install.</p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setUpdatePromptOpen(false)}
+                    className="text-slate-500 hover:text-slate-200"
+                    aria-label="Close update prompt"
+                  >
+                    <span aria-hidden="true">×</span>
+                  </button>
+                </div>
+                {updateError && <p className="mt-3 text-xs text-red-400">{updateError}</p>}
+                <div className="mt-5 flex justify-end gap-3">
+                  <button
+                    type="button"
+                    onClick={() => setUpdatePromptOpen(false)}
+                    disabled={updateStatus === 'installing'}
+                    className="rounded px-3 py-2 text-sm text-slate-400 hover:bg-slate-800 hover:text-slate-200 disabled:opacity-60"
+                  >
+                    Later
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (updateInfo.update) {
+                        void handleInstallUpdate();
+                      } else {
+                        void openUrl(updateInfo.url).catch((error) => console.error('Failed to open update page:', error));
+                        setUpdatePromptOpen(false);
+                      }
+                    }}
+                    disabled={updateStatus === 'installing'}
+                    className="rounded bg-sky-500 px-3 py-2 text-sm font-medium text-slate-950 hover:bg-sky-400 disabled:cursor-wait disabled:opacity-60"
+                  >
+                    {updateInfo.update
+                      ? updateStatus === 'installing'
+                        ? updateProgress === null
+                          ? 'Installing…'
+                          : `Installing ${updateProgress}%`
+                        : 'Install update'
+                      : 'Open release page'}
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
         </ProgressProvider>
       </LogProvider>
       </EnginesProvider>
