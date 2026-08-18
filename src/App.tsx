@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { openUrl } from '@tauri-apps/plugin-opener';
 import { BaseLayout } from './components/BaseLayout';
 import { LauncherTab } from './components/LauncherTab';
@@ -13,6 +13,7 @@ import { EnginesProvider } from './contexts/EnginesContext';
 import { SettingsProvider } from './contexts/SettingsContext';
 import IdeProvider from './contexts/IdeContext';
 import { SettingsPanel } from './components/SettingsPanel';
+import { checkForUpdate, type UpdateInfo } from './utils/updateCheck';
 
 const TAB_ICONS = {
   launcher: (
@@ -49,6 +50,11 @@ function App() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [schedulerOutputOpenSignal, setSchedulerOutputOpenSignal] = useState(0);
   const [quickRegenerateProjectPath, setQuickRegenerateProjectPath] = useState<string | null>(null);
+  const [updateInfo, setUpdateInfo] = useState<UpdateInfo | null>(null);
+
+  useEffect(() => {
+    void checkForUpdate(__APP_VERSION__).then(setUpdateInfo);
+  }, []);
 
   const openSchedulerWithOutput = () => {
     setActiveTab('scheduler');
@@ -88,6 +94,26 @@ function App() {
                   </button>
                 ))}
                 <div className="ml-auto flex items-center gap-2">
+                  {updateInfo && (
+                    <button
+                      type="button"
+                      onClick={async () => {
+                        try {
+                          await openUrl(updateInfo.url);
+                        } catch (e) {
+                          console.error('Failed to open update page:', e);
+                        }
+                      }}
+                      className="inline-flex items-center gap-1 rounded-full bg-sky-500 px-2.5 py-1 text-xs font-medium text-slate-950 shadow-sm transition-colors hover:bg-sky-400"
+                      title={`Open release ${updateInfo.tag} to download the update`}
+                      aria-label={`Open release ${updateInfo.tag} to download the update`}
+                    >
+                      <svg xmlns="http://www.w3.org/2000/svg" className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M12 3v12m0 0l4-4m-4 4l-4-4M5 21h14" />
+                      </svg>
+                      Update available
+                    </button>
+                  )}
                   <span className="text-xs text-slate-500" title="App version">
                     v{__APP_VERSION__}
                   </span>
