@@ -72,6 +72,25 @@ npm run tauri build
 
 Build output: `Build/release/bundle/msi/` (or `target/release/bundle/` depending on `CARGO_TARGET_DIR`).
 
+## In-app updates
+
+The Windows application checks GitHub Releases when it starts and can download and install a signed update through the Tauri updater. If updater metadata or signing is unavailable, the existing release-page action remains available as a manual fallback.
+
+### Release signing setup
+
+Maintainers must create a Tauri updater key pair outside this repository:
+
+```powershell
+npx tauri signer generate -w "$env:USERPROFILE\.tauri\ue-launcher.key"
+```
+
+Copy the generated public key into `src-tauri/tauri.conf.json` as the updater `pubkey`. Never commit the private key. Add these repository secrets under **Settings → Secrets and variables → Actions**:
+
+- `TAURI_SIGNING_PRIVATE_KEY` — the complete private key file contents
+- `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` — the password used when generating the key
+
+The release workflow publishes `latest.json`, a signed NSIS `-setup.exe`, and the MSI installer under the existing `app-vX.Y.Z` release tag. The first release after enabling updates must be published only after the public key and both GitHub secrets are configured.
+
 ## License
 
 Polyform Noncommercial 1.0.0 — use allowed for non-commercial purposes only. See [LICENSE](LICENSE) for details.

@@ -1,3 +1,5 @@
+import { check, type Update } from '@tauri-apps/plugin-updater';
+
 const LATEST_RELEASE_URL = 'https://api.github.com/repos/Ciji-Games/UE_Launcher_CommandHelper/releases/latest';
 const RELEASE_PAGE_URL = 'https://github.com/Ciji-Games/UE_Launcher_CommandHelper/releases/tag';
 
@@ -10,6 +12,9 @@ export interface AppVersion {
 export interface UpdateInfo {
   tag: string;
   url: string;
+  version: string;
+  notes?: string;
+  update?: Update;
 }
 
 export function parseAppVersion(version: string): AppVersion | null {
@@ -51,6 +56,22 @@ export async function checkForUpdate(currentVersion: string): Promise<UpdateInfo
   }
 
   try {
+    const updaterResult = await check();
+    if (updaterResult) {
+      return {
+        tag: `app-v${updaterResult.version}`,
+        url: `${RELEASE_PAGE_URL}/app-v${updaterResult.version}`,
+        version: updaterResult.version,
+        notes: updaterResult.body ?? undefined,
+        update: updaterResult,
+      };
+    }
+    return null;
+  } catch (updaterError) {
+    console.warn('Signed updater check unavailable; using release-page fallback:', updaterError);
+  }
+
+  try {
     const response = await fetch(LATEST_RELEASE_URL, {
       headers: { Accept: 'application/vnd.github+json' },
     });
@@ -71,6 +92,7 @@ export async function checkForUpdate(currentVersion: string): Promise<UpdateInfo
     return {
       tag: metadata.tag_name,
       url: `${RELEASE_PAGE_URL}/${metadata.tag_name}`,
+      version: `${remoteVersion.major}.${remoteVersion.minor}.${remoteVersion.patch}`,
     };
   } catch (error) {
     console.error('Failed to check for updates:', error);

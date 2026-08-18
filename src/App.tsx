@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { openUrl } from '@tauri-apps/plugin-opener';
+import { relaunch } from '@tauri-apps/plugin-process';
 import { BaseLayout } from './components/BaseLayout';
 import { LauncherTab } from './components/LauncherTab';
 import { ToolBoxTab } from './components/ToolBoxTab';
@@ -51,6 +52,9 @@ function App() {
   const [schedulerOutputOpenSignal, setSchedulerOutputOpenSignal] = useState(0);
   const [quickRegenerateProjectPath, setQuickRegenerateProjectPath] = useState<string | null>(null);
   const [updateInfo, setUpdateInfo] = useState<UpdateInfo | null>(null);
+  const [updateStatus, setUpdateStatus] = useState<'idle' | 'installing' | 'failed'>('idle');
+  const [updateProgress, setUpdateProgress] = useState<number | null>(null);
+  const [updateError, setUpdateError] = useState<string | null>(null);
 
   useEffect(() => {
     void checkForUpdate(__APP_VERSION__).then(setUpdateInfo);
@@ -64,6 +68,36 @@ function App() {
   const openQuickRegenerate = (projectPath: string) => {
     setQuickRegenerateProjectPath(projectPath);
     setActiveTab('toolbox');
+  };
+
+  const handleInstallUpdate = async () => {
+    if (!updateInfo?.update || updateStatus === 'installing') {
+      return;
+    }
+
+    setUpdateStatus('installing');
+    setUpdateError(null);
+    setUpdateProgress(null);
+
+    try {
+      let downloaded = 0;
+      let contentLength = 0;
+      await updateInfo.update.downloadAndInstall((event) => {
+        if (event.event === 'Started') {
+          contentLength = event.data.contentLength ?? 0;
+        } else if (event.event === 'Progress') {
+          downloaded += event.data.chunkLength;
+          if (contentLength > 0) {
+            setUpdateProgress(Math.min(100, Math.round((downloaded / contentLength) * 100)));
+          }
+        }
+      });
+      await relaunch();
+    } catch (error) {
+      console.error('Failed to install update:', error);
+      setUpdateStatus('failed');
+      setUpdateError(error instanceof Error ? error.message : 'The update could not be installed.');
+    }
   };
 
   return (
@@ -95,24 +129,45 @@ function App() {
                 ))}
                 <div className="ml-auto flex items-center gap-2">
                   {updateInfo && (
-                    <button
-                      type="button"
-                      onClick={async () => {
-                        try {
-                          await openUrl(updateInfo.url);
-                        } catch (e) {
-                          console.error('Failed to open update page:', e);
-                        }
-                      }}
-                      className="inline-flex items-center gap-1 rounded-full bg-sky-500 px-2.5 py-1 text-xs font-medium text-slate-950 shadow-sm transition-colors hover:bg-sky-400"
-                      title={`Open release ${updateInfo.tag} to download the update`}
-                      aria-label={`Open release ${updateInfo.tag} to download the update`}
-                    >
-                      <svg xmlns="http://www.w3.org/2000/svg" className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                        <path strokeLinecap="round" strokeLinejoin="round" d="M12 3v12m0 0l4-4m-4 4l-4-4M5 21h14" />
-                      </svg>
-                      Update available
-                    </button>
+                    <div className="flex items-center gap-2 text-xs">
+                      <span className="text-slate-300">v{updateInfo.version} available</span>
+                      {updateInfo.update && updateStatus !== 'failed' ? (
+                        <>
+                          <button
+                            type="button"
+                            onClick={() => void handleInstallUpdate()}
+                            disabled={updateStatus === 'installing'}
+                            className="rounded-full bg-sky-500 px-2.5 py-1 font-medium text-slate-950 shadow-sm transition-colors hover:bg-sky-400 disabled:cursor-wait disabled:opacity-60"
+                          >
+                            {updateStatus === 'installing'
+                              ? updateProgress === null
+                                ? 'Installing…'
+                                : `Installing ${updateProgress}%`
+                              : 'Install update'}
+                          </button>
+                          {updateStatus !== 'installing' && (
+                            <button type="button" onClick={() => setUpdateInfo(null)} className="text-slate-400 hover:text-slate-200">
+                              Later
+                            </button>
+                          )}
+                        </>
+                      ) : (
+                        <button
+                          type="button"
+                          onClick={async () => {
+                            try {
+                              await openUrl(updateInfo.url);
+                            } catch (error) {
+                              console.error('Failed to open update page:', error);
+                            }
+                          }}
+                          className="rounded-full bg-sky-500 px-2.5 py-1 font-medium text-slate-950 shadow-sm transition-colors hover:bg-sky-400"
+                        >
+                          Open release page
+                        </button>
+                      )}
+                      {updateError && <span className="max-w-48 truncate text-red-400" title={updateError}>{updateError}</span>}
+                    </div>
                   )}
                   <span className="text-xs text-slate-500" title="App version">
                     v{__APP_VERSION__}

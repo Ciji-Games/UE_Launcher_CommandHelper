@@ -8,6 +8,8 @@
     "dialog:default",
     "store:default",
     "opener:default",
-    "notification:default"
+    "process:default",
+    "notification:default",
+    "updater:default"
   ]
 }
