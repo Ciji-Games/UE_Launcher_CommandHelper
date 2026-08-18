@@ -84,7 +84,28 @@ Maintainers must create a Tauri updater key pair outside this repository:
 npx tauri signer generate -w "$env:USERPROFILE\.tauri\ue-launcher.key"
 ```
 
-Copy the generated public key into `src-tauri/tauri.conf.json` as the updater `pubkey`. Never commit the private key. Add these repository secrets under **Settings → Secrets and variables → Actions**:
+The private key is encoded text, so a value ending in `==` is normal Base64 padding. Do not remove it or otherwise edit the key. `TAURI_SIGNING_PRIVATE_KEY` must contain the complete contents of the private-key file, including all encoded key data, but not shell quotes, a variable name, or a `-----BEGIN`/`-----END` label. Keep the private key out of source control.
+
+`TAURI_SIGNING_PRIVATE_KEY_PASSWORD` must be exactly the password entered during key generation. Preserve capitalization and symbols, but do not copy accidental leading/trailing spaces, newlines, or quotation marks. The public key in `src-tauri/tauri.conf.json`, the private-key file, and this password are one signing pair; values from different generations will not work together.
+
+Before changing GitHub secrets, test the same pair locally. This PowerShell example reads the key file and prompts for the password without printing either value:
+
+```powershell
+$keyPath = "$env:USERPROFILE\.tauri\ue-launcher.key"
+$env:TAURI_SIGNING_PRIVATE_KEY = Get-Content -Raw $keyPath
+$env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD = Read-Host "Signing password"
+
+npx tauri build --bundles nsis
+
+Remove-Item Env:TAURI_SIGNING_PRIVATE_KEY
+Remove-Item Env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD
+```
+
+A matching key and password pass the signing stage and produce a signed NSIS setup executable. `Wrong password for that key` confirms that the password is wrong for that private key, or that the key contents were copied incorrectly. Do not print either environment variable or add diagnostic output to the release workflow.
+
+Compare the generated `.pub` file with the `pubkey` value in `src-tauri/tauri.conf.json`; they must be the public key from the same generation. If the original password cannot be recovered, generate a new pair, replace the configured `pubkey`, and replace both GitHub secrets together. Existing installations may need one manual update from the release page after changing the public key because they still trust the old key.
+
+After local validation, add or replace these repository secrets under **Settings → Secrets and variables → Actions**:
 
 - `TAURI_SIGNING_PRIVATE_KEY` — the complete private key file contents
 - `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` — the password used when generating the key
