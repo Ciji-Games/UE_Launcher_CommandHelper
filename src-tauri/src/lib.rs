@@ -31,6 +31,8 @@ pub fn run() {
             commands::ide_detection::detect_sln_ide,
             commands::ide_detection::list_installed_ides,
             commands::process::open_file,
+            commands::process::get_project_folder_availability,
+            commands::process::open_project_folder,
             commands::process::open_uproject_with_rider,
             commands::process::launch_ide_for_project,
             commands::process::launch_project_with_map,

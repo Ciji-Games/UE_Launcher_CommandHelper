@@ -22,9 +22,10 @@ import type { ProjectInfo, EngineEntry } from '../types';
 interface LauncherTabProps {
   onOpenSettings?: () => void;
   onOpenSchedulerWithOutput?: () => void;
+  onQuickRegenerate?: (projectPath: string) => void;
 }
 
-export function LauncherTab({ onOpenSettings, onOpenSchedulerWithOutput }: LauncherTabProps) {
+export function LauncherTab({ onOpenSettings, onOpenSchedulerWithOutput, onQuickRegenerate }: LauncherTabProps) {
   const {
     projects,
     addProject,
@@ -151,6 +152,7 @@ export function LauncherTab({ onOpenSettings, onOpenSchedulerWithOutput }: Launc
                 project={effectiveProject}
                 onRemove={handleRemoveProject}
                 onUpdateAlias={(alias) => updateProject(p.projectPath, { projectAlias: alias || undefined })}
+                onQuickRegenerate={onQuickRegenerate}
                 isCustomEngine={isCustomEngine}
                 ideKind={selectedIde?.kind}
                 ideExePath={selectedIde?.exe_path ?? null}

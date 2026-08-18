@@ -29,7 +29,7 @@ const TOOLS = [
 
 type ToolId = (typeof TOOLS)[number]['id'];
 
-export function ToolBoxTab() {
+export function ToolBoxTab({ initialRegenerateProjectPath }: { initialRegenerateProjectPath?: string | null }) {
   const [selectedToolId, setSelectedToolId] = useState<ToolId>(TOOLS[0].id);
   const [showOutputLog, setShowOutputLog] = useState(false);
   const { running, shouldOpenOutputLog } = useProgress();
@@ -45,6 +45,10 @@ export function ToolBoxTab() {
   const openLogAnalyzer = useCallback(() => {
     setSelectedToolId('log-analyzer');
   }, []);
+
+  useEffect(() => {
+    if (initialRegenerateProjectPath) setSelectedToolId('regenerate');
+  }, [initialRegenerateProjectPath]);
 
   return (
     <LogAnalyzerImportProvider onOpenAnalyzer={openLogAnalyzer}>
@@ -81,7 +85,7 @@ export function ToolBoxTab() {
             contentOverflow === 'hidden' ? 'overflow-hidden' : 'overflow-y-auto'
           }`}
         >
-          <SelectedPanel />
+          {selectedToolId === 'regenerate' ? <RegenerateProjectPanel initialSelectedPath={initialRegenerateProjectPath} /> : <SelectedPanel />}
         </div>
       </div>
 

@@ -48,10 +48,16 @@ function App() {
   const [activeTab, setActiveTab] = useState<'launcher' | 'toolbox' | 'scheduler' | 'links'>('launcher');
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [schedulerOutputOpenSignal, setSchedulerOutputOpenSignal] = useState(0);
+  const [quickRegenerateProjectPath, setQuickRegenerateProjectPath] = useState<string | null>(null);
 
   const openSchedulerWithOutput = () => {
     setActiveTab('scheduler');
     setSchedulerOutputOpenSignal((prev) => prev + 1);
+  };
+
+  const openQuickRegenerate = (projectPath: string) => {
+    setQuickRegenerateProjectPath(projectPath);
+    setActiveTab('toolbox');
   };
 
   return (
@@ -140,11 +146,12 @@ function App() {
                   <LauncherTab
                     onOpenSettings={() => setSettingsOpen(true)}
                     onOpenSchedulerWithOutput={openSchedulerWithOutput}
+                    onQuickRegenerate={openQuickRegenerate}
                   />
                 )}
                 {activeTab === 'toolbox' && (
                   <div className="flex min-h-0 flex-1 flex-col">
-                    <ToolBoxTab />
+                    <ToolBoxTab initialRegenerateProjectPath={quickRegenerateProjectPath} />
                   </div>
                 )}
                 {activeTab === 'scheduler' && (

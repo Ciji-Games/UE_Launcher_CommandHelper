@@ -3,7 +3,7 @@
  * Step 8: Mirrors RegenerateProject.cs. Step 10: Wrapped in ToolGroup.
  */
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { ToolGroup } from './ToolGroup';
 import { Select } from './Select';
 import { invoke } from '@tauri-apps/api/core';
@@ -19,7 +19,7 @@ import type { IdeCandidate } from '../types';
 
 const REGENERATE_PROCESS_GROUP = 'regenerate';
 
-export function RegenerateProjectPanel() {
+export function RegenerateProjectPanel({ initialSelectedPath }: { initialSelectedPath?: string | null }) {
   const { projects, addProject } = useProjects();
   const { settings } = useSettings();
   const { candidates: ideCandidates, ensureLoaded: ensureIdeLoaded } = useIde();
@@ -29,10 +29,11 @@ export function RegenerateProjectPanel() {
     useProcessMonitor(REGENERATE_PROCESS_GROUP);
   const [selectedPath, setSelectedPath] = useState<string>('');
   const [versionSelectorPath, setVersionSelectorPath] = useState<string | null>(null);
-  const [buildAfter, setBuildAfter] = useState(false);
+  const [buildAfter, setBuildAfter] = useState(Boolean(initialSelectedPath));
   const [openProjectAfter, setOpenProjectAfter] = useState(false);
-  const [openIdeAfter, setOpenIdeAfter] = useState(false);
+  const [openIdeAfter, setOpenIdeAfter] = useState(Boolean(initialSelectedPath));
   const [running, setRunning] = useState(false);
+  const autoStartedPath = useRef<string | null>(null);
 
   useEffect(() => {
     const loadPath = async () => {
@@ -56,6 +57,18 @@ export function RegenerateProjectPanel() {
   }, [ensureIdeLoaded]);
 
   const cppProjects = projects.filter((p) => p.isCpp);
+
+  useEffect(() => {
+    if (initialSelectedPath && cppProjects.some((p) => p.projectPath === initialSelectedPath)) setSelectedPath(initialSelectedPath);
+  }, [initialSelectedPath, cppProjects]);
+
+  useEffect(() => {
+    if (initialSelectedPath) {
+      setBuildAfter(true);
+      setOpenIdeAfter(true);
+      setOpenProjectAfter(false);
+    }
+  }, [initialSelectedPath]);
 
   const handleProjectChange = async (value: string) => {
     if (value === '__browse__') {
@@ -89,7 +102,13 @@ export function RegenerateProjectPanel() {
   };
 
   const handleRegenerate = async () => {
-    if (!selectedPath) return;
+    if (
+      !selectedPath ||
+      selectedPath === '__browse__' ||
+      running ||
+      hasBlockingProcesses ||
+      !cppProjects.some((p) => p.projectPath === selectedPath)
+    ) return;
     const versionPath = settings.unrealVersionSelectorPath || versionSelectorPath;
     if (!versionPath) {
       alert('UnrealVersionSelector.exe not found. Please set the path in settings.');
@@ -125,6 +144,30 @@ export function RegenerateProjectPanel() {
       finishProgress();
     }
   };
+
+  useEffect(() => {
+    const versionPath = settings.unrealVersionSelectorPath || versionSelectorPath;
+    const canAutoStart =
+      Boolean(initialSelectedPath) &&
+      selectedPath === initialSelectedPath &&
+      Boolean(versionPath) &&
+      !running &&
+      !hasBlockingProcesses &&
+      cppProjects.some((p) => p.projectPath === selectedPath);
+
+    if (canAutoStart && autoStartedPath.current !== initialSelectedPath) {
+      autoStartedPath.current = initialSelectedPath ?? null;
+      void handleRegenerate();
+    }
+  }, [
+    initialSelectedPath,
+    selectedPath,
+    versionSelectorPath,
+    settings.unrealVersionSelectorPath,
+    running,
+    hasBlockingProcesses,
+    cppProjects,
+  ]);
 
   return (
     <ToolGroup

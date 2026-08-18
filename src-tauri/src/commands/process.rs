@@ -5,6 +5,7 @@
 use std::os::windows::process::CommandExt;
 
 use tauri::AppHandle;
+use serde::Serialize;
 
 use crate::running_process;
 use crate::stream_processor;
@@ -236,6 +237,52 @@ pub fn open_file(path: String) -> Result<(), String> {
         let _ = path;
         return Err("open_file is only supported on Windows".to_string());
     }
+    Ok(())
+}
+
+/// Open a project-related folder in Windows Explorer.
+#[derive(Serialize)]
+pub struct ProjectFolderAvailability {
+    pub project: bool,
+    pub screenshots: bool,
+    pub savegames: bool,
+    pub packaged: bool,
+    pub logs: bool,
+}
+
+fn project_folder_target(project_path: &str, folder: &str) -> Result<std::path::PathBuf, String> {
+    let project_file = std::path::Path::new(project_path);
+    let project_dir = project_file.parent().ok_or("Invalid project path")?;
+    let project_name = project_file.file_stem().and_then(|s| s.to_str()).ok_or("Invalid project name")?;
+    match folder {
+        "project" => Ok(project_dir.to_path_buf()),
+        "screenshots" => Ok(project_dir.join("Saved").join("Screenshots").join("WindowsEditor")),
+        "savegames" => Ok(project_dir.join("Saved").join("SaveGames")),
+        "logs" => Ok(project_dir.join("Saved").join("Logs")),
+        "packaged" => Ok(std::path::PathBuf::from(std::env::var("LOCALAPPDATA").map_err(|_| "LOCALAPPDATA is unavailable")?).join(project_name).join("Saved")),
+        _ => Err("Unknown project folder".to_string()),
+    }
+}
+
+/// Return whether each project-related folder exists as a directory.
+#[tauri::command]
+pub fn get_project_folder_availability(project_path: String) -> Result<ProjectFolderAvailability, String> {
+    Ok(ProjectFolderAvailability {
+        project: project_folder_target(&project_path, "project")?.is_dir(),
+        screenshots: project_folder_target(&project_path, "screenshots")?.is_dir(),
+        savegames: project_folder_target(&project_path, "savegames")?.is_dir(),
+        packaged: project_folder_target(&project_path, "packaged")?.is_dir(),
+        logs: project_folder_target(&project_path, "logs")?.is_dir(),
+    })
+}
+
+#[tauri::command]
+pub fn open_project_folder(project_path: String, folder: String) -> Result<(), String> {
+    let target = project_folder_target(&project_path, &folder)?;
+    #[cfg(windows)]
+    std::process::Command::new("explorer.exe").arg(&target).creation_flags(0x0800_0000u32).spawn().map_err(|e| e.to_string())?;
+    #[cfg(not(windows))]
+    return Err("open_project_folder is only supported on Windows".to_string());
     Ok(())
 }
 
