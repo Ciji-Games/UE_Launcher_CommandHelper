@@ -87,6 +87,23 @@ function App() {
                   </span>
                   <button
                     type="button"
+                    onClick={async () => {
+                      try {
+                        await openUrl('https://donate.stripe.com/aFadR2gGB5dd8FYc3K5wI00');
+                      } catch (e) {
+                        console.error('Failed to open donation page:', e);
+                      }
+                    }}
+                    className="p-2 rounded text-slate-500 hover:text-sky-400 hover:bg-slate-800/40 transition-colors"
+                    title="Find this tool helpful? Click here to buy me a coffee!"
+                    aria-label="Find this tool helpful? Click here to buy me a coffee!"
+                  >
+                    <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M3.75 8.25h13.5v5.25a4.5 4.5 0 01-4.5 4.5h-4.5a4.5 4.5 0 01-4.5-4.5V8.25zM17.25 10.5h1.125a2.625 2.625 0 010 5.25H17.25M6.75 4.5v1.125M10.5 4.5v1.125M14.25 4.5v1.125M3.75 21h13.5" />
+                    </svg>
+                  </button>
+                  <button
+                    type="button"
                     onClick={() => setSettingsOpen(true)}
                     className="p-2 rounded text-slate-500 hover:text-sky-400 hover:bg-slate-800/40 transition-colors"
                     title="Settings"
