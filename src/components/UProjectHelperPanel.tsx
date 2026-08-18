@@ -303,7 +303,8 @@ export function UProjectHelperPanel() {
           />
         </div>
 
-        <div className="rounded-lg border border-slate-600/60 bg-slate-700/30 p-3 space-y-2">
+        <div className="rounded-lg border border-slate-600/60 bg-slate-700/30 p-4 space-y-3">
+          <h4 className="text-sm font-semibold text-slate-200">Packaging</h4>
           <label className="flex items-center gap-2 text-slate-300 text-sm cursor-pointer">
             <input
               type="checkbox"
@@ -330,51 +331,61 @@ export function UProjectHelperPanel() {
               )}
             </div>
           )}
-        </div>
 
-        <div className="grid grid-cols-2 gap-3">
-          <div>
-            <label className="block text-sm text-slate-300 mb-1">Platform</label>
-            <Select
-              value={platform}
-              onChange={(v) => setPlatform(v)}
-              disabled={!selectedProjectPath}
-              options={PLATFORMS.map((p) => ({ value: p, label: p }))}
-            />
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="block text-sm text-slate-300 mb-1">Platform</label>
+              <Select
+                value={platform}
+                onChange={(v) => setPlatform(v)}
+                disabled={!selectedProjectPath}
+                options={PLATFORMS.map((p) => ({ value: p, label: p }))}
+              />
+            </div>
+            <div>
+              <label className="block text-sm text-slate-300 mb-1">Package Config</label>
+              <Select
+                value={packageConfig}
+                onChange={(v) => setPackageConfig(v)}
+                disabled={!selectedProjectPath}
+                options={PACKAGE_CONFIGS.map((c) => ({ value: c, label: c }))}
+              />
+            </div>
           </div>
-          <div>
-            <label className="block text-sm text-slate-300 mb-1">Package Config</label>
-            <Select
-              value={packageConfig}
-              onChange={(v) => setPackageConfig(v)}
-              disabled={!selectedProjectPath}
-              options={PACKAGE_CONFIGS.map((c) => ({ value: c, label: c }))}
-            />
-          </div>
-        </div>
 
-        <div>
-          <label className="block text-sm text-slate-300 mb-1">
-            Output path (Package: directory, Archive: directory or .zip file)
-          </label>
-          <div className="flex gap-2">
-            <input
-              type="text"
-              value={outputPath}
-              onChange={(e) => setOutputPath(e.target.value)}
-              placeholder="{project}/Saved/StagedBuilds or path/ProjectName.zip"
-              disabled={!selectedProjectPath}
-              className="flex-1 rounded-md bg-slate-700/50 border border-slate-600 text-slate-100 px-3 py-2 text-sm focus:border-sky-500 focus:outline-none focus:ring-1 focus:ring-sky-500/30 disabled:opacity-50"
-            />
-            <button
-              type="button"
-              onClick={handleBrowseOutputPath}
-              disabled={!selectedProjectPath}
-              className="rounded-md px-3 py-2 bg-slate-600/80 hover:bg-slate-500/80 disabled:bg-slate-700 disabled:text-slate-500 text-slate-200 text-sm font-medium transition-colors"
-            >
-              Browse
-            </button>
+          <div>
+            <label className="block text-sm text-slate-300 mb-1">
+              Output path (Package: directory, Archive: directory or .zip file)
+            </label>
+            <div className="flex gap-2">
+              <input
+                type="text"
+                value={outputPath}
+                onChange={(e) => setOutputPath(e.target.value)}
+                placeholder="{project}/Saved/StagedBuilds or path/ProjectName.zip"
+                disabled={!selectedProjectPath}
+                className="flex-1 rounded-md bg-slate-700/50 border border-slate-600 text-slate-100 px-3 py-2 text-sm focus:border-sky-500 focus:outline-none focus:ring-1 focus:ring-sky-500/30 disabled:opacity-50"
+              />
+              <button
+                type="button"
+                onClick={handleBrowseOutputPath}
+                disabled={!selectedProjectPath}
+                className="rounded-md px-3 py-2 bg-slate-600/80 hover:bg-slate-500/80 disabled:bg-slate-700 disabled:text-slate-500 text-slate-200 text-sm font-medium transition-colors"
+              >
+                Browse
+              </button>
+            </div>
           </div>
+
+          <button
+            type="button"
+            onClick={runPackage}
+            disabled={!canRun}
+            title="Runs RunUAT BuildCookRun. Builds, cooks, stages, and packages the project into a distributable archive."
+            className="rounded px-4 py-2 bg-sky-600/80 hover:bg-sky-500/80 disabled:bg-slate-600 disabled:text-slate-500 text-white font-medium transition-colors"
+          >
+            Package
+          </button>
         </div>
 
         {hasBlockingProcesses && (
@@ -449,43 +460,37 @@ export function UProjectHelperPanel() {
           </p>
         )}
 
-        <div className="flex flex-wrap gap-2">
-          <button
-            type="button"
-            onClick={runCook}
-            disabled={!canRun}
-            title="Runs UnrealEditor-Cmd.exe -run=cook. Cooks content for the target platform (content conversion and packaging)."
-            className="rounded px-4 py-2 bg-sky-600/80 hover:bg-sky-500/80 disabled:bg-slate-600 disabled:text-slate-500 text-white font-medium transition-colors"
-          >
-            Cook
-          </button>
-          <button
-            type="button"
-            onClick={runPackage}
-            disabled={!canRun}
-            title="Runs RunUAT BuildCookRun. Builds, cooks, stages, and packages the project into a distributable archive."
-            className="rounded px-4 py-2 bg-sky-600/80 hover:bg-sky-500/80 disabled:bg-slate-600 disabled:text-slate-500 text-white font-medium transition-colors"
-          >
-            Package
-          </button>
-          <button
-            type="button"
-            onClick={runArchive}
-            disabled={!canRun}
-            title="Runs RunUAT ZipProjectUp. Creates a zip of the project source (excludes Binaries, Intermediate, Saved)."
-            className="rounded px-4 py-2 bg-sky-600/80 hover:bg-sky-500/80 disabled:bg-slate-600 disabled:text-slate-500 text-white font-medium transition-colors"
-          >
-            Archive
-          </button>
-          <button
-            type="button"
-            onClick={runBuild}
-            disabled={!canBuild}
-            title="Runs Build.bat to compile the C++ project. Targets {Project}Editor Win64 Development."
-            className="rounded-md px-4 py-2 bg-slate-600/80 hover:bg-slate-500/80 disabled:bg-slate-700 disabled:text-slate-500 text-slate-200 font-medium transition-colors"
-          >
-            Build
-          </button>
+        <div className="rounded-lg border border-slate-600/60 bg-slate-700/30 p-4 space-y-3">
+          <h4 className="text-sm font-semibold text-slate-200">Other</h4>
+          <div className="flex flex-wrap gap-2">
+            <button
+              type="button"
+              onClick={runCook}
+              disabled={!canRun}
+              title="Runs UnrealEditor-Cmd.exe -run=cook. Cooks content for the target platform (content conversion and packaging)."
+              className="rounded px-4 py-2 bg-sky-600/80 hover:bg-sky-500/80 disabled:bg-slate-600 disabled:text-slate-500 text-white font-medium transition-colors"
+            >
+              Cook
+            </button>
+            <button
+              type="button"
+              onClick={runArchive}
+              disabled={!canRun}
+              title="Runs RunUAT ZipProjectUp. Creates a zip of the project source (excludes Binaries, Intermediate, Saved)."
+              className="rounded px-4 py-2 bg-sky-600/80 hover:bg-sky-500/80 disabled:bg-slate-600 disabled:text-slate-500 text-white font-medium transition-colors"
+            >
+              Archive
+            </button>
+            <button
+              type="button"
+              onClick={runBuild}
+              disabled={!canBuild}
+              title="Runs Build.bat to compile the C++ project. Targets {Project}Editor Win64 Development."
+              className="rounded-md px-4 py-2 bg-slate-600/80 hover:bg-slate-500/80 disabled:bg-slate-700 disabled:text-slate-500 text-slate-200 font-medium transition-colors"
+            >
+              Build
+            </button>
+          </div>
         </div>
       </div>
     </ToolGroup>
