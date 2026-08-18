@@ -311,7 +311,16 @@ function calcStat(arr: number[]): { n: number; avg: number; med: number; min: nu
   return { n, avg, med: s[Math.floor(n / 2)], min: s[0], max: s[n - 1] };
 }
 
-type AnalyzerTab = 'navigator' | 'statistics' | 'summary';
+type AnalyzerTab = 'navigator' | 'statistics' | 'summary' | 'prompt';
+
+const PROMPT_LEVELS = ['Fatal', 'Error', 'Warning'] as const;
+type PromptLevel = (typeof PROMPT_LEVELS)[number];
+const ANALYZER_TABS: Array<{ id: AnalyzerTab; label: string }> = [
+  { id: 'navigator', label: 'Navigator' },
+  { id: 'statistics', label: 'Statistics' },
+  { id: 'summary', label: 'Summary' },
+  { id: 'prompt', label: 'Prompt generator' },
+];
 
 type SummaryCard = {
   key: string;
@@ -394,6 +403,54 @@ function buildSummaryCards(lines: ParsedLine[]): SummaryCard[] {
     grouped[key] = card;
   }
   return Object.values(grouped).sort((a, b) => b.total - a.total);
+}
+
+function buildLlmPrompt(stats: ExtractedStats | null, fileName: string | null, cards: SummaryCard[]): string {
+  const context: string[] = [];
+  if (fileName) context.push(`Log: ${fileName}`);
+  if (stats?.engine) context.push(`Engine: ${stats.engine}`);
+  if (stats?.os) context.push(`OS: ${stats.os}`);
+  if (stats?.hw.cpu) context.push(`CPU: ${stats.hw.cpu}`);
+  if (stats?.hw.gpu) context.push(`GPU: ${stats.hw.gpu}`);
+  if (stats?.hw.ram) context.push(`RAM: ${stats.hw.ram}`);
+  if (stats?.hw.vram) context.push(`VRAM: ${stats.hw.vram}`);
+  if (stats?.rhi.api) context.push(`RHI: ${stats.rhi.api}`);
+  if (stats?.rhi.fl) context.push(`Feature level: ${stats.rhi.fl}`);
+  if (stats?.rhi.sm) context.push(`Shader model: ${stats.rhi.sm}`);
+  if (stats?.rhi.drv) context.push(`Driver: ${stats.rhi.drv}`);
+  if (stats?.rhi.aa) context.push(`Anti-aliasing: ${stats.rhi.aa}`);
+  if (stats?.netMode) context.push(`Net mode: ${stats.netMode}`);
+  if (stats?.cmd) context.push(`Command line: ${stats.cmd.slice(0, 180)}`);
+
+  const totalIssues = cards.reduce((sum, card) => sum + card.total, 0);
+  const issueLines = cards.map((card, index) => {
+    const levels = PROMPT_LEVELS.filter((level) => card.levels[level] > 0)
+      .map((level) => `${level.toLowerCase()}=${card.levels[level]}`)
+      .join(', ');
+    const category = Object.entries(card.categories).sort((a, b) => b[1] - a[1])[0]?.[0];
+    const differences = Object.entries(card.differences)
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 3)
+      .map(([value]) => value.slice(0, 100))
+      .join('; ');
+    const details = [levels, category ? `category=${category}` : '', differences ? `values=${differences}` : '']
+      .filter(Boolean)
+      .join(' · ');
+    const pattern = card.pattern.length > 280 ? `${card.pattern.slice(0, 277)}…` : card.pattern;
+    return `${index + 1}. ${pattern} (${card.total}x${details ? `; ${details}` : ''})`;
+  });
+
+  return [
+    'You are helping diagnose an Unreal Engine log.',
+    'Analyze the summarized issues below. Identify likely root causes, prioritize actionable fixes, and state what additional information is needed. Do not invent details that are not present.',
+    '',
+    `Context: ${context.length > 0 ? context.join(' | ') : 'unavailable'}`,
+    '',
+    `Detected issues: ${cards.length} patterns, ${totalIssues} occurrences`,
+    ...(issueLines.length > 0 ? issueLines : ['No selected warnings or errors were detected.']),
+    '',
+    'Return a concise diagnosis followed by prioritized next steps.',
+  ].join('\n');
 }
 
 type FrameGroup = {
@@ -643,6 +700,12 @@ export function UELogAnalyzerPanel() {
   const [fileName, setFileName] = useState<string | null>(null);
   const [tab, setTab] = useState<AnalyzerTab>('navigator');
   const [isDragOver, setIsDragOver] = useState(false);
+  const [promptLevelEnabled, setPromptLevelEnabled] = useState<Record<PromptLevel, boolean>>({
+    Fatal: true,
+    Error: true,
+    Warning: true,
+  });
+  const [promptCopied, setPromptCopied] = useState(false);
 
   const [lvlFlt, setLvlFlt] = useState<Record<Level, boolean>>({
     Fatal: true,
@@ -889,6 +952,26 @@ export function UELogAnalyzerPanel() {
   }, [lines, lvlFlt, catEnabled, search]);
 
   const summaryCards = useMemo(() => buildSummaryCards(filtered), [filtered]);
+
+  const promptCards = useMemo(
+    () => buildSummaryCards(lines.filter((line) => PROMPT_LEVELS.includes(line.lvl as PromptLevel) && promptLevelEnabled[line.lvl as PromptLevel])),
+    [lines, promptLevelEnabled]
+  );
+  const promptText = useMemo(() => buildLlmPrompt(stats, fileName, promptCards), [stats, fileName, promptCards]);
+
+  const copyPrompt = useCallback(async () => {
+    try {
+      await navigator.clipboard.writeText(promptText);
+    } catch {
+      const textarea = document.createElement('textarea');
+      textarea.value = promptText;
+      document.body.appendChild(textarea);
+      textarea.select();
+      document.execCommand('copy');
+      document.body.removeChild(textarea);
+    }
+    setPromptCopied(true);
+  }, [promptText]);
 
   const toggleCategory = useCallback((category: string) => {
     setCatEnabled((p) => ({ ...p, [category]: p[category] === false }));
@@ -1158,16 +1241,16 @@ export function UELogAnalyzerPanel() {
 
       {/* Tabs */}
       <div className="flex items-end gap-2 pt-3 pb-3 border-b border-slate-700/60">
-        {(['navigator', 'statistics', 'summary'] as const).map((t) => (
+        {ANALYZER_TABS.map(({ id, label }) => (
           <button
-            key={t}
+            key={id}
             type="button"
-            onClick={() => setTab(t)}
+            onClick={() => setTab(id)}
             className={`px-3 py-1.5 rounded-md text-sm capitalize transition-colors ${
-              tab === t ? 'bg-sky-600/30 text-sky-100' : 'text-slate-400 hover:bg-slate-800/40 hover:text-slate-200'
+              tab === id ? 'bg-sky-600/30 text-sky-100' : 'text-slate-400 hover:bg-slate-800/40 hover:text-slate-200'
             }`}
           >
-            {t}
+            {label}
           </button>
         ))}
         <div className="flex-1" />
@@ -1363,6 +1446,21 @@ export function UELogAnalyzerPanel() {
         <SummaryPanel cards={summaryCards} shownCount={filtered.length} />
       </div>
 
+      {/* Prompt generator */}
+      <div className={tab === 'prompt' ? 'flex-1 min-h-0 flex overflow-hidden' : 'hidden'}>
+        <PromptPanel
+          prompt={promptText}
+          cards={promptCards}
+          enabled={promptLevelEnabled}
+          copied={promptCopied}
+          onToggle={(level) => {
+            setPromptCopied(false);
+            setPromptLevelEnabled((previous) => ({ ...previous, [level]: !previous[level] }));
+          }}
+          onCopy={copyPrompt}
+        />
+      </div>
+
       <CategoryFilterModal
         open={categoryModalOpen}
         onClose={() => setCategoryModalOpen(false)}
@@ -1464,6 +1562,71 @@ function SummaryPanel({ cards, shownCount }: { cards: SummaryCard[]; shownCount:
             </div>
           );
         })}
+      </div>
+    </div>
+  );
+}
+
+function PromptPanel({
+  prompt,
+  cards,
+  enabled,
+  copied,
+  onToggle,
+  onCopy,
+}: {
+  prompt: string;
+  cards: SummaryCard[];
+  enabled: Record<PromptLevel, boolean>;
+  copied: boolean;
+  onToggle: (level: PromptLevel) => void;
+  onCopy: () => void;
+}) {
+  const totalIssues = cards.reduce((sum, card) => sum + card.total, 0);
+
+  return (
+    <div className="flex-1 min-h-0 flex flex-col gap-3 p-4">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <div className="text-sm font-medium text-slate-200">Prompt generator</div>
+          <div className="mt-1 text-xs text-slate-500">
+            Creates a compact LLM prompt from the issue summary; the original log is not included.
+          </div>
+        </div>
+        <div className="flex flex-wrap items-center gap-3">
+          <span className="text-xs text-slate-500">Include:</span>
+          {PROMPT_LEVELS.map((level) => (
+            <label key={level} className={`flex items-center gap-1.5 cursor-pointer text-xs ${levelTextClass[level]}`}>
+              <input
+                type="checkbox"
+                checked={enabled[level]}
+                onChange={() => onToggle(level)}
+                className="rounded border-slate-600 bg-slate-700 text-sky-500 focus:ring-sky-500/50 focus:ring-offset-0"
+              />
+              {level}
+            </label>
+          ))}
+        </div>
+      </div>
+
+      <textarea
+        readOnly
+        value={prompt}
+        aria-label="Generated LLM prompt"
+        className="flex-1 min-h-0 w-full resize-none rounded-lg border border-slate-700/60 bg-slate-950/50 p-3 font-mono text-xs leading-relaxed text-slate-300 outline-none focus:border-sky-500/50"
+      />
+
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div className="text-xs text-slate-500 tabular-nums">
+          {cards.length.toLocaleString()} issue patterns · {totalIssues.toLocaleString()} occurrences
+        </div>
+        <button
+          type="button"
+          onClick={onCopy}
+          className="rounded-md px-3 py-2 text-sm bg-sky-700/60 text-sky-50 hover:bg-sky-600/70 transition-colors"
+        >
+          {copied ? 'Copied' : 'Copy prompt'}
+        </button>
       </div>
     </div>
   );
