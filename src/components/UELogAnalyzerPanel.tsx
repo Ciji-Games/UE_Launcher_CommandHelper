@@ -92,6 +92,15 @@ function normalizeLevel(lvl: string | undefined): Level {
 /** Infer level from launcher output log / plain text (no UE frame prefix). */
 function inferLevelFromRaw(raw: string): Level | null {
   const t = raw.trim();
+  // MSVC/Clang diagnostics use a source location before the severity, e.g.
+  // `File.h(12,3): warning C4996: message`.
+  const compilerDiagnostic = t.match(/\):\s*(fatal\s+error|error|warning)\b(?:\s+[A-Z][A-Z0-9]*\d+)?\s*:/i);
+  if (compilerDiagnostic) {
+    const severity = compilerDiagnostic[1].toLowerCase();
+    if (severity === 'fatal error') return 'Fatal';
+    if (severity === 'error') return 'Error';
+    return 'Warning';
+  }
   const bracket = t.match(/^\[(ERROR|WARNING|WARN|FATAL)\]\s*(.*)$/i);
   if (bracket) {
     const tag = bracket[1].toUpperCase();
@@ -315,6 +324,7 @@ type SummaryCard = {
 
 function normalizeSummaryPattern(msg: string): string {
   const withTargetedRules = msg
+    .replace(/^.*?\(\d+(?:,\d+)?\):\s*(?:fatal\s+error|error|warning)\b\s*(?:[A-Z][A-Z0-9]*\d+)?\s*:\s*/i, '')
     .replace(
       /Material\s+'[^']+'\s+expects texture\s+'[^']+'\s+to be Virtual/gi,
       "Material '<material>' expects texture '<texture>' to be Virtual"
