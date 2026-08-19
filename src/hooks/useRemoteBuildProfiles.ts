@@ -3,7 +3,7 @@ import type { RemoteBuildLogEntry, RemoteBuildProfile } from '../types';
 import { STORE_KEYS } from '../config';
 import { getStore } from './useStore';
 
-const DEFAULT_INTERVAL_MINUTES = 5;
+const DEFAULT_INTERVAL_MINUTES = 1;
 export const REMOTE_BUILD_INTERVALS = [1, 5, 10] as const;
 
 export function createRemoteBuildProfile(overrides: Partial<RemoteBuildProfile> = {}): RemoteBuildProfile {
@@ -65,9 +65,7 @@ export function useRemoteBuildProfiles() {
       cloneStatus: profile.cloneStatus ?? 'not-started',
       setupStatus: profile.setupStatus ?? 'untested',
       pollingIntervalMinutes: REMOTE_BUILD_INTERVALS.includes(profile.pollingIntervalMinutes as typeof REMOTE_BUILD_INTERVALS[number]) ? profile.pollingIntervalMinutes : DEFAULT_INTERVAL_MINUTES,
-      nextCheckAt: profile.enabled
-        ? profile.nextCheckAt ?? new Date(Date.now() + (REMOTE_BUILD_INTERVALS.includes(profile.pollingIntervalMinutes as typeof REMOTE_BUILD_INTERVALS[number]) ? profile.pollingIntervalMinutes : DEFAULT_INTERVAL_MINUTES) * 60_000).toISOString()
-        : undefined,
+      nextCheckAt: undefined,
       logs: profile.logs ?? [],
     }));
     setProfiles(nextProfiles);

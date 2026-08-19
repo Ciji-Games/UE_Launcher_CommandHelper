@@ -25,6 +25,8 @@ pub struct CheckoutStatus {
     pub current_branch: Option<String>,
     pub head_commit: Option<String>,
     pub remote_commit: Option<String>,
+    pub is_behind: bool,
+    pub behind_count: u32,
     pub worktree_clean: bool,
     pub index_clean: bool,
     pub remote_url: Option<String>,
@@ -61,20 +63,37 @@ fn run_git(repository: &Path, args: &[&str]) -> GitCommandResult {
 fn run_authenticated_git(repository: &Path, args: &[&str]) -> GitCommandResult {
     let token = match secure_credentials::read_token() {
         Ok(Some(token)) => token,
-        Ok(None) => return GitCommandResult { ok: false, stdout: String::new(), stderr: String::new(), error: Some("GitHub authorization is required for authenticated fetch.".to_owned()) },
-        Err(error) => return GitCommandResult { ok: false, stdout: String::new(), stderr: String::new(), error: Some(format!("Unable to access secure GitHub credentials: {error}")) },
+        Ok(None) => return run_git(repository, args),
+        Err(_) => return run_git(repository, args),
     };
     let values: Vec<String> = args.iter().map(|arg| (*arg).to_owned()).collect();
     let credential = base64::engine::general_purpose::STANDARD.encode(format!("x-access-token:{token}"));
     let mut command = build_cmd("git", &values, repository.to_str());
     command.env("GIT_TERMINAL_PROMPT", "0").env("GIT_CONFIG_COUNT", "1").env("GIT_CONFIG_KEY_0", "http.extraHeader").env("GIT_CONFIG_VALUE_0", format!("Authorization: Basic {credential}"));
     match command_output_with_timeout(command, Duration::from_secs(120)) {
-        Ok(output) => { let stdout = String::from_utf8_lossy(&output.stdout).trim().to_owned(); let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned(); GitCommandResult { ok: output.status.success(), stdout, stderr: stderr.clone(), error: (!output.status.success()).then(|| actionable_git_error(&stderr)) } }
-        Err(error) => GitCommandResult { ok: false, stdout: String::new(), stderr: String::new(), error: Some(format!("Unable to start git: {error}")) },
+        Ok(output) => {
+            let stdout = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
+            let res = GitCommandResult { ok: output.status.success(), stdout, stderr: stderr.clone(), error: (!output.status.success()).then(|| actionable_git_error(&stderr)) };
+            if !res.ok {
+                let fallback = run_git(repository, args);
+                if fallback.ok {
+                    return fallback;
+                }
+            }
+            res
+        }
+        Err(error) => {
+            let fallback = run_git(repository, args);
+            if fallback.ok {
+                return fallback;
+            }
+            GitCommandResult { ok: false, stdout: String::new(), stderr: String::new(), error: Some(format!("Unable to start git: {error}")) }
+        }
     }
 }
 
-fn command_output(mut command: Command) -> Result<Output, std::io::Error> {
+fn command_output(command: Command) -> Result<Output, std::io::Error> {
     command_output_with_timeout(command, Duration::from_secs(30))
 }
 
@@ -321,6 +340,8 @@ pub fn inspect_remote_build_checkout(repository_path: String, remote_name: Strin
             current_branch: None,
             head_commit: None,
             remote_commit: None,
+            is_behind: false,
+            behind_count: 0,
             worktree_clean: false,
             index_clean: false,
             remote_url: None,
@@ -333,12 +354,22 @@ pub fn inspect_remote_build_checkout(repository_path: String, remote_name: Strin
         },
     };
 
+    if !build_branch.is_empty() && !remote_name.is_empty() {
+        let refspec = format!("+refs/heads/{build_branch}:refs/remotes/{remote_name}/{build_branch}");
+        let _ = run_authenticated_git(&repository, &["fetch", "--prune", &remote_name, &refspec]);
+    }
+
     let branch = run_git(&repository, &["branch", "--show-current"]);
     let head = run_git(&repository, &["rev-parse", "HEAD"]);
     let remote = if build_branch.is_empty() {
         GitCommandResult { ok: false, stdout: String::new(), stderr: String::new(), error: Some("Select a build branch.".to_owned()) }
     } else {
-        run_git(&repository, &["rev-parse", &format!("refs/remotes/{remote_name}/{build_branch}")])
+        let rev = run_git(&repository, &["rev-parse", &format!("refs/remotes/{remote_name}/{build_branch}")]);
+        if rev.ok {
+            rev
+        } else {
+            run_git(&repository, &["rev-parse", "FETCH_HEAD"])
+        }
     };
     let remote_url = run_git(&repository, &["remote", "get-url", &remote_name]);
     let status = run_git(&repository, &["status", "--porcelain"]);
@@ -347,11 +378,29 @@ pub fn inspect_remote_build_checkout(repository_path: String, remote_name: Strin
     let branches_result = run_git(&repository, &["for-each-ref", "--format=%(refname:short)", "refs/heads", "refs/remotes"]);
     let result = if !branch.ok { branch.clone() } else if !head.ok { head.clone() } else { status.clone() };
 
+    let (is_behind, behind_count) = if let (Some(head_sha), Some(remote_sha)) = (head.ok.then_some(&head.stdout), remote.ok.then_some(&remote.stdout)) {
+        if head_sha == remote_sha {
+            (false, 0)
+        } else {
+            let rev_list = run_git(&repository, &["rev-list", "--count", &format!("{head_sha}..{remote_sha}")]);
+            if rev_list.ok {
+                let count = rev_list.stdout.trim().parse::<u32>().unwrap_or(0);
+                (count > 0, count)
+            } else {
+                (false, 0)
+            }
+        }
+    } else {
+        (false, 0)
+    };
+
     let checkout_status = CheckoutStatus {
         repository_path,
         current_branch: branch.ok.then_some(branch.stdout),
         head_commit: head.ok.then_some(head.stdout),
         remote_commit: remote.ok.then_some(remote.stdout),
+        is_behind,
+        behind_count,
         worktree_clean: status.ok && status.stdout.is_empty(),
         index_clean: status.ok && status.stdout.lines().all(|line| line.as_bytes().first() == Some(&b' ')),
         remote_url: remote_url.ok.then_some(remote_url.stdout),
@@ -362,7 +411,7 @@ pub fn inspect_remote_build_checkout(repository_path: String, remote_name: Strin
         projects: detected_projects(&repository),
         result,
     };
-    eprintln!("[automatic-build] checkout inspection completed: repository={}, branch={}, current_branch={}, clean={}", checkout_status.repository_path, build_branch, checkout_status.current_branch.as_deref().unwrap_or("(unknown)"), checkout_status.worktree_clean && checkout_status.index_clean);
+    eprintln!("[automatic-build] checkout inspection completed: repository={}, branch={}, current_branch={}, clean={}, behind={}", checkout_status.repository_path, build_branch, checkout_status.current_branch.as_deref().unwrap_or("(unknown)"), checkout_status.worktree_clean && checkout_status.index_clean, checkout_status.is_behind);
     checkout_status
 }
 
@@ -381,7 +430,8 @@ pub fn fetch_remote_build_branch(repository_path: String, remote_name: String, b
     if !status.ok || !status.stdout.is_empty() {
         return GitCommandResult { ok: false, stdout: status.stdout, stderr: status.stderr, error: Some("The checkout has local changes; clean the worktree and index before fetching.".to_owned()) };
     }
-    let result = run_authenticated_git(&repository, &["fetch", "--prune", &remote_name, &build_branch]);
+    let refspec = format!("+refs/heads/{build_branch}:refs/remotes/{remote_name}/{build_branch}");
+    let result = run_authenticated_git(&repository, &["fetch", "--prune", &remote_name, &refspec]);
     eprintln!("[automatic-build] fetch {}: repository={}, remote={}, branch={}, error={}", if result.ok { "completed" } else { "failed" }, repository_path, remote_name, build_branch, result.error.as_deref().unwrap_or("none"));
     result
 }

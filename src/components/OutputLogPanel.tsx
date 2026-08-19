@@ -10,9 +10,8 @@
  * - White: Default
  */
 
-import { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { useLayoutEffect, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
-import { listen } from '@tauri-apps/api/event';
 import { useLog } from '../contexts/LogContext';
 import { useLogAnalyzerImportOptional } from '../contexts/LogAnalyzerImportContext';
 import { useProgress } from '../contexts/ProgressContext';
@@ -95,15 +94,6 @@ export function OutputLogPanel() {
     return filters[type];
   });
 
-  useEffect(() => {
-    const unlisten = listen<LogEvent>('log-output', (event) => {
-      const payload = event.payload;
-      appendLine({ line: payload.line, color: payload.color as LogEvent['color'] });
-    });
-    return () => {
-      unlisten.then((fn) => fn());
-    };
-  }, [appendLine]);
 
   const handleScroll = () => {
     const el = scrollRef.current;

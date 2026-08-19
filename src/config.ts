@@ -22,6 +22,7 @@ export const STORE_KEYS = {
   REMOTE_BUILD_PROFILES: 'remoteBuildProfiles',
   REMOTE_BUILD_ACTIVE_PROFILE: 'remoteBuildActiveProfile',
   REMOTE_BUILD_POLLING_INTERVAL: 'remoteBuildPollingInterval',
+  REMOTE_BUILD_SCHEDULE_NEXT: 'remoteBuildScheduleNext',
   GITHUB_ACCOUNT: 'githubAccount',
   GITHUB_REPOSITORY_CACHE: 'githubRepositoryCache',
 } as const;

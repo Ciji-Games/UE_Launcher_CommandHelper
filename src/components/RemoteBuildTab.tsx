@@ -10,17 +10,22 @@ import {
 } from '../hooks/useRemoteBuildProfiles';
 import {useRemoteBuild} from '../hooks/useRemoteBuild';
 import {useGitHub} from '../hooks/useGitHub';
-import type {GitHubBranch, RemoteBuildProfile} from '../types';
+import {useProgress} from '../contexts/ProgressContext';
+import {OutputLogPanel} from './OutputLogPanel';
+import type {CheckoutStatus, GitHubBranch, RemoteBuildProfile} from '../types';
 
 const panel = 'rounded-xl border border-slate-700 bg-slate-900/60 p-4';
 const field = 'mt-1 w-full rounded border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-200';
 function statusLabel(profile: RemoteBuildProfile) {
     if (profile.lastStatus === 'running') return 'Building';
     if (profile.lastStatus === 'pulling') return 'Pulling changes';
-    if (profile.lastStatus === 'fetching') return 'Fetching remote status';
-    if (profile.lastStatus === 'checking') return 'Checking remote status';
+    if (profile.lastStatus === 'fetching') return 'Fetching remote';
+    if (profile.lastStatus === 'checking') return 'Checking remote';
     if (profile.cloneStatus !== 'ready') return profile.cloneStatus === 'failed' ? 'Clone failed' : 'Not cloned';
-    return profile.enabled ? 'Schedule running' : 'Ready to schedule';
+    if (profile.lastStatus === 'failed') return 'Failed';
+    if (profile.lastStatus === 'blocked') return 'Blocked';
+    if (profile.lastStatus === 'success') return 'Succeeded';
+    return profile.enabled ? 'Idle (Scheduled)' : 'Stopped';
 }
 
 function formatCountdown(nextCheckAt: string | undefined, now: number) {
@@ -34,13 +39,15 @@ function formatCountdown(nextCheckAt: string | undefined, now: number) {
 
 export function RemoteBuildTab() {
     const {profiles, addProfile, updateProfile, removeProfile, setActive, refresh} = useRemoteBuildProfiles();
-    const {pullNow} = useRemoteBuild();
+    const {pullNow, scheduleNextAt, scheduleRunning, scheduleIntervalMinutes, setScheduleIntervalMinutes} = useRemoteBuild();
     const {account, repositories, loading, message, connect, disconnect, loadRepositories, loadBranches} = useGitHub();
     const [editingId, setEditingId] = useState<string | null>(null);
     const [branches, setBranches] = useState<GitHubBranch[]>([]);
     const [busyId, setBusyId] = useState<string | null>(null);
     const [destinationErrors, setDestinationErrors] = useState<Record<string, string | undefined>>({});
     const [now, setNow] = useState(() => Date.now());
+    const [showOutputLog, setShowOutputLog] = useState(false);
+    const {running} = useProgress();
     const editing = profiles.find((profile) => profile.id === editingId) ?? null;
     const patch = (profile: RemoteBuildProfile, updates: Partial<RemoteBuildProfile>) => updateProfile(profile.id, updates);
 
@@ -54,6 +61,9 @@ export function RemoteBuildTab() {
         const timer = window.setInterval(() => setNow(Date.now()), 1000);
         return () => window.clearInterval(timer);
     }, []);
+    useEffect(() => {
+        if (running) setShowOutputLog(true);
+    }, [running]);
     useEffect(() => {
         const timer = window.setInterval(() => void refresh(), 2000);
         return () => window.clearInterval(timer);
@@ -119,18 +129,35 @@ export function RemoteBuildTab() {
         setBusyId(profile.id);
         await patch(profile, {cloneStatus: 'cloning', setupStatus: 'untested', enabled: false, lastError: undefined});
         try {
+            const checkoutPath = remoteBuildCheckoutPath(profile.repositoryPath);
             const result = await invoke<{
                 ok: boolean;
                 error?: string
             }>('clone_github_repository', {
                 cloneUrl: profile.repository.cloneUrl,
-                destination: remoteBuildCheckoutPath(profile.repositoryPath),
+                destination: checkoutPath,
                 buildBranch: profile.buildBranch
             });
             if (!result.ok) throw new Error(result.error ?? 'Clone failed.');
+
+            let projectPath = profile.projectPath;
+            try {
+                const status = await invoke<CheckoutStatus>('inspect_remote_build_checkout', {
+                    repositoryPath: checkoutPath,
+                    remoteName: profile.remoteName || 'origin',
+                    buildBranch: profile.buildBranch,
+                });
+                if (status.projects.length > 0 && !projectPath) {
+                    projectPath = status.projects[0].projectPath;
+                }
+            } catch {
+                // inspection will also occur on check
+            }
+
             await patch(profile, {
                 cloneStatus: 'ready',
                 setupStatus: 'passed',
+                projectPath,
                 lastError: undefined
             });
         } catch (error) {
@@ -148,15 +175,19 @@ export function RemoteBuildTab() {
         await patch(profile, {
             enabled: !profile.enabled,
             lastStatus: 'idle',
-            nextCheckAt: profile.enabled
-                ? undefined
-                : new Date(Date.now() + Math.max(1, profile.pollingIntervalMinutes) * 60_000).toISOString(),
+            nextCheckAt: undefined,
         });
     };
 
     return <section className='flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto pr-1'>
         <header><h1 className='text-xl font-semibold text-slate-100'>Automatic build</h1><p
-            className='mt-1 text-sm text-slate-400'>Connect GitHub, then manage build profiles and their schedules.</p>
+            className='mt-1 text-sm text-slate-400'>Connect GitHub, then manage enabled jobs in one global schedule.</p>
+            <div className='mt-3 flex flex-wrap items-center gap-3 text-xs'>
+                <span className='font-medium text-sky-300'>{scheduleRunning ? 'Running scheduled check…' : formatCountdown(scheduleNextAt, now) ?? 'Schedule waits for an enabled job'}</span>
+                <label className='text-slate-400'>Schedule interval<select value={String(scheduleIntervalMinutes)} onChange={(event) => void setScheduleIntervalMinutes(Number(event.target.value))} className='ml-2 rounded border border-slate-700 bg-slate-950 px-2 py-1 text-slate-200'>
+                    {REMOTE_BUILD_INTERVALS.map((minutes) => <option key={minutes} value={minutes}>{minutes} min</option>)}
+                </select></label>
+            </div>
         </header>
         <div className={panel}>
             <div className='flex items-center justify-between gap-4'>
@@ -183,15 +214,13 @@ export function RemoteBuildTab() {
                 <div className='mt-4 space-y-3'>{profiles.map((profile) => {
                     const busy = busyId === profile.id;
                     const running = profile.lastStatus === 'running';
-                    const countdown = profile.enabled ? formatCountdown(profile.nextCheckAt, now) : null;
                     return <div key={profile.id} className='rounded-lg border border-slate-700 bg-slate-950/40 p-4'>
                         <div className='flex flex-wrap items-start justify-between gap-3'>
                             <div><h3 className='font-medium text-slate-100'>{profile.name || 'Unnamed profile'}</h3><p
                                 className='mt-1 text-xs text-slate-400'>{profile.repository?.fullName ?? 'No repository'}{profile.buildBranch ? ' · ' + profile.buildBranch : ''}</p>
-                                <p className='mt-1 text-xs text-slate-500'>{statusLabel(profile)}{profile.lastError ? ' · ' + profile.lastError : ''}</p>{countdown &&
-                                    <p className='mt-1 text-xs font-medium text-sky-300'>{countdown}</p>}</div>
+                                <p className='mt-1 text-xs text-slate-500'>{statusLabel(profile)}{profile.lastError ? ' · ' + profile.lastError : ''}</p></div>
                             <span
-                                className='rounded bg-slate-800 px-2 py-1 text-xs text-slate-400'>{profile.enabled ? 'Scheduled' : 'Stopped'}</span>
+                                className={`rounded px-2 py-1 text-xs font-medium ${profile.enabled ? 'border border-sky-800/60 bg-sky-950/80 text-sky-300' : 'bg-slate-800 text-slate-400'}`}>{profile.enabled ? 'Scheduled' : 'Stopped'}</span>
                         </div>
                         {running && <div className='mt-3'>
                             <div className='mb-1 flex justify-between text-xs text-slate-400'>
@@ -218,7 +247,7 @@ export function RemoteBuildTab() {
                             <button type='button'
                                     disabled={!account || busy || (!profile.enabled && profile.cloneStatus !== 'ready')}
                                     onClick={() => void toggleSchedule(profile)}
-                                    className='rounded border border-emerald-400/60 px-3 py-1.5 text-xs text-emerald-300 disabled:opacity-40'>{profile.enabled ? 'Stop schedule' : 'Start schedule'}</button>
+                                    className='rounded border border-emerald-400/60 px-3 py-1.5 text-xs text-emerald-300 disabled:opacity-40'>{profile.enabled ? 'Disable job' : 'Enable job'}</button>
                             <button type='button' disabled={!account} onClick={() => void removeProfile(profile.id)}
                                     className='rounded border border-red-400/40 px-3 py-1.5 text-xs text-red-300 disabled:opacity-40'>Delete
                             </button>
@@ -285,12 +314,6 @@ export function RemoteBuildTab() {
                     })} className={field}>
                         <option>Development</option>
                                         <option>Shipping</option>
-                    </select></label><label className='block text-xs text-slate-400'>Check frequency<select
-                        value={String(editing.pollingIntervalMinutes)} onChange={(event) => void patch(editing, {
-                        pollingIntervalMinutes: Number(event.target.value),
-                        nextCheckAt: editing.enabled ? new Date(Date.now() + Number(event.target.value) * 60_000).toISOString() : undefined
-                    })} className={field}>
-                        {REMOTE_BUILD_INTERVALS.map((minutes) => <option key={minutes} value={minutes}>{minutes} min</option>)}
                     </select></label></div>
                     <div className='mt-5 flex justify-end'>
                         <button type='button' onClick={() => setEditingId(null)}
@@ -299,5 +322,11 @@ export function RemoteBuildTab() {
                     </div>
                 </div>
             </div>}
+        <div className='shrink-0 overflow-hidden rounded-xl border border-slate-700 bg-slate-900/60'>
+            <button type='button' onClick={() => setShowOutputLog((previous) => !previous)} className='flex w-full items-center justify-between px-4 py-2 text-left text-sm font-medium text-slate-300 hover:bg-slate-800/60'>
+                <span>Output Log{running ? ' · Running' : ''}</span><span className={showOutputLog ? 'rotate-180 text-slate-400' : 'text-slate-400'}>▼</span>
+            </button>
+            {showOutputLog && <div className='h-64 border-t border-slate-700 p-4'><OutputLogPanel /></div>}
+        </div>
     </section>;
 }

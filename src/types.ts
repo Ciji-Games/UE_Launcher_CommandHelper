@@ -127,6 +127,8 @@ export interface CheckoutStatus {
   currentBranch?: string;
   headCommit?: string;
   remoteCommit?: string;
+  isBehind: boolean;
+  behindCount: number;
   worktreeClean: boolean;
   indexClean: boolean;
   remoteUrl?: string;
