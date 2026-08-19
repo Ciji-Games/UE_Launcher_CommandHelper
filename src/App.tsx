@@ -6,9 +6,11 @@ import { LauncherTab } from './components/LauncherTab';
 import { ToolBoxTab } from './components/ToolBoxTab';
 import { SchedulerTab } from './components/SchedulerTab';
 import { LinksTab } from './components/LinksTab';
+import { RemoteBuildTab } from './components/RemoteBuildTab';
 import { ShaderBoosterBackground } from './components/ShaderBoosterBackground';
 import { LogProvider } from './contexts/LogContext';
 import { ProgressProvider } from './contexts/ProgressContext';
+import { RemoteBuildProvider } from './contexts/RemoteBuildContext';
 import { ProjectsProvider } from './contexts/ProjectsContext';
 import { EnginesProvider } from './contexts/EnginesContext';
 import { SettingsProvider } from './contexts/SettingsContext';
@@ -37,17 +39,21 @@ const TAB_ICONS = {
       <path strokeLinecap="round" strokeLinejoin="round" d="M13.19 8.688a4.5 4.5 0 011.242 7.244l-4.5 4.5a4.5 4.5 0 01-6.364-6.364l1.757-1.757m13.35-.622l1.757-1.757a4.5 4.5 0 00-6.364-6.364l-4.5 4.5a4.5 4.5 0 001.242 7.244" />
     </svg>
   ),
+  remoteBuild: (
+    <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}><path strokeLinecap="round" strokeLinejoin="round" d="M4.5 6.75h15m-15 0A2.25 2.25 0 012.25 4.5v-.75A2.25 2.25 0 014.5 1.5h15a2.25 2.25 0 012.25 2.25v.75a2.25 2.25 0 01-2.25 2.25m-15 0h15M6.75 10.5h10.5M6.75 14.25h6" /></svg>
+  ),
 } as const;
 
 const TABS = [
   { id: 'launcher' as const, label: 'Launcher' },
   { id: 'toolbox' as const, label: 'ToolBox' },
   { id: 'scheduler' as const, label: 'Scheduler' },
+  { id: 'remoteBuild' as const, label: 'Automatic build' },
   { id: 'links' as const, label: 'Links' },
 ] as const;
 
 function App() {
-  const [activeTab, setActiveTab] = useState<'launcher' | 'toolbox' | 'scheduler' | 'links'>('launcher');
+  const [activeTab, setActiveTab] = useState<'launcher' | 'toolbox' | 'scheduler' | 'remoteBuild' | 'links'>('launcher');
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [schedulerOutputOpenSignal, setSchedulerOutputOpenSignal] = useState(0);
   const [quickRegenerateProjectPath, setQuickRegenerateProjectPath] = useState<string | null>(null);
@@ -111,6 +117,7 @@ function App() {
       <EnginesProvider>
       <LogProvider>
         <ProgressProvider>
+          <RemoteBuildProvider>
           <ShaderBoosterBackground />
           <BaseLayout>
             <div className="flex flex-col gap-6 min-h-0 flex-1">
@@ -217,6 +224,7 @@ function App() {
                     <SchedulerTab outputOpenSignal={schedulerOutputOpenSignal} />
                   </div>
                 )}
+                {activeTab === 'remoteBuild' && <RemoteBuildTab />}
                 {activeTab === 'links' && <LinksTab />}
               </div>
             </div>
@@ -274,6 +282,7 @@ function App() {
               </div>
             </div>
           )}
+          </RemoteBuildProvider>
         </ProgressProvider>
       </LogProvider>
       </EnginesProvider>

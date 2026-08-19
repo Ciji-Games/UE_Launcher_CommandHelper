@@ -64,6 +64,131 @@ export interface ScheduledJob {
   pinned?: boolean;
 }
 
+export type RemoteBuildSafetyStatus = 'clean-on-build-branch' | 'wrong-branch' | 'local-changes' | 'unknown';
+export type RemoteBuildStatus = 'idle' | 'checking' | 'fetching' | 'pulling' | 'queued' | 'running' | 'success' | 'failed' | 'blocked';
+export type RemoteBuildRunStatus = 'queued' | 'running' | 'success' | 'failed' | 'blocked' | 'cancelled';
+export type ChecklistState = 'blocking' | 'warning' | 'passed' | 'not-applicable';
+
+export interface GitHubAccount {
+  accountId: string;
+  login: string;
+  displayName?: string;
+  avatarUrl?: string;
+  scopes: string[];
+  expiresAt?: string;
+  connectedAt: string;
+}
+
+export interface GitHubRepository {
+  id: string;
+  owner: string;
+  name: string;
+  fullName: string;
+  private: boolean;
+  defaultBranch: string;
+  cloneUrl: string;
+  updatedAt?: string;
+}
+
+export interface GitHubBranch {
+  name: string;
+  commit: string;
+  protected: boolean;
+}
+
+export type RemoteBuildCloneStatus = 'not-started' | 'cloning' | 'ready' | 'failed';
+export type RemoteBuildSetupStatus = 'untested' | 'passed' | 'blocked' | 'failed';
+
+export interface RemoteBuildCommit {
+  hash: string;
+  shortHash: string;
+  subject?: string;
+  author?: string;
+  committedAt?: string;
+}
+
+export interface RemoteBuildChecklistItem {
+  id: string;
+  label: string;
+  state: ChecklistState;
+  message: string;
+  detail?: string;
+}
+
+export interface GitCommandResult {
+  ok: boolean;
+  stdout: string;
+  stderr: string;
+  error?: string;
+}
+
+export interface CheckoutStatus {
+  repositoryPath: string;
+  currentBranch?: string;
+  headCommit?: string;
+  remoteCommit?: string;
+  worktreeClean: boolean;
+  indexClean: boolean;
+  remoteUrl?: string;
+  gitLfsAvailable: boolean;
+  gitLfsError?: string;
+  remotes: string[];
+  branches: string[];
+  projects: DetectedRemoteProject[];
+  result: GitCommandResult;
+}
+
+export interface DetectedRemoteProject {
+  projectPath: string;
+  projectName: string;
+  engineVersion: string;
+}
+
+export interface RemoteBuildRun {
+  id: string;
+  commit: string;
+  startedAt?: string;
+  completedAt?: string;
+  status: RemoteBuildRunStatus;
+  error?: string;
+  logPath?: string;
+}
+
+export interface RemoteBuildLogEntry {
+  timestamp: string;
+  message: string;
+}
+
+export interface RemoteBuildProfile {
+  id: string;
+  name: string;
+  repository: GitHubRepository | null;
+  repositoryPath: string;
+  remoteName: string;
+  buildBranch: string;
+  safetyStatus: RemoteBuildSafetyStatus;
+  projectPath: string;
+  enginePath: string;
+  platform: string;
+  packageConfig: string;
+  outputPath: string;
+  pollingIntervalMinutes: number;
+  enabled: boolean;
+  cloneStatus: RemoteBuildCloneStatus;
+  setupStatus: RemoteBuildSetupStatus;
+  dirtyWorktreePolicy: 'block';
+  buildHistory: RemoteBuildRun[];
+  lastRemoteCommit?: string;
+  lastBuiltCommit?: string;
+  lastStatus: RemoteBuildStatus;
+  lastError?: string;
+  lastCheckedAt?: string;
+  nextCheckAt?: string;
+  lastRunAt?: string;
+  buildProgress?: number;
+  logs?: RemoteBuildLogEntry[];
+}
+
 /** Schedulable step type */
 export interface SchedulableStepDef {
   id: string;

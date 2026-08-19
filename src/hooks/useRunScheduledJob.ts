@@ -38,7 +38,7 @@ export function useRunScheduledJob() {
   const runJob = useCallback(
     async (job: ScheduledJob, options: RunJobOptions = {}) => {
       const { stopOnFailure = true } = options;
-      if (job.steps.length === 0 || running) return;
+      if (job.steps.length === 0 || running) return false;
 
       setRunning(true);
       clearLog();
@@ -252,6 +252,7 @@ export function useRunScheduledJob() {
 
       setRunning(false);
       finishProgress();
+      return !failed && !stopRequestedRef.current;
     },
     [
       projects,

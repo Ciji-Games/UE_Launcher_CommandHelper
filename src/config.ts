@@ -19,6 +19,11 @@ export const STORE_KEYS = {
   DEFAULT_ENGINE_BY_VERSION: 'defaultEngineByVersion',
   NOTIFICATION_ON_COMPLETE: 'notificationOnComplete',
   PREFERRED_IDE_ID: 'preferredIdeId',
+  REMOTE_BUILD_PROFILES: 'remoteBuildProfiles',
+  REMOTE_BUILD_ACTIVE_PROFILE: 'remoteBuildActiveProfile',
+  REMOTE_BUILD_POLLING_INTERVAL: 'remoteBuildPollingInterval',
+  GITHUB_ACCOUNT: 'githubAccount',
+  GITHUB_REPOSITORY_CACHE: 'githubRepositoryCache',
 } as const;
 
 export const DEFAULT_SETTINGS = {
@@ -32,6 +37,7 @@ export const DEFAULT_SETTINGS = {
   projectEngineOverrides: {} as Record<string, string>,
   defaultEngineByVersion: {} as Record<string, string>,
   preferredIdeId: '',
+  remoteBuildPollingInterval: 15,
 };
 
 /** Link entry for the Links tab. icon is optional asset key or undefined for default. */
