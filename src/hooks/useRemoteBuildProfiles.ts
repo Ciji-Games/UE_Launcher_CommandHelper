@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import type { RemoteBuildLogEntry, RemoteBuildProfile } from '../types';
+import type { RemoteBuildProfile } from '../types';
 import { STORE_KEYS } from '../config';
 import { getStore } from './useStore';
 
@@ -28,7 +28,6 @@ export function createRemoteBuildProfile(overrides: Partial<RemoteBuildProfile> 
     buildHistory: [],
     lastStatus: 'idle',
     buildProgress: undefined,
-    logs: [],
     ...overrides,
   };
 }
@@ -66,7 +65,6 @@ export function useRemoteBuildProfiles() {
       setupStatus: profile.setupStatus ?? 'untested',
       pollingIntervalMinutes: REMOTE_BUILD_INTERVALS.includes(profile.pollingIntervalMinutes as typeof REMOTE_BUILD_INTERVALS[number]) ? profile.pollingIntervalMinutes : DEFAULT_INTERVAL_MINUTES,
       nextCheckAt: undefined,
-      logs: profile.logs ?? [],
     }));
     setProfiles(nextProfiles);
     setActiveProfileId((await store.get<string>(STORE_KEYS.REMOTE_BUILD_ACTIVE_PROFILE)) ?? null);
@@ -101,17 +99,6 @@ export function useRemoteBuildProfiles() {
     setProfiles(next);
   }, []);
 
-  const appendLog = useCallback(async (id: string, message: string) => {
-    const store = await getStore();
-    const current = (await store.get<RemoteBuildProfile[]>(STORE_KEYS.REMOTE_BUILD_PROFILES)) ?? [];
-    const next = current.map((profile) => {
-      if (profile.id !== id) return profile;
-      const entry: RemoteBuildLogEntry = { timestamp: new Date().toISOString(), message };
-      return { ...profile, logs: [...(profile.logs ?? []), entry].slice(-100) };
-    });
-    await store.set(STORE_KEYS.REMOTE_BUILD_PROFILES, next);
-    setProfiles(next);
-  }, []);
 
   const removeProfile = useCallback(async (id: string) => {
     const next = profiles.filter((profile) => profile.id !== id);
@@ -130,5 +117,5 @@ export function useRemoteBuildProfiles() {
     setActiveProfileId(id);
   }, []);
 
-  return { profiles, activeProfileId, activeProfile: profiles.find((p) => p.id === activeProfileId) ?? null, loading, addProfile, updateProfile, appendLog, removeProfile, setActive, refresh };
+  return { profiles, activeProfileId, activeProfile: profiles.find((p) => p.id === activeProfileId) ?? null, loading, addProfile, updateProfile, removeProfile, setActive, refresh };
 }

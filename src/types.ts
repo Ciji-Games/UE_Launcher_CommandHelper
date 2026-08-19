@@ -156,11 +156,6 @@ export interface RemoteBuildRun {
   logPath?: string;
 }
 
-export interface RemoteBuildLogEntry {
-  timestamp: string;
-  message: string;
-}
-
 export interface RemoteBuildProfile {
   id: string;
   name: string;
@@ -188,7 +183,6 @@ export interface RemoteBuildProfile {
   nextCheckAt?: string;
   lastRunAt?: string;
   buildProgress?: number;
-  logs?: RemoteBuildLogEntry[];
 }
 
 /** Schedulable step type */

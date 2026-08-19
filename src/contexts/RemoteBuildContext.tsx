@@ -43,7 +43,7 @@ function resolveDetectedEngine(projectPath: string, status: CheckoutStatus, engi
 }
 
 export function RemoteBuildProvider({ children }: { children: React.ReactNode }) {
-  const { profiles, updateProfile, appendLog, refresh } = useRemoteBuildProfiles();
+  const { profiles, updateProfile, refresh } = useRemoteBuildProfiles();
   const inFlight = useRef(false);
   const batchRunning = useRef(false);
   const scheduleNextRef = useRef<string | undefined>(undefined);
@@ -91,7 +91,7 @@ export function RemoteBuildProvider({ children }: { children: React.ReactNode })
       const log = (message: string) => {
         console.info(`[automatic-build] ${profile.name}: ${message}`);
         appendLine({ line: `[${profile.name}] ${message}`, color: message.includes('failed') || message.includes('blocked') ? 'red' : message.includes('successfully') ? 'green' : 'blue' });
-        return appendLog(profile.id, message);
+        return Promise.resolve();
       };
 
       await updateProfile(profile.id, { lastStatus: 'checking', lastCheckedAt: checkedAt });
@@ -259,7 +259,7 @@ export function RemoteBuildProvider({ children }: { children: React.ReactNode })
     } catch (error) {
       console.error('[automatic-build] check failed', error);
       const message = error instanceof Error ? error.message : String(error);
-      await appendLog(profile.id, `check failed unexpectedly: ${message}`);
+      appendLine({ line: `[${profile.name}] check failed unexpectedly: ${message}`, color: 'red' });
       await updateProfile(profile.id, { lastStatus: 'failed', buildProgress: undefined, lastError: message });
     } finally {
       inFlight.current = false;
@@ -268,7 +268,7 @@ export function RemoteBuildProvider({ children }: { children: React.ReactNode })
         finishProgress();
       }
     }
-  }, [appendLine, appendLog, finishProgress, startProgress, updateProfile]);
+  }, [appendLine, finishProgress, startProgress, updateProfile]);
 
   const pullNow = useCallback((profile: RemoteBuildProfile) => checkProfile(profile, true, true), [checkProfile]);
 

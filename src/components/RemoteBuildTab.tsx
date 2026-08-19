@@ -179,7 +179,8 @@ export function RemoteBuildTab() {
         });
     };
 
-    return <section className='flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto pr-1'>
+    return <section className='flex min-h-0 flex-1 flex-col gap-4 pr-1'>
+        <div className='flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto'>
         <header><h1 className='text-xl font-semibold text-slate-100'>Automatic build</h1><p
             className='mt-1 text-sm text-slate-400'>Connect GitHub, then manage enabled jobs in one global schedule.</p>
             <div className='mt-3 flex flex-wrap items-center gap-3 text-xs'>
@@ -255,12 +256,9 @@ export function RemoteBuildTab() {
                         <div className='mt-3 grid gap-2 text-xs text-slate-500 sm:grid-cols-3'>
                             <span>Setup: {profile.setupStatus}</span><span>Last built: {profile.lastBuiltCommit?.slice(0, 12) ?? '-'}</span><span>Output: {remoteBuildOutputRoot(profile.repositoryPath) || '-'}</span>
                         </div>
-                        {profile.logs && profile.logs.length > 0 && <details className='mt-3'>
-                            <summary className='cursor-pointer text-xs text-slate-400'>Diagnostic log ({profile.logs.length})</summary>
-                            <pre className='mt-2 max-h-48 overflow-auto rounded bg-slate-950 p-2 text-[11px] leading-5 text-slate-400'>{profile.logs.map((entry) => `${new Date(entry.timestamp).toLocaleTimeString()}  ${entry.message}`).join('\n')}</pre>
-                        </details>}
                     </div>;
                 })}</div>}</div>
+        </div>
         {editing &&
             <div className='fixed inset-0 z-20 flex items-center justify-center bg-slate-950/80 p-4' role='dialog'
                  aria-modal='true'>
@@ -322,11 +320,11 @@ export function RemoteBuildTab() {
                     </div>
                 </div>
             </div>}
-        <div className='shrink-0 overflow-hidden rounded-xl border border-slate-700 bg-slate-900/60'>
-            <button type='button' onClick={() => setShowOutputLog((previous) => !previous)} className='flex w-full items-center justify-between px-4 py-2 text-left text-sm font-medium text-slate-300 hover:bg-slate-800/60'>
-                <span>Output Log{running ? ' · Running' : ''}</span><span className={showOutputLog ? 'rotate-180 text-slate-400' : 'text-slate-400'}>▼</span>
+        <div className={`flex min-w-0 flex-col overflow-hidden rounded-lg border border-slate-600/60 bg-slate-800/40 transition-all ${showOutputLog ? 'flex-[0_0_30%] min-h-0' : 'shrink-0'}`}>
+            <button type='button' onClick={() => setShowOutputLog((previous) => !previous)} className='flex w-full items-center justify-between px-4 py-2 text-left transition-colors hover:bg-slate-700/50'>
+                <span className='text-sm font-medium text-slate-300'>Output Log{running ? ' · Running' : ''}</span><span className={`inline-block text-xs text-slate-400 transition-transform ${showOutputLog ? 'rotate-180' : ''}`}>▼</span>
             </button>
-            {showOutputLog && <div className='h-64 border-t border-slate-700 p-4'><OutputLogPanel /></div>}
+            {showOutputLog && <div className='flex min-h-0 flex-1 flex-col overflow-hidden border-t border-slate-600/60 p-4'><OutputLogPanel /></div>}
         </div>
     </section>;
 }
