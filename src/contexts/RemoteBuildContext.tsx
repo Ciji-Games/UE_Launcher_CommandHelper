@@ -287,60 +287,111 @@ export function RemoteBuildProvider({ children }: { children: React.ReactNode })
     return () => { void unlisten.then((stop) => stop()); };
   }, [appendLine]);
 
-  useEffect(() => {
-    const timer = window.setInterval(() => {
-      void refresh().then(async (latestProfiles) => {
-        const enabledProfiles = latestProfiles.filter((profile) => profile.enabled && profile.cloneStatus === 'ready');
-        if (enabledProfiles.length === 0) {
-          if (scheduleNextRef.current !== undefined) {
-            scheduleNextRef.current = undefined;
-            setScheduleNextAt(undefined);
-            await (await getStore()).set(STORE_KEYS.REMOTE_BUILD_SCHEDULE_NEXT, undefined);
-          }
-          return;
+  // The interval below must be created exactly once. Previously it was
+  // recreated (clearInterval + setInterval) whenever any of its dependencies
+  // (appendLine, checkProfile, refresh, ...) changed identity, which happens
+  // on effectively every render if those callbacks aren't memoized upstream.
+  // If re-renders happen more often than once a second, the interval could
+  // be torn down before its 1000ms ever elapsed, so the scheduled build
+  // would silently never fire even though the UI showed "Idle (Scheduled)".
+  // Routing the tick logic through a ref sidesteps that: the ref is updated
+  // with the latest closures every render, but the interval itself never
+  // gets rebuilt.
+  // Tauri's store plugin `set` command requires an actual `value` argument.
+  // Calling `.set(key, undefined)` gets its `value` key stripped by
+  // JSON.stringify and the Rust side rejects it ("missing required key
+  // value"). That rejection previously happened *outside* any try/catch,
+  // right after `batchRunning.current = true` was set, which permanently
+  // stuck `batchRunning` at `true` and silently killed the scheduler for
+  // the rest of the session. This helper avoids ever passing `undefined`,
+  // and swallows/logs any persistence failure so it can never break
+  // scheduling again.
+  const persistScheduleNext = useCallback(async (value: string | undefined) => {
+    try {
+      const store = await getStore();
+      if (value === undefined) {
+        if (typeof (store as { delete?: (key: string) => Promise<unknown> }).delete === 'function') {
+          await (store as { delete: (key: string) => Promise<unknown> }).delete(STORE_KEYS.REMOTE_BUILD_SCHEDULE_NEXT);
         }
-        if (batchRunning.current || inFlight.current) return;
+        // If `delete` isn't available on this store implementation, skip
+        // persisting the "cleared" state rather than crashing the tick —
+        // a stale timestamp left behind is harmless since it's always
+        // validated against the current time before use.
+      } else {
+        await store.set(STORE_KEYS.REMOTE_BUILD_SCHEDULE_NEXT, value);
+      }
+    } catch (error) {
+      console.warn('[automatic-build] failed to persist schedule state', error);
+    }
+  }, []);
 
-        const now = Date.now();
-        const next = scheduleNextRef.current;
-        if (!next) {
-          const initial = new Date(now + scheduleIntervalMinutes * 60_000).toISOString();
-          scheduleNextRef.current = initial;
-          setScheduleNextAt(initial);
-          await (await getStore()).set(STORE_KEYS.REMOTE_BUILD_SCHEDULE_NEXT, initial);
-          return;
+  const tickRef = useRef<() => void>(() => {});
+  tickRef.current = () => {
+    void refresh().then(async (latestProfiles) => {
+      const enabledProfiles = latestProfiles.filter((profile) => profile.enabled && profile.cloneStatus === 'ready');
+      console.info(`[automatic-build] schedule tick: enabled=${enabledProfiles.length}, batchRunning=${batchRunning.current}, inFlight=${inFlight.current}, next=${scheduleNextRef.current ?? '(none)'}`);
+      if (enabledProfiles.length === 0) {
+        if (scheduleNextRef.current !== undefined) {
+          scheduleNextRef.current = undefined;
+          setScheduleNextAt(undefined);
+          await persistScheduleNext(undefined);
         }
+        return;
+      }
+      if (batchRunning.current || inFlight.current) return;
 
-        if (Date.parse(next) > now) return;
+      const now = Date.now();
+      const next = scheduleNextRef.current;
+      if (!next) {
+        const initial = new Date(now + scheduleIntervalMinutes * 60_000).toISOString();
+        scheduleNextRef.current = initial;
+        setScheduleNextAt(initial);
+        await persistScheduleNext(initial);
+        return;
+      }
 
-        batchRunning.current = true;
-        setScheduleRunning(true);
-        scheduleNextRef.current = undefined;
-        setScheduleNextAt(undefined);
-        await (await getStore()).set(STORE_KEYS.REMOTE_BUILD_SCHEDULE_NEXT, undefined);
+      if (Date.parse(next) > now) return;
 
+      batchRunning.current = true;
+      setScheduleRunning(true);
+      scheduleNextRef.current = undefined;
+      setScheduleNextAt(undefined);
+
+      // Everything from here on is inside try/finally, so no matter what
+      // throws (a store error, an invoke error, anything) batchRunning is
+      // guaranteed to be released and the scheduler can't get stuck again.
+      try {
+        await persistScheduleNext(undefined);
         startProgress({ showOutputLog: true });
         appendLine({ line: `Automatic build schedule started: ${enabledProfiles.length} enabled job(s).`, color: 'blue' });
-        try {
-          for (const profile of enabledProfiles) {
-            await checkProfile(profile, true, false, true);
-          }
-          appendLine({ line: 'Automatic build schedule check cycle completed.', color: 'green' });
-        } catch (error) {
-          appendLine({ line: `Automatic build schedule failed: ${error instanceof Error ? error.message : String(error)}`, color: 'red' });
-        } finally {
-          finishProgress();
-          batchRunning.current = false;
-          setScheduleRunning(false);
-          const restarted = new Date(Date.now() + scheduleIntervalMinutes * 60_000).toISOString();
-          scheduleNextRef.current = restarted;
-          setScheduleNextAt(restarted);
-          await (await getStore()).set(STORE_KEYS.REMOTE_BUILD_SCHEDULE_NEXT, restarted);
+        for (const profile of enabledProfiles) {
+          console.info(`[automatic-build] schedule: invoking checkProfile for '${profile.name}'`);
+          await checkProfile(profile, true, false, true);
         }
-      });
-    }, 1000);
-    return () => window.clearInterval(timer);
-  }, [appendLine, checkProfile, finishProgress, refresh, scheduleIntervalMinutes, startProgress]);
+        appendLine({ line: 'Automatic build schedule check cycle completed.', color: 'green' });
+      } catch (error) {
+        console.error('[automatic-build] schedule cycle failed', error);
+        appendLine({ line: `Automatic build schedule failed: ${error instanceof Error ? error.message : String(error)}`, color: 'red' });
+      } finally {
+        finishProgress();
+        batchRunning.current = false;
+        setScheduleRunning(false);
+        const restarted = new Date(Date.now() + scheduleIntervalMinutes * 60_000).toISOString();
+        scheduleNextRef.current = restarted;
+        setScheduleNextAt(restarted);
+        await persistScheduleNext(restarted);
+      }
+    });
+  };
+
+  useEffect(() => {
+    console.info('[automatic-build] schedule interval mounted');
+    const timer = window.setInterval(() => tickRef.current(), 1000);
+    return () => {
+      console.info('[automatic-build] schedule interval unmounted');
+      window.clearInterval(timer);
+    };
+  }, []);
 
   return <RemoteBuildContext.Provider value={{ checkProfile, pullNow, checking, scheduleNextAt, scheduleRunning, scheduleIntervalMinutes, setScheduleIntervalMinutes }}>{children}</RemoteBuildContext.Provider>;
 }
