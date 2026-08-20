@@ -12,7 +12,7 @@ import {useRemoteBuild} from '../hooks/useRemoteBuild';
 import {useGitHub} from '../hooks/useGitHub';
 import {useProgress} from '../contexts/ProgressContext';
 import {OutputLogPanel} from './OutputLogPanel';
-import type {CheckoutStatus, GitHubBranch, RemoteBuildProfile} from '../types';
+import type {CheckoutStatus, GitHubBranch, RemoteBuildProfile, RemoteBuildProgressStages} from '../types';
 
 const panel = 'rounded-xl border border-slate-700 bg-slate-900/60 p-4';
 const field = 'mt-1 w-full rounded border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-200';
@@ -174,7 +174,13 @@ export function RemoteBuildTab() {
     const clone = async (profile: RemoteBuildProfile) => {
         if (!profile.repository || !profile.repositoryPath || !profile.buildBranch || destinationErrors[profile.id]) return;
         setBusyId(profile.id);
-        await patch(profile, {cloneStatus: 'cloning', setupStatus: 'untested', enabled: false, lastError: undefined});
+        await patch(profile, {
+            cloneStatus: 'cloning',
+            setupStatus: 'untested',
+            enabled: false,
+            lastError: undefined,
+            progressStages: {...profile.progressStages, clone: 'running', repo: 'pending', package: 'disabled', zip: 'disabled', cleanup: 'pending'},
+        });
         try {
             const checkoutPath = remoteBuildCheckoutPath(profile.repositoryPath);
             const result = await invoke<{
@@ -205,13 +211,15 @@ export function RemoteBuildTab() {
                 cloneStatus: 'ready',
                 setupStatus: 'passed',
                 projectPath,
-                lastError: undefined
+                lastError: undefined,
+                progressStages: {...profile.progressStages, clone: 'success', repo: 'pending', package: 'disabled', zip: 'disabled', cleanup: 'pending'},
             });
         } catch (error) {
             await patch(profile, {
                 cloneStatus: 'failed',
                 setupStatus: 'failed',
-                lastError: error instanceof Error ? error.message : String(error)
+                lastError: error instanceof Error ? error.message : String(error),
+                progressStages: {...profile.progressStages, clone: 'failed'},
             });
         } finally {
             setBusyId(null);
@@ -274,7 +282,17 @@ export function RemoteBuildTab() {
             {profiles.length === 0 ? <p className='mt-6 text-center text-sm text-slate-500'>No build profiles yet.</p> :
                 <div className='mt-4 space-y-3'>{profiles.map((profile) => {
                     const busy = busyId === profile.id;
-                    const running = profile.lastStatus === 'running';
+                    const stages = profile.progressStages;
+                    const renderStage = (label: string, status: keyof RemoteBuildProgressStages, percent?: number, hidden = false) => {
+                        if (hidden) return null;
+                        const state = stages[status];
+                        const value = state === 'success' ? 100 : state === 'running' ? Math.round(percent ?? 0) : 0;
+                        const color = state === 'success' ? 'bg-emerald-400' : state === 'failed' ? 'bg-red-400' : state === 'disabled' ? 'bg-slate-700' : 'bg-sky-400';
+                        return <div key={status} className='min-w-40 flex-1'>
+                            <div className='mb-1 flex justify-between text-xs text-slate-400'><span>{label}{state === 'disabled' ? ' (disabled)' : ''}</span><span>{state === 'success' ? 'Done' : state === 'failed' ? 'Failed' : state === 'running' ? `${value}%` : ''}</span></div>
+                            <div className='h-2 overflow-hidden rounded bg-slate-800'><div className={`h-full transition-all ${color}`} style={{width: state === 'disabled' ? '100%' : `${value}%`}}/></div>
+                        </div>;
+                    };
                     return <div key={profile.id} className='rounded-lg border border-slate-700 bg-slate-950/40 p-4'>
                         <div className='flex flex-wrap items-start justify-between gap-3'>
                             <div><h3 className='font-medium text-slate-100'>{profile.name || 'Unnamed profile'}</h3><p
@@ -283,13 +301,14 @@ export function RemoteBuildTab() {
                             <span
                                 className={`rounded px-2 py-1 text-xs font-medium ${profile.enabled ? 'border border-sky-800/60 bg-sky-950/80 text-sky-300' : 'bg-slate-800 text-slate-400'}`}>{profile.enabled ? 'Scheduled' : 'Stopped'}</span>
                         </div>
-                        {running && <div className='mt-3'>
-                            <div className='mb-1 flex justify-between text-xs text-slate-400'>
-                                <span>Build progress</span><span>{Math.round(profile.buildProgress ?? 0)}%</span></div>
-                            <div className='h-2 overflow-hidden rounded bg-slate-800'>
-                                <div className='h-full bg-sky-400 transition-all'
-                                     style={{width: String(profile.buildProgress ?? 0) + '%'}}/>
-                            </div>
+                        {(profile.cloneStatus === 'cloning' || profile.cloneStatus === 'failed' || profile.cloneStatus === 'ready') && <div className='mt-3 flex gap-3 overflow-x-auto pb-1'>
+                            {profile.cloneStatus !== 'ready' && renderStage('Clone', 'clone')}
+                            {profile.cloneStatus === 'ready' && <>
+                                {renderStage('Repo', 'repo')}
+                                {renderStage('Package', 'package', profile.buildProgress)}
+                                {renderStage('Zipping', 'zip', profile.zipProgress, stages.zip === 'disabled')}
+                                {renderStage('Cleanup', 'cleanup')}
+                            </>}
                         </div>}
                         <div className='mt-3 flex flex-wrap gap-2'>
                             <button type='button' disabled={!account} onClick={() => edit(profile)}
@@ -299,16 +318,17 @@ export function RemoteBuildTab() {
                                     disabled={!account || busy || Boolean(destinationErrors[profile.id]) || !profile.repository || !profile.repositoryPath || !profile.buildBranch}
                                     onClick={() => void clone(profile)}
                                     className='rounded border border-indigo-400/60 px-3 py-1.5 text-xs text-indigo-300 disabled:opacity-40'>{busy ? 'Cloning…' : 'Clone'}</button>
-                            <button type='button'
+                            {profile.cloneStatus === 'ready' && <button type='button'
                                     disabled={!account || busy || profile.cloneStatus !== 'ready'}
                                     onClick={() => void pullNow(profile)}
                                     className='rounded border border-sky-400/60 px-3 py-1.5 text-xs text-sky-300 disabled:opacity-40'>Pull
                                 now
-                            </button>
-                            <button type='button'
+                            </button>}
+                            {profile.cloneStatus === 'ready' && <button type='button'
                                     disabled={!account || busy || (!profile.enabled && profile.cloneStatus !== 'ready')}
                                     onClick={() => void toggleSchedule(profile)}
                                     className='rounded border border-emerald-400/60 px-3 py-1.5 text-xs text-emerald-300 disabled:opacity-40'>{profile.enabled ? 'Disable job' : 'Enable job'}</button>
+                            }
                             <button type='button' disabled={!account} onClick={() => void removeProfile(profile.id)}
                                     className='rounded border border-red-400/40 px-3 py-1.5 text-xs text-red-300 disabled:opacity-40'>Delete
                             </button>

@@ -98,6 +98,15 @@ export interface GitHubBranch {
 
 export type RemoteBuildCloneStatus = 'not-started' | 'cloning' | 'ready' | 'failed';
 export type RemoteBuildSetupStatus = 'untested' | 'passed' | 'blocked' | 'failed';
+export type RemoteBuildStageStatus = 'pending' | 'running' | 'success' | 'failed' | 'disabled';
+
+export interface RemoteBuildProgressStages {
+  clone: RemoteBuildStageStatus;
+  repo: RemoteBuildStageStatus;
+  package: RemoteBuildStageStatus;
+  zip: RemoteBuildStageStatus;
+  cleanup: RemoteBuildStageStatus;
+}
 
 export interface RemoteBuildCommit {
   hash: string;
@@ -183,6 +192,8 @@ export interface RemoteBuildProfile {
   nextCheckAt?: string;
   lastRunAt?: string;
   buildProgress?: number;
+  zipProgress?: number;
+  progressStages: RemoteBuildProgressStages;
 }
 
 /** Schedulable step type */

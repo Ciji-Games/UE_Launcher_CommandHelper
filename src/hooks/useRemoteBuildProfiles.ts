@@ -28,6 +28,14 @@ export function createRemoteBuildProfile(overrides: Partial<RemoteBuildProfile> 
     buildHistory: [],
     lastStatus: 'idle',
     buildProgress: undefined,
+    zipProgress: undefined,
+    progressStages: {
+      clone: 'pending',
+      repo: 'pending',
+      package: 'disabled',
+      zip: 'disabled',
+      cleanup: 'pending',
+    },
     ...overrides,
   };
 }
@@ -63,6 +71,10 @@ export function useRemoteBuildProfiles() {
       repository: profile.repository ?? null,
       cloneStatus: profile.cloneStatus ?? 'not-started',
       setupStatus: profile.setupStatus ?? 'untested',
+      progressStages: {
+        ...createRemoteBuildProfile().progressStages,
+        ...profile.progressStages,
+      },
       pollingIntervalMinutes: REMOTE_BUILD_INTERVALS.includes(profile.pollingIntervalMinutes as typeof REMOTE_BUILD_INTERVALS[number]) ? profile.pollingIntervalMinutes : DEFAULT_INTERVAL_MINUTES,
       nextCheckAt: undefined,
     }));

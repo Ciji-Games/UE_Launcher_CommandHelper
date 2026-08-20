@@ -140,8 +140,17 @@ export function RemoteBuildProvider({ children }: { children: React.ReactNode })
         appendLine({ line: `[${profile.name}] ${message}`, color: message.includes('failed') || message.includes('blocked') ? 'red' : message.includes('successfully') ? 'green' : 'blue' });
         return Promise.resolve();
       };
+      let stages = {...profile.progressStages};
+      const updateStages = async (changes: Partial<typeof stages>) => {
+        stages = {...stages, ...changes};
+        await updateProfile(profile.id, {progressStages: stages});
+      };
 
-      await updateProfile(profile.id, { lastStatus: 'checking', lastCheckedAt: checkedAt });
+      await updateProfile(profile.id, {
+        lastStatus: 'checking', lastCheckedAt: checkedAt,
+        progressStages: {...stages, repo: 'running', package: runBuild ? 'pending' : 'disabled', zip: runBuild && archiveOnly ? 'pending' : 'disabled', cleanup: runBuild && (keepBuildsEnabled || archiveOnly) ? 'pending' : 'disabled'},
+      });
+      stages = {...stages, repo: 'running', package: runBuild ? 'pending' : 'disabled', zip: runBuild && archiveOnly ? 'pending' : 'disabled', cleanup: runBuild && (keepBuildsEnabled || archiveOnly) ? 'pending' : 'disabled'};
       await log(`check started: branch='${profile.buildBranch}', checkout='${checkoutPathForLog(profile.repositoryPath)}'`);
       const checkoutPath = remoteBuildCheckoutPath(profile.repositoryPath);
       const remoteName = profile.remoteName || 'origin';
@@ -173,7 +182,7 @@ export function RemoteBuildProvider({ children }: { children: React.ReactNode })
 
       await log(fetch.ok ? 'fetch completed' : `fetch failed: ${fetch.error ?? 'unknown error'}`);
       if (!fetch.ok) {
-        await updateProfile(profile.id, { safetyStatus: 'unknown', lastStatus: 'failed', lastError: fetch.error ?? 'Git fetch failed.' });
+        await updateProfile(profile.id, { safetyStatus: 'unknown', lastStatus: 'failed', lastError: fetch.error ?? 'Git fetch failed.', progressStages: {...profile.progressStages, repo: 'failed'} });
         return;
       }
 
@@ -186,7 +195,7 @@ export function RemoteBuildProvider({ children }: { children: React.ReactNode })
 
       if (!refreshed.result.ok || !refreshed.remoteCommit) {
         await log(`post-fetch inspection failed: ${refreshed.result.error ?? 'remote commit missing'}`);
-        await updateProfile(profile.id, { safetyStatus: 'unknown', lastStatus: 'failed', lastError: refreshed.result.error ?? 'The remote branch could not be read after fetching.' });
+        await updateProfile(profile.id, { safetyStatus: 'unknown', lastStatus: 'failed', lastError: refreshed.result.error ?? 'The remote branch could not be read after fetching.', progressStages: {...profile.progressStages, repo: 'failed'} });
         return;
       }
 
@@ -200,7 +209,7 @@ export function RemoteBuildProvider({ children }: { children: React.ReactNode })
       // Step 4: If local is NOT behind and this is not a force-build
       if (!isBehind && (!force || remoteCommit === profile.lastBuiltCommit)) {
         await log(`check completed: local branch '${profile.buildBranch}' is up to date (${headCommit?.slice(0, 12) ?? remoteCommit.slice(0, 12)})`);
-        await updateProfile(profile.id, { lastStatus: 'idle', lastError: undefined });
+        await updateProfile(profile.id, { lastStatus: 'idle', lastError: undefined, progressStages: {...profile.progressStages, repo: 'success', package: 'disabled', zip: 'disabled', cleanup: 'disabled'} });
         return;
       }
 
@@ -215,7 +224,7 @@ export function RemoteBuildProvider({ children }: { children: React.ReactNode })
 
       await log(updated.ok ? 'checkout update completed' : `checkout update failed: ${updated.error ?? 'unknown error'}`);
       if (!updated.ok) {
-        await updateProfile(profile.id, { lastStatus: 'failed', lastError: updated.error ?? 'Checkout update failed.' });
+        await updateProfile(profile.id, { lastStatus: 'failed', lastError: updated.error ?? 'Checkout update failed.', progressStages: {...profile.progressStages, repo: 'failed'} });
         return;
       }
 
@@ -240,14 +249,14 @@ export function RemoteBuildProvider({ children }: { children: React.ReactNode })
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         await log(`packaging setup failed: ${message}`);
-        await updateProfile(profile.id, { setupStatus: 'failed', lastStatus: 'failed', lastError: message });
+        await updateProfile(profile.id, { setupStatus: 'failed', lastStatus: 'failed', lastError: message, progressStages: {...profile.progressStages, repo: 'success', package: 'failed'} });
         return;
       }
 
       // Step 7: Packaging
       if (!runBuild) {
         await log('checkout updated without packaging (runBuild=false)');
-        await updateProfile(profile.id, { lastStatus: 'idle', lastError: undefined });
+        await updateProfile(profile.id, { lastStatus: 'idle', lastError: undefined, progressStages: {...profile.progressStages, repo: 'success', package: 'disabled', cleanup: 'disabled'} });
         return;
       }
 
@@ -255,21 +264,17 @@ export function RemoteBuildProvider({ children }: { children: React.ReactNode })
       await updateProfile(profile.id, {
         lastStatus: 'running',
         buildProgress: 0,
+        zipProgress: archiveOnly ? 0 : undefined,
+        progressStages: {...stages, repo: 'success', package: 'running', zip: archiveOnly ? 'pending' : 'disabled', cleanup: keepBuildsEnabled || archiveOnly ? 'pending' : 'disabled'},
         lastRunAt: run.startedAt,
         buildHistory: [run, ...profile.buildHistory].slice(0, 50)
       });
+      stages = {...stages, repo: 'success', package: 'running', zip: archiveOnly ? 'pending' : 'disabled', cleanup: keepBuildsEnabled || archiveOnly ? 'pending' : 'disabled'};
       await log(`packaging started: project='${projectPath}', platform='${profile.platform}', configuration='${profile.packageConfig}'`);
 
       let packageError: string | undefined;
       let packageSuccess = false;
       try {
-        if (keepBuildsEnabled) {
-          await invoke('prepare_remote_build_output', {
-            outputRoot: remoteBuildOutputRoot(profile.repositoryPath),
-            keepCount: Math.max(0, keepBuildsCount - 1),
-          });
-          await log(`old builds cleaned; keeping room for ${keepBuildsCount} stored build(s)`);
-        }
         await invoke('run_package', {
           projectPath,
           platform: profile.platform,
@@ -280,11 +285,29 @@ export function RemoteBuildProvider({ children }: { children: React.ReactNode })
           projectVersion: null,
         });
         if (archiveOnly) {
+          await updateStages({package: 'running', zip: 'running', cleanup: 'pending'});
           await log('archiving packaged build…');
           const archivePath = await invoke<string>('archive_remote_build_output', {
             outputDirectory: remoteBuildOutputPath(profile.repositoryPath, remoteCommit),
           });
           await log(`build archived to '${archivePath}'`);
+          await updateStages({zip: 'success', cleanup: keepBuildsEnabled ? 'running' : 'success'});
+          if (keepBuildsEnabled) {
+            await invoke('prepare_remote_build_output', {
+              outputRoot: remoteBuildOutputRoot(profile.repositoryPath),
+              keepCount: keepBuildsCount,
+            });
+            await log(`old builds cleaned; keeping ${keepBuildsCount} stored build(s)`);
+            await updateStages({cleanup: 'success'});
+          }
+        } else if (keepBuildsEnabled) {
+          await updateStages({package: 'running', cleanup: 'running'});
+          await invoke('prepare_remote_build_output', {
+            outputRoot: remoteBuildOutputRoot(profile.repositoryPath),
+            keepCount: keepBuildsCount,
+          });
+          await log(`old builds cleaned; keeping ${keepBuildsCount} stored build(s)`);
+          await updateStages({cleanup: 'success'});
         }
         packageSuccess = true;
       } catch (err) {
@@ -304,8 +327,10 @@ export function RemoteBuildProvider({ children }: { children: React.ReactNode })
         await updateProfile(profile.id, {
           lastStatus: 'success',
           buildProgress: 100,
+          zipProgress: archiveOnly ? 100 : undefined,
           lastBuiltCommit: remoteCommit,
           lastError: undefined,
+          progressStages: {...stages, repo: 'success', package: 'success', zip: archiveOnly ? 'success' : 'disabled', cleanup: keepBuildsEnabled || archiveOnly ? 'success' : 'disabled'},
           buildHistory: [finalRun, ...profile.buildHistory].slice(0, 50)
         });
       } else {
@@ -314,6 +339,7 @@ export function RemoteBuildProvider({ children }: { children: React.ReactNode })
           lastStatus: 'failed',
           buildProgress: undefined,
           lastError: packageError ?? 'Packaging failed.',
+          progressStages: {...stages, package: 'failed'},
           buildHistory: [finalRun, ...profile.buildHistory].slice(0, 50)
         });
       }
@@ -321,7 +347,7 @@ export function RemoteBuildProvider({ children }: { children: React.ReactNode })
       console.error('[automatic-build] check failed', error);
       const message = error instanceof Error ? error.message : String(error);
       appendLine({ line: `[${profile.name}] check failed unexpectedly: ${message}`, color: 'red' });
-      await updateProfile(profile.id, { lastStatus: 'failed', buildProgress: undefined, lastError: message });
+      await updateProfile(profile.id, { lastStatus: 'failed', buildProgress: undefined, lastError: message, progressStages: {...profile.progressStages, repo: 'failed', package: 'failed'} });
     } finally {
       inFlight.current = false;
       setChecking(false);
@@ -336,7 +362,13 @@ export function RemoteBuildProvider({ children }: { children: React.ReactNode })
   useEffect(() => {
     const unlisten = listen<{ percent: number }>('progress-update', (event) => {
       const runningProfile = profiles.find((profile) => profile.lastStatus === 'running');
-      if (runningProfile) void updateProfile(runningProfile.id, { buildProgress: Math.max(0, Math.min(100, event.payload.percent)) });
+      if (!runningProfile) return;
+      const percent = Math.max(0, Math.min(100, event.payload.percent));
+      if (runningProfile.progressStages.zip === 'running') {
+        void updateProfile(runningProfile.id, {zipProgress: percent});
+      } else if (runningProfile.progressStages.package === 'running') {
+        void updateProfile(runningProfile.id, {buildProgress: percent});
+      }
     });
     return () => { void unlisten.then((stop) => stop()); };
   }, [profiles, updateProfile]);
