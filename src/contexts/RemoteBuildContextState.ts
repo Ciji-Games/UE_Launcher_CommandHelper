@@ -9,6 +9,10 @@ export interface RemoteBuildContextValue {
   scheduleRunning: boolean;
   scheduleIntervalMinutes: number;
   setScheduleIntervalMinutes: (minutes: number) => Promise<void>;
+  keepBuildsEnabled: boolean;
+  keepBuildsCount: number;
+  archiveOnly: boolean;
+  applyScheduleSettings: (settings: { intervalMinutes: number; keepBuildsEnabled: boolean; keepBuildsCount: number; archiveOnly: boolean }) => Promise<void>;
 }
 
 export const RemoteBuildContext = createContext<RemoteBuildContextValue | null>(null);

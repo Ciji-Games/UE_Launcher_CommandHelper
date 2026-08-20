@@ -26,6 +26,8 @@ pub fn run() {
             commands::remote_build::update_remote_build_checkout,
             commands::remote_build::clone_github_repository,
             commands::remote_build::validate_clone_destination,
+            commands::remote_build::prepare_remote_build_output,
+            commands::remote_build::archive_remote_build_output,
             commands::github_auth::github_start_authorization,
             commands::github_auth::github_complete_authorization,
             commands::github_auth::github_is_connected,

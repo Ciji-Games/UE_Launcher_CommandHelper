@@ -1,4 +1,4 @@
-﻿import {useEffect, useState} from 'react';
+﻿import {useEffect, useMemo, useState} from 'react';
 import {invoke} from '@tauri-apps/api/core';
 import {open} from '@tauri-apps/plugin-dialog';
 import {
@@ -39,7 +39,7 @@ function formatCountdown(nextCheckAt: string | undefined, now: number) {
 
 export function RemoteBuildTab() {
     const {profiles, addProfile, updateProfile, removeProfile, setActive, refresh} = useRemoteBuildProfiles();
-    const {pullNow, scheduleNextAt, scheduleRunning, scheduleIntervalMinutes, setScheduleIntervalMinutes} = useRemoteBuild();
+    const {pullNow, scheduleNextAt, scheduleRunning, scheduleIntervalMinutes, keepBuildsEnabled, keepBuildsCount, archiveOnly, applyScheduleSettings} = useRemoteBuild();
     const {account, repositories, loading, message, authorization, connect, openVerification, cancelAuthorization, disconnect, loadRepositories, loadBranches} = useGitHub();
     const [editingId, setEditingId] = useState<string | null>(null);
     const [branches, setBranches] = useState<GitHubBranch[]>([]);
@@ -48,9 +48,43 @@ export function RemoteBuildTab() {
     const [now, setNow] = useState(() => Date.now());
     const [showOutputLog, setShowOutputLog] = useState(false);
     const [codeCopied, setCodeCopied] = useState(false);
+    const [repositorySearch, setRepositorySearch] = useState('');
+    const [repositoryPickerOpen, setRepositoryPickerOpen] = useState(false);
+    const [scheduleSettingsOpen, setScheduleSettingsOpen] = useState(false);
+    const [draftInterval, setDraftInterval] = useState(scheduleIntervalMinutes);
+    const [draftKeepEnabled, setDraftKeepEnabled] = useState(keepBuildsEnabled);
+    const [draftKeepCount, setDraftKeepCount] = useState(String(keepBuildsCount));
+    const [draftArchiveOnly, setDraftArchiveOnly] = useState(archiveOnly);
     const {running} = useProgress();
     const editing = profiles.find((profile) => profile.id === editingId) ?? null;
     const patch = (profile: RemoteBuildProfile, updates: Partial<RemoteBuildProfile>) => updateProfile(profile.id, updates);
+    const openScheduleSettings = () => {
+        setDraftInterval(scheduleIntervalMinutes);
+        setDraftKeepEnabled(keepBuildsEnabled);
+        setDraftKeepCount(String(keepBuildsCount));
+        setDraftArchiveOnly(archiveOnly);
+        setScheduleSettingsOpen(true);
+    };
+    const applySettings = async () => {
+        await applyScheduleSettings({
+            intervalMinutes: draftInterval,
+            keepBuildsEnabled: draftKeepEnabled,
+            keepBuildsCount: Number(draftKeepCount),
+            archiveOnly: draftArchiveOnly,
+        });
+        setScheduleSettingsOpen(false);
+    };
+    const repositoryGroups = useMemo(() => {
+        const search = repositorySearch.trim().toLowerCase();
+        const groups = new Map<string, typeof repositories>();
+        repositories.forEach((repository) => {
+            if (search && !`${repository.owner} ${repository.name} ${repository.fullName}`.toLowerCase().includes(search)) return;
+            const group = groups.get(repository.owner) ?? [];
+            group.push(repository);
+            groups.set(repository.owner, group);
+        });
+        return [...groups.entries()];
+    }, [repositories, repositorySearch]);
     const copyAuthorizationCode = async () => {
         if (!authorization) return;
         try {
@@ -109,6 +143,8 @@ export function RemoteBuildTab() {
     const chooseRepository = async (profile: RemoteBuildProfile, id: string) => {
         const repository = repositories.find((item) => item.id === id);
         if (!repository) return;
+        setRepositoryPickerOpen(false);
+        setRepositorySearch('');
         setBranches(await loadBranches(repository));
         await patch(profile, {
             repository,
@@ -196,9 +232,8 @@ export function RemoteBuildTab() {
             className='mt-1 text-sm text-slate-400'>Connect GitHub, then manage enabled jobs in one global schedule.</p>
             <div className='mt-3 flex flex-wrap items-center gap-3 text-xs'>
                 <span className='font-medium text-sky-300'>{scheduleRunning ? 'Running scheduled check…' : formatCountdown(scheduleNextAt, now) ?? 'Schedule waits for an enabled job'}</span>
-                <label className='text-slate-400'>Schedule interval<select value={String(scheduleIntervalMinutes)} onChange={(event) => void setScheduleIntervalMinutes(Number(event.target.value))} className='ml-2 rounded border border-slate-700 bg-slate-950 px-2 py-1 text-slate-200'>
-                    {REMOTE_BUILD_INTERVALS.map((minutes) => <option key={minutes} value={minutes}>{minutes} min</option>)}
-                </select></label>
+                <button type='button' onClick={openScheduleSettings}
+                        className='rounded border border-slate-700 px-3 py-1.5 text-slate-300 hover:border-sky-500 hover:text-sky-300'>Build settings</button>
             </div>
         </header>
         <div className={panel}>
@@ -284,6 +319,36 @@ export function RemoteBuildTab() {
                     </div>;
                 })}</div>}</div>
         </div>
+        {scheduleSettingsOpen && <div className='fixed inset-0 z-30 flex items-center justify-center bg-slate-950/80 p-4' role='dialog' aria-modal='true' aria-labelledby='automatic-build-settings-title'>
+            <div className='w-full max-w-md rounded-xl border border-slate-600 bg-slate-900 p-5 shadow-2xl'>
+                <div className='flex items-center justify-between gap-4'>
+                    <div><h2 id='automatic-build-settings-title' className='text-lg font-semibold text-slate-100'>Automatic build settings</h2><p className='mt-1 text-xs text-slate-500'>These settings apply to every automatic-build profile.</p></div>
+                    <button type='button' onClick={() => setScheduleSettingsOpen(false)} className='text-slate-400' aria-label='Close'>×</button>
+                </div>
+                <div className='mt-5 space-y-4'>
+                    <label className='block text-xs text-slate-400'>Schedule interval<select value={String(draftInterval)} onChange={(event) => setDraftInterval(Number(event.target.value))} className={field}>
+                        {REMOTE_BUILD_INTERVALS.map((minutes) => <option key={minutes} value={minutes}>{minutes} minute{minutes === 1 ? '' : 's'}</option>)}
+                    </select></label>
+                    <div>
+                        <label className='flex items-center gap-2 text-sm text-slate-300'><input type='checkbox' checked={draftKeepEnabled} onChange={(event) => setDraftKeepEnabled(event.target.checked)} className='accent-sky-500'/>
+                            Keep only a limited number of builds
+                        </label>
+                        <p className='mt-1 text-xs text-slate-500'>Older packaged builds are removed before a new build starts.</p>
+                        {draftKeepEnabled && <label className='mt-2 block pl-6 text-xs text-slate-400'>Keep newest builds<input type='number' min='1' step='1' value={draftKeepCount} onChange={(event) => setDraftKeepCount(event.target.value)} className={field}/></label>}
+                    </div>
+                    <div>
+                        <label className='flex items-center gap-2 text-sm text-slate-300'><input type='checkbox' checked={draftArchiveOnly} onChange={(event) => setDraftArchiveOnly(event.target.checked)} className='accent-sky-500'/>
+                            Store builds as archives only
+                        </label>
+                        <p className='mt-1 text-xs text-slate-500'>After packaging, the build folder is zipped and the unpacked files are deleted.</p>
+                    </div>
+                </div>
+                <div className='mt-6 flex justify-end gap-2'>
+                    <button type='button' onClick={() => setScheduleSettingsOpen(false)} className='rounded border border-slate-700 px-4 py-2 text-xs text-slate-300'>Cancel</button>
+                    <button type='button' onClick={() => void applySettings()} className='rounded bg-sky-500 px-4 py-2 text-xs font-medium text-slate-950'>Apply</button>
+                </div>
+            </div>
+        </div>}
         {editing &&
             <div className='fixed inset-0 z-20 flex items-center justify-center bg-slate-950/80 p-4' role='dialog'
                  aria-modal='true'>
@@ -297,13 +362,31 @@ export function RemoteBuildTab() {
                     <div className='mt-4 space-y-3'><label className='block text-xs text-slate-400'>Profile name<input
                         value={editing.name} onChange={(event) => void patch(editing, {name: event.target.value})}
                         className={field}/></label><label className='block text-xs text-slate-400'>Choose a
-                        repository<select value={editing.repository?.id ?? ''}
-                                          onChange={(event) => void chooseRepository(editing, event.target.value)}
-                                          className={field}>
-                            <option value=''>Select repository</option>
-                            {repositories.map((repository) => <option key={repository.id}
-                                                                      value={repository.id}>{repository.fullName}</option>)}
-                        </select></label><label className='block text-xs text-slate-400'>Choose a branch<select
+                        repository<div className='relative mt-1'>
+                            <button type='button' onClick={() => setRepositoryPickerOpen((open) => !open)}
+                                    className={`${field} flex items-center justify-between text-left`} aria-haspopup='listbox'
+                                    aria-expanded={repositoryPickerOpen}>
+                                <span className={editing.repository ? 'text-slate-200' : 'text-slate-500'}>{editing.repository?.fullName ?? 'Select repository'}</span>
+                                <span className='ml-2 text-slate-500'>▾</span>
+                            </button>
+                            {repositoryPickerOpen && <div className='absolute z-30 mt-1 max-h-72 w-full overflow-hidden rounded border border-slate-600 bg-slate-900 shadow-xl'>
+                                <div className='border-b border-slate-700 p-2'>
+                                    <input autoFocus value={repositorySearch} onChange={(event) => setRepositorySearch(event.target.value)}
+                                           placeholder='Search repositories…' aria-label='Search repositories'
+                                           className='w-full rounded border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-200 placeholder:text-slate-500'/>
+                                </div>
+                                <div className='max-h-56 overflow-y-auto py-1' role='listbox' aria-label='Repositories'>
+                                    {repositoryGroups.length === 0 ? <p className='px-3 py-2 text-xs text-slate-500'>No repositories found.</p> : repositoryGroups.map(([owner, ownerRepositories]) => <div key={owner}>
+                                        <p className='sticky top-0 bg-slate-900 px-3 py-1.5 text-[10px] font-semibold uppercase tracking-wider text-slate-500'>{owner}</p>
+                                        {ownerRepositories.map((repository) => <button type='button' role='option' aria-selected={editing.repository?.id === repository.id} key={repository.id}
+                                                                                         onClick={() => void chooseRepository(editing, repository.id)}
+                                                                                         className={`block w-full px-3 py-2 text-left text-sm hover:bg-slate-800 ${editing.repository?.id === repository.id ? 'bg-slate-800 text-sky-300' : 'text-slate-300'}`}>
+                                            <span>{repository.name}</span><span className='ml-2 text-xs text-slate-500'>{repository.private ? 'Private' : 'Public'}</span>
+                                        </button>)}
+                                    </div>)}
+                                </div>
+                            </div>}
+                        </div></label><label className='block text-xs text-slate-400'>Choose a branch<select
                         value={editing.buildBranch} disabled={!editing.repository}
                         onChange={(event) => void patch(editing, {
                             buildBranch: event.target.value,

@@ -23,6 +23,9 @@ export const STORE_KEYS = {
   REMOTE_BUILD_ACTIVE_PROFILE: 'remoteBuildActiveProfile',
   REMOTE_BUILD_POLLING_INTERVAL: 'remoteBuildPollingInterval',
   REMOTE_BUILD_SCHEDULE_NEXT: 'remoteBuildScheduleNext',
+  REMOTE_BUILD_KEEP_BUILDS_ENABLED: 'remoteBuildKeepBuildsEnabled',
+  REMOTE_BUILD_KEEP_BUILDS_COUNT: 'remoteBuildKeepBuildsCount',
+  REMOTE_BUILD_ARCHIVE_ONLY: 'remoteBuildArchiveOnly',
   GITHUB_ACCOUNT: 'githubAccount',
   GITHUB_REPOSITORY_CACHE: 'githubRepositoryCache',
 } as const;

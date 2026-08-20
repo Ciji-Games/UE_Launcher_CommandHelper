@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
-import { remoteBuildCheckoutPath, remoteBuildOutputPath, useRemoteBuildProfiles } from '../hooks/useRemoteBuildProfiles';
+import { remoteBuildCheckoutPath, remoteBuildOutputPath, remoteBuildOutputRoot, useRemoteBuildProfiles } from '../hooks/useRemoteBuildProfiles';
 import { STORE_KEYS } from '../config';
 import { getStore } from '../hooks/useStore';
 import { useLog } from './LogContext';
@@ -51,6 +51,9 @@ export function RemoteBuildProvider({ children }: { children: React.ReactNode })
   const [scheduleNextAt, setScheduleNextAt] = useState<string | undefined>();
   const [scheduleRunning, setScheduleRunning] = useState(false);
   const [scheduleIntervalMinutes, setScheduleIntervalMinutesState] = useState(1);
+  const [keepBuildsEnabled, setKeepBuildsEnabled] = useState(false);
+  const [keepBuildsCount, setKeepBuildsCount] = useState(3);
+  const [archiveOnly, setArchiveOnly] = useState(false);
   const { appendLine } = useLog();
   const { startProgress, finishProgress } = useProgress();
 
@@ -64,7 +67,13 @@ export function RemoteBuildProvider({ children }: { children: React.ReactNode })
       }
       const storedNext = await store.get<string>(STORE_KEYS.REMOTE_BUILD_SCHEDULE_NEXT);
       const storedInterval = await store.get<number>(STORE_KEYS.REMOTE_BUILD_POLLING_INTERVAL);
+      const storedKeepEnabled = await store.get<boolean>(STORE_KEYS.REMOTE_BUILD_KEEP_BUILDS_ENABLED);
+      const storedKeepCount = await store.get<number>(STORE_KEYS.REMOTE_BUILD_KEEP_BUILDS_COUNT);
+      const storedArchiveOnly = await store.get<boolean>(STORE_KEYS.REMOTE_BUILD_ARCHIVE_ONLY);
       setScheduleIntervalMinutesState(storedInterval === 5 || storedInterval === 10 ? storedInterval : 1);
+      setKeepBuildsEnabled(storedKeepEnabled ?? false);
+      setKeepBuildsCount(typeof storedKeepCount === 'number' && storedKeepCount > 0 ? Math.floor(storedKeepCount) : 3);
+      setArchiveOnly(storedArchiveOnly ?? false);
       if (!githubConnected) {
         scheduleNextRef.current = undefined;
         setScheduleNextAt(undefined);
@@ -87,6 +96,28 @@ export function RemoteBuildProvider({ children }: { children: React.ReactNode })
     const store = await getStore();
     await store.set(STORE_KEYS.REMOTE_BUILD_POLLING_INTERVAL, interval);
     setScheduleIntervalMinutesState(interval);
+    if (!batchRunning.current) {
+      const next = new Date(Date.now() + interval * 60_000).toISOString();
+      scheduleNextRef.current = next;
+      setScheduleNextAt(next);
+      await store.set(STORE_KEYS.REMOTE_BUILD_SCHEDULE_NEXT, next);
+    }
+  }, []);
+
+  const applyScheduleSettings = useCallback(async (settings: { intervalMinutes: number; keepBuildsEnabled: boolean; keepBuildsCount: number; archiveOnly: boolean }) => {
+    const interval = settings.intervalMinutes === 5 || settings.intervalMinutes === 10 ? settings.intervalMinutes : 1;
+    const count = Math.max(1, Math.floor(settings.keepBuildsCount) || 1);
+    const store = await getStore();
+    await Promise.all([
+      store.set(STORE_KEYS.REMOTE_BUILD_POLLING_INTERVAL, interval),
+      store.set(STORE_KEYS.REMOTE_BUILD_KEEP_BUILDS_ENABLED, settings.keepBuildsEnabled),
+      store.set(STORE_KEYS.REMOTE_BUILD_KEEP_BUILDS_COUNT, count),
+      store.set(STORE_KEYS.REMOTE_BUILD_ARCHIVE_ONLY, settings.archiveOnly),
+    ]);
+    setScheduleIntervalMinutesState(interval);
+    setKeepBuildsEnabled(settings.keepBuildsEnabled);
+    setKeepBuildsCount(count);
+    setArchiveOnly(settings.archiveOnly);
     if (!batchRunning.current) {
       const next = new Date(Date.now() + interval * 60_000).toISOString();
       scheduleNextRef.current = next;
@@ -232,6 +263,13 @@ export function RemoteBuildProvider({ children }: { children: React.ReactNode })
       let packageError: string | undefined;
       let packageSuccess = false;
       try {
+        if (keepBuildsEnabled) {
+          await invoke('prepare_remote_build_output', {
+            outputRoot: remoteBuildOutputRoot(profile.repositoryPath),
+            keepCount: Math.max(0, keepBuildsCount - 1),
+          });
+          await log(`old builds cleaned; keeping room for ${keepBuildsCount} stored build(s)`);
+        }
         await invoke('run_package', {
           projectPath,
           platform: profile.platform,
@@ -241,6 +279,13 @@ export function RemoteBuildProvider({ children }: { children: React.ReactNode })
           bumpProjectVersion: false,
           projectVersion: null,
         });
+        if (archiveOnly) {
+          await log('archiving packaged build…');
+          const archivePath = await invoke<string>('archive_remote_build_output', {
+            outputDirectory: remoteBuildOutputPath(profile.repositoryPath, remoteCommit),
+          });
+          await log(`build archived to '${archivePath}'`);
+        }
         packageSuccess = true;
       } catch (err) {
         packageError = typeof err === 'string' ? err : err instanceof Error ? err.message : String(err);
@@ -284,7 +329,7 @@ export function RemoteBuildProvider({ children }: { children: React.ReactNode })
         finishProgress();
       }
     }
-  }, [appendLine, finishProgress, startProgress, updateProfile]);
+  }, [appendLine, archiveOnly, finishProgress, keepBuildsCount, keepBuildsEnabled, startProgress, updateProfile]);
 
   const pullNow = useCallback((profile: RemoteBuildProfile) => checkProfile(profile, true, true), [checkProfile]);
 
@@ -428,5 +473,5 @@ export function RemoteBuildProvider({ children }: { children: React.ReactNode })
     };
   }, []);
 
-  return <RemoteBuildContext.Provider value={{ checkProfile, pullNow, checking, scheduleNextAt, scheduleRunning, scheduleIntervalMinutes, setScheduleIntervalMinutes }}>{children}</RemoteBuildContext.Provider>;
+  return <RemoteBuildContext.Provider value={{ checkProfile, pullNow, checking, scheduleNextAt, scheduleRunning, scheduleIntervalMinutes, setScheduleIntervalMinutes, keepBuildsEnabled, keepBuildsCount, archiveOnly, applyScheduleSettings }}>{children}</RemoteBuildContext.Provider>;
 }

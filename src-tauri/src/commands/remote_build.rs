@@ -1,13 +1,19 @@
 //! Safe local Git operations for the automatic-build monitor.
 
+use std::fs::File;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 use std::time::{Duration, Instant};
+use tauri::AppHandle;
 use serde::Serialize;
 use crate::utils::build_cmd;
 use walkdir::WalkDir;
 use base64::Engine;
 use super::secure_credentials;
+use crate::stream_processor;
+use zip::write::SimpleFileOptions;
+use zip::ZipWriter;
 
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -328,6 +334,103 @@ fn ensure_clone_branch(repository: &Path, build_branch: &str) -> GitCommandResul
     }
 
     run_git(repository, &["branch", "--show-current"])
+}
+
+#[tauri::command]
+pub fn prepare_remote_build_output(output_root: String, keep_count: u32) -> Result<(), String> {
+    let root = PathBuf::from(&output_root);
+    if output_root.trim().is_empty() {
+        return Err("The automatic-build output folder is not configured.".to_owned());
+    }
+    if root.exists() && !root.is_dir() {
+        return Err("The automatic-build output path is not a folder.".to_owned());
+    }
+    std::fs::create_dir_all(&root).map_err(|error| format!("Could not create the build output folder: {error}"))?;
+
+    let mut entries = std::fs::read_dir(&root)
+        .map_err(|error| format!("Could not inspect the build output folder: {error}"))?
+        .filter_map(|entry| entry.ok())
+        .filter_map(|entry| {
+            let modified = entry.metadata().ok()?.modified().ok()?;
+            Some((entry.path(), modified))
+        })
+        .collect::<Vec<_>>();
+    entries.sort_by(|left, right| right.1.cmp(&left.1));
+
+    let keep = keep_count as usize;
+    for (path, _) in entries.into_iter().skip(keep) {
+        let result = if path.is_dir() {
+            std::fs::remove_dir_all(&path)
+        } else {
+            std::fs::remove_file(&path)
+        };
+        result.map_err(|error| format!("Could not remove old build '{}': {error}", path.display()))?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn archive_remote_build_output(app: AppHandle, output_directory: String) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || archive_remote_build_output_impl(app, output_directory))
+        .await
+        .map_err(|error| format!("Build archiving task failed: {error}"))?
+}
+
+fn archive_remote_build_output_impl(app: AppHandle, output_directory: String) -> Result<String, String> {
+    let directory = PathBuf::from(&output_directory);
+    if !directory.is_dir() {
+        return Err("The packaged build folder does not exist.".to_owned());
+    }
+    let files = WalkDir::new(&directory)
+        .into_iter()
+        .map(|entry| entry.map_err(|error| format!("Could not inspect build file: {error}")))
+        .collect::<Result<Vec<_>, _>>()?;
+    let total_bytes = files
+        .iter()
+        .filter(|entry| entry.file_type().is_file())
+        .map(|entry| entry.metadata().map(|metadata| metadata.len()).map_err(|error| format!("Could not inspect build file '{}': {error}", entry.path().display())))
+        .collect::<Result<Vec<_>, _>>()?
+        .into_iter()
+        .sum::<u64>();
+
+    let archive_path = directory.with_extension("zip");
+    let file = File::create(&archive_path).map_err(|error| format!("Could not create build archive: {error}"))?;
+    let mut archive = ZipWriter::new(file);
+    let options = SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
+    let started = Instant::now();
+    let mut processed_bytes = 0_u64;
+    stream_processor::emit_progress(&app, 0, started.elapsed().as_millis() as u64);
+
+    for entry in files {
+        let path = entry.path();
+        let relative = path.strip_prefix(&directory).map_err(|error| error.to_string())?;
+        if relative.as_os_str().is_empty() {
+            continue;
+        }
+        let name = relative.to_string_lossy().replace('\\', "/");
+        if path.is_dir() {
+            archive.add_directory(format!("{name}/"), options).map_err(|error| format!("Could not add build folder to archive: {error}"))?;
+        } else {
+            archive.start_file(name, options).map_err(|error| format!("Could not add build file to archive: {error}"))?;
+            let mut input = File::open(path).map_err(|error| format!("Could not read build file: {error}"))?;
+            let mut buffer = [0_u8; 1024 * 1024];
+            loop {
+                let read = input.read(&mut buffer).map_err(|error| format!("Could not read build file: {error}"))?;
+                if read == 0 {
+                    break;
+                }
+                archive.write_all(&buffer[..read]).map_err(|error| format!("Could not write build archive: {error}"))?;
+                processed_bytes += read as u64;
+                let percent = if total_bytes == 0 { 100 } else { ((processed_bytes * 100) / total_bytes).min(100) as u32 };
+                stream_processor::emit_progress(&app, percent, started.elapsed().as_millis() as u64);
+            }
+        }
+    }
+
+    archive.finish().map_err(|error| format!("Could not finish build archive: {error}"))?;
+    stream_processor::emit_progress(&app, 100, started.elapsed().as_millis() as u64);
+    std::fs::remove_dir_all(&directory).map_err(|error| format!("Could not remove unpacked build after archiving: {error}"))?;
+    Ok(archive_path.to_string_lossy().to_string())
 }
 
 #[tauri::command]
