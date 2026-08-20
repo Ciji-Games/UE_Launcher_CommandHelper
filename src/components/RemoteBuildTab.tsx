@@ -40,16 +40,27 @@ function formatCountdown(nextCheckAt: string | undefined, now: number) {
 export function RemoteBuildTab() {
     const {profiles, addProfile, updateProfile, removeProfile, setActive, refresh} = useRemoteBuildProfiles();
     const {pullNow, scheduleNextAt, scheduleRunning, scheduleIntervalMinutes, setScheduleIntervalMinutes} = useRemoteBuild();
-    const {account, repositories, loading, message, connect, disconnect, loadRepositories, loadBranches} = useGitHub();
+    const {account, repositories, loading, message, authorization, connect, openVerification, cancelAuthorization, disconnect, loadRepositories, loadBranches} = useGitHub();
     const [editingId, setEditingId] = useState<string | null>(null);
     const [branches, setBranches] = useState<GitHubBranch[]>([]);
     const [busyId, setBusyId] = useState<string | null>(null);
     const [destinationErrors, setDestinationErrors] = useState<Record<string, string | undefined>>({});
     const [now, setNow] = useState(() => Date.now());
     const [showOutputLog, setShowOutputLog] = useState(false);
+    const [codeCopied, setCodeCopied] = useState(false);
     const {running} = useProgress();
     const editing = profiles.find((profile) => profile.id === editingId) ?? null;
     const patch = (profile: RemoteBuildProfile, updates: Partial<RemoteBuildProfile>) => updateProfile(profile.id, updates);
+    const copyAuthorizationCode = async () => {
+        if (!authorization) return;
+        try {
+            await navigator.clipboard.writeText(authorization.userCode);
+            setCodeCopied(true);
+            window.setTimeout(() => setCodeCopied(false), 1500);
+        } catch {
+            setCodeCopied(false);
+        }
+    };
 
     useEffect(() => {
         if (account && repositories.length === 0) void loadRepositories();
@@ -199,9 +210,23 @@ export function RemoteBuildTab() {
                     <button type='button' onClick={() => void disconnect()}
                             className='rounded border border-slate-700 px-3 py-2 text-xs text-slate-300'>Disconnect
                     </button>
-                </div> : <button type='button' disabled={loading} onClick={() => void connect()}
+                </div> : <button type='button' disabled={loading || authorization?.status === 'ready' || authorization?.status === 'waiting'} onClick={() => void connect()}
                                  className='rounded bg-sky-500 px-3 py-2 text-xs font-medium text-slate-950 disabled:opacity-50'>{loading ? 'Connecting…' : 'Connect GitHub'}</button>}
             </div>
+            {authorization && <div className='mt-4 rounded-lg border border-sky-800/70 bg-sky-950/30 p-3'>
+                <p className='text-sm text-slate-200'>Your GitHub code is:</p>
+                <div className='mt-2 flex flex-wrap items-center gap-2'>
+                    <input aria-label='GitHub authorization code' readOnly value={authorization.userCode}
+                           className='w-40 rounded border border-slate-600 bg-slate-950 px-3 py-2 text-center font-mono text-lg tracking-widest text-slate-100'/>
+                    <button type='button' onClick={() => void copyAuthorizationCode()} className='rounded border border-slate-600 px-3 py-2 text-xs text-slate-300'>{codeCopied ? 'Copied' : 'Copy code'}</button>
+                </div>
+                <div className='mt-3 flex flex-wrap gap-2'>
+                    <button type='button' onClick={() => void openVerification()} disabled={authorization.status === 'expired' || authorization.status === 'cancelled'} className='rounded bg-sky-500 px-3 py-2 text-xs font-medium text-slate-950 disabled:opacity-50'>Open GitHub</button>
+                    <button type='button' onClick={cancelAuthorization} className='rounded border border-slate-600 px-3 py-2 text-xs text-slate-300'>Cancel</button>
+                </div>
+                <p className='mt-3 text-xs text-slate-400'>Enter the code on GitHub to authorize this application. {authorization.status === 'waiting' ? 'Waiting for authorization…' : authorization.status === 'ready' ? 'Ready to authorize.' : authorization.status === 'expired' ? 'This code has expired.' : 'Authorization failed.'}</p>
+                <p className='mt-1 text-xs text-slate-500'>Expires in {(() => { const seconds = Math.max(0, Math.ceil((authorization.expiresAt - now) / 1000)); return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`; })()}</p>
+            </div>}
             {message && <p className='mt-3 text-xs text-amber-300'>{message}</p>}</div>
         <div className={panel + (account ? '' : ' opacity-60')}>
             <div className='flex items-center justify-between gap-3'><h2 className='font-medium text-slate-200'>Step 2 ·

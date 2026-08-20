@@ -56,10 +56,26 @@ export function RemoteBuildProvider({ children }: { children: React.ReactNode })
 
   useEffect(() => {
     void getStore().then(async (store) => {
+      let githubConnected = false;
+      try {
+        githubConnected = await invoke<boolean>('github_is_connected');
+      } catch (error) {
+        console.warn('[automatic-build] failed to check GitHub connection during startup', error);
+      }
       const storedNext = await store.get<string>(STORE_KEYS.REMOTE_BUILD_SCHEDULE_NEXT);
       const storedInterval = await store.get<number>(STORE_KEYS.REMOTE_BUILD_POLLING_INTERVAL);
       setScheduleIntervalMinutesState(storedInterval === 5 || storedInterval === 10 ? storedInterval : 1);
-      if (storedNext && Date.parse(storedNext) > Date.now()) {
+      if (!githubConnected) {
+        scheduleNextRef.current = undefined;
+        setScheduleNextAt(undefined);
+        if (typeof (store as { delete?: (key: string) => Promise<unknown> }).delete === 'function') {
+          try {
+            await (store as { delete: (key: string) => Promise<unknown> }).delete(STORE_KEYS.REMOTE_BUILD_SCHEDULE_NEXT);
+          } catch (error) {
+            console.warn('[automatic-build] failed to clear stored schedule during startup', error);
+          }
+        }
+      } else if (storedNext && Date.parse(storedNext) > Date.now()) {
         scheduleNextRef.current = storedNext;
         setScheduleNextAt(storedNext);
       }
@@ -328,6 +344,20 @@ export function RemoteBuildProvider({ children }: { children: React.ReactNode })
   const tickRef = useRef<() => void>(() => {});
   tickRef.current = () => {
     void refresh().then(async (latestProfiles) => {
+      let githubConnected = false;
+      try {
+        githubConnected = await invoke<boolean>('github_is_connected');
+      } catch (error) {
+        console.warn('[automatic-build] failed to check GitHub connection', error);
+      }
+      if (!githubConnected) {
+        if (scheduleNextRef.current !== undefined) {
+          scheduleNextRef.current = undefined;
+          setScheduleNextAt(undefined);
+          await persistScheduleNext(undefined);
+        }
+        return;
+      }
       const enabledProfiles = latestProfiles.filter((profile) => profile.enabled && profile.cloneStatus === 'ready');
       console.info(`[automatic-build] schedule tick: enabled=${enabledProfiles.length}, batchRunning=${batchRunning.current}, inFlight=${inFlight.current}, next=${scheduleNextRef.current ?? '(none)'}`);
       if (enabledProfiles.length === 0) {
@@ -365,6 +395,11 @@ export function RemoteBuildProvider({ children }: { children: React.ReactNode })
         startProgress({ showOutputLog: true });
         appendLine({ line: `Automatic build schedule started: ${enabledProfiles.length} enabled job(s).`, color: 'blue' });
         for (const profile of enabledProfiles) {
+          try {
+            if (!await invoke<boolean>('github_is_connected')) break;
+          } catch {
+            break;
+          }
           console.info(`[automatic-build] schedule: invoking checkProfile for '${profile.name}'`);
           await checkProfile(profile, true, false, true);
         }

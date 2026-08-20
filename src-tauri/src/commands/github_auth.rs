@@ -60,6 +60,11 @@ pub fn github_complete_authorization(device_code: String) -> GitHubCommandResult
 }
 
 #[tauri::command]
+pub fn github_is_connected() -> bool {
+    secure_credentials::read_token().map(|token| token.is_some()).unwrap_or(false)
+}
+
+#[tauri::command]
 pub fn github_disconnect() -> GitHubCommandResult<bool> {
     match secure_credentials::delete_token() { Ok(()) => GitHubCommandResult { ok: true, data: Some(true), category: None, message: "GitHub authorization disconnected.".to_owned() }, Err(error) => GitHubCommandResult { ok: false, data: None, category: Some("secure-storage".to_owned()), message: format!("Could not disconnect GitHub securely: {error}") } }
 }
