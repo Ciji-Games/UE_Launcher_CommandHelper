@@ -98,7 +98,7 @@ export interface GitHubBranch {
 
 export type RemoteBuildCloneStatus = 'not-started' | 'cloning' | 'ready' | 'failed';
 export type RemoteBuildSetupStatus = 'untested' | 'passed' | 'blocked' | 'failed';
-export type RemoteBuildStageStatus = 'pending' | 'running' | 'success' | 'failed' | 'disabled';
+export type RemoteBuildStageStatus = 'pending' | 'running' | 'success' | 'failed' | 'disabled' | 'ignored';
 
 export interface RemoteBuildProgressStages {
   clone: RemoteBuildStageStatus;
@@ -193,6 +193,7 @@ export interface RemoteBuildProfile {
   lastRunAt?: string;
   buildProgress?: number;
   zipProgress?: number;
+  repoProgress?: number;
   progressStages: RemoteBuildProgressStages;
 }
 

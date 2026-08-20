@@ -29,6 +29,7 @@ export function createRemoteBuildProfile(overrides: Partial<RemoteBuildProfile> 
     lastStatus: 'idle',
     buildProgress: undefined,
     zipProgress: undefined,
+    repoProgress: undefined,
     progressStages: {
       clone: 'pending',
       repo: 'pending',
@@ -48,9 +49,14 @@ export function remoteBuildOutputRoot(targetPath: string) {
   return targetPath ? `${targetPath.replace(/[\\/]+$/, '')}\\PackagedBuild` : '';
 }
 
-export function remoteBuildOutputPath(targetPath: string, commit: string) {
+export function remoteBuildOutputPath(targetPath: string, projectPath: string, packageConfig: string, now = new Date()) {
   const outputRoot = remoteBuildOutputRoot(targetPath);
-  return outputRoot && commit ? `${outputRoot}\\${commit}` : outputRoot;
+  if (!outputRoot || !projectPath) return outputRoot;
+  const projectName = projectPath.split(/[\\/]/).pop()?.replace(/\.uproject$/i, '') || 'App';
+  const appConfig = packageConfig === 'Shipping' ? 'Shipping' : 'Dev';
+  const pad = (value: number) => String(value).padStart(2, '0');
+  const timestamp = `${pad(now.getHours())}-${pad(now.getMinutes())}-${pad(now.getSeconds())}_${pad(now.getDate())}-${pad(now.getMonth() + 1)}-${String(now.getFullYear()).slice(-2)}`;
+  return `${outputRoot}\\${projectName}_${appConfig}_${timestamp}`;
 }
 
 export function useRemoteBuildProfiles() {

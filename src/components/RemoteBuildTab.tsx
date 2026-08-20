@@ -287,10 +287,10 @@ export function RemoteBuildTab() {
                         if (hidden) return null;
                         const state = stages[status];
                         const value = state === 'success' ? 100 : state === 'running' ? Math.round(percent ?? 0) : 0;
-                        const color = state === 'success' ? 'bg-emerald-400' : state === 'failed' ? 'bg-red-400' : state === 'disabled' ? 'bg-slate-700' : 'bg-sky-400';
+                        const color = state === 'success' ? 'bg-emerald-400' : state === 'failed' ? 'bg-red-400' : state === 'disabled' || state === 'ignored' ? 'bg-slate-700' : 'bg-sky-400';
                         return <div key={status} className='min-w-40 flex-1'>
-                            <div className='mb-1 flex justify-between text-xs text-slate-400'><span>{label}{state === 'disabled' ? ' (disabled)' : ''}</span><span>{state === 'success' ? 'Done' : state === 'failed' ? 'Failed' : state === 'running' ? `${value}%` : ''}</span></div>
-                            <div className='h-2 overflow-hidden rounded bg-slate-800'><div className={`h-full transition-all ${color}`} style={{width: state === 'disabled' ? '100%' : `${value}%`}}/></div>
+                            <div className='mb-1 flex justify-between text-xs text-slate-400'><span>{label}{state === 'disabled' ? ' (disabled)' : state === 'ignored' ? ' (ignored)' : ''}</span><span>{state === 'success' ? <span className='font-bold text-emerald-400' aria-label='Done'>✓</span> : state === 'failed' ? 'Failed' : state === 'ignored' ? 'Ignored' : state === 'running' ? `${value}%` : ''}</span></div>
+                            <div className='h-2 overflow-hidden rounded bg-slate-800'><div className={`h-full transition-all ${color} ${state === 'running' ? 'progress-bar-fill' : ''}`} style={{width: state === 'disabled' || state === 'ignored' ? '100%' : `${value}%`}}/></div>
                         </div>;
                     };
                     return <div key={profile.id} className='rounded-lg border border-slate-700 bg-slate-950/40 p-4'>
@@ -304,9 +304,9 @@ export function RemoteBuildTab() {
                         {(profile.cloneStatus === 'cloning' || profile.cloneStatus === 'failed' || profile.cloneStatus === 'ready') && <div className='mt-3 flex gap-3 overflow-x-auto pb-1'>
                             {profile.cloneStatus !== 'ready' && renderStage('Clone', 'clone')}
                             {profile.cloneStatus === 'ready' && <>
-                                {renderStage('Repo', 'repo')}
+                                {renderStage('Repo', 'repo', profile.repoProgress)}
                                 {renderStage('Package', 'package', profile.buildProgress)}
-                                {renderStage('Zipping', 'zip', profile.zipProgress, stages.zip === 'disabled')}
+                                {renderStage('Zipping', 'zip', profile.zipProgress)}
                                 {renderStage('Cleanup', 'cleanup')}
                             </>}
                         </div>}
@@ -424,7 +424,7 @@ export function RemoteBuildTab() {
                                     className='mt-1 shrink-0 text-xs text-sky-400'>Browse
                             </button>
                         </div>
-                    </label><p className='text-xs text-slate-500'>Package output: <code>{remoteBuildOutputRoot(editing.repositoryPath) || 'target folder/PackagedBuild/&lt;commit&gt;'}</code></p><label
+                    </label><p className='text-xs text-slate-500'>Package output: <code>{remoteBuildOutputRoot(editing.repositoryPath) || 'target folder/PackagedBuild'}</code> (generated as AppName_AppConfig_HH-MM-SS_DD-MM-YY)</p><label
                         className='block text-xs text-slate-400'>Platform<select value={editing.platform}
                                                                                  onChange={(event) => void patch(editing, {
                                                                                      platform: event.target.value,
