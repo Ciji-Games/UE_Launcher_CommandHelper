@@ -289,7 +289,7 @@ export function RemoteBuildTab() {
                         const value = state === 'success' ? 100 : state === 'running' ? Math.round(percent ?? 0) : 0;
                         const color = state === 'success' ? 'bg-emerald-400' : state === 'failed' ? 'bg-red-400' : state === 'disabled' || state === 'ignored' ? 'bg-slate-700' : 'bg-sky-400';
                         return <div key={status} className='min-w-40 flex-1'>
-                            <div className='mb-1 flex justify-between text-xs text-slate-400'><span>{label}{state === 'disabled' ? ' (disabled)' : state === 'ignored' ? ' (ignored)' : ''}</span><span>{state === 'success' ? <span className='font-bold text-emerald-400' aria-label='Done'>✓</span> : state === 'failed' ? 'Failed' : state === 'ignored' ? 'Ignored' : state === 'running' ? `${value}%` : ''}</span></div>
+                            <div className='mb-1 flex justify-between text-xs text-slate-400'><span>{label}{state === 'disabled' ? ' (disabled)' : ''}</span><span>{state === 'success' ? <span className='font-bold text-emerald-400' aria-label='Done'>✓</span> : state === 'failed' ? 'Failed' : state === 'ignored' ? 'Ignored' : state === 'running' ? `${value}%` : ''}</span></div>
                             <div className='h-2 overflow-hidden rounded bg-slate-800'><div className={`h-full transition-all ${color} ${state === 'running' ? 'progress-bar-fill' : ''}`} style={{width: state === 'disabled' || state === 'ignored' ? '100%' : `${value}%`}}/></div>
                         </div>;
                     };

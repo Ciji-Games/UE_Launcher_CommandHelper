@@ -23,6 +23,11 @@ interface ProgressUpdate {
   totalSteps?: number;
 }
 
+interface ProgressStartOptions {
+  showOutputLog?: boolean;
+  notifyOnComplete?: boolean;
+}
+
 export interface StepProgress {
   totalSteps: number;
   currentStep: number;
@@ -37,7 +42,8 @@ interface ProgressContextValue {
   stepProgress: StepProgress | null;
   /** When true, ToolBoxTab should open the output log when this run starts. */
   shouldOpenOutputLog: boolean;
-  startProgress: (opts?: { showOutputLog?: boolean }) => void;
+  startProgress: (opts?: ProgressStartOptions) => void;
+  setNotifyOnComplete: (enabled: boolean) => void;
   finishProgress: () => void;
   startProgressForScheduler: (totalSteps: number, stepLabels: string[]) => void;
   setCurrentStep: (index: number) => void;
@@ -59,13 +65,15 @@ export function ProgressProvider({ children }: { children: React.ReactNode }) {
   const [shouldOpenOutputLog, setShouldOpenOutputLog] = useState(false);
   const stopRequestedRef = useRef(false);
   const prevRunningRef = useRef(running);
+  const notifyOnCompleteRef = useRef(true);
 
   const requestStop = useCallback(() => {
     stopRequestedRef.current = true;
   }, []);
 
-  const startProgress = useCallback((opts?: { showOutputLog?: boolean }) => {
+  const startProgress = useCallback((opts?: ProgressStartOptions) => {
     stopRequestedRef.current = false;
+    notifyOnCompleteRef.current = opts?.notifyOnComplete ?? true;
     setShouldOpenOutputLog(opts?.showOutputLog ?? false);
     setRunning(true);
     setPercent(0);
@@ -74,9 +82,14 @@ export function ProgressProvider({ children }: { children: React.ReactNode }) {
     setStepProgress(null);
   }, []);
 
+  const setNotifyOnComplete = useCallback((enabled: boolean) => {
+    notifyOnCompleteRef.current = enabled;
+  }, []);
+
   const startProgressForScheduler = useCallback(
     (totalSteps: number, stepLabels: string[]) => {
       stopRequestedRef.current = false;
+      notifyOnCompleteRef.current = true;
       setRunning(true);
       setPercent(0);
       setElapsedMs(0);
@@ -152,7 +165,8 @@ export function ProgressProvider({ children }: { children: React.ReactNode }) {
   }, [running, startTime]);
 
   useEffect(() => {
-    if (prevRunningRef.current && !running) {
+    if (prevRunningRef.current && !running && notifyOnCompleteRef.current) {
+      notifyOnCompleteRef.current = false;
       (async () => {
         if (!settings.notificationOnComplete) return;
         try {
@@ -189,6 +203,7 @@ export function ProgressProvider({ children }: { children: React.ReactNode }) {
         stepProgress,
         shouldOpenOutputLog,
         startProgress,
+        setNotifyOnComplete,
         finishProgress,
         startProgressForScheduler,
         setCurrentStep,

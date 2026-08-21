@@ -46,6 +46,7 @@ export function RemoteBuildProvider({ children }: { children: React.ReactNode })
   const { profiles, updateProfile, refresh } = useRemoteBuildProfiles();
   const inFlight = useRef(false);
   const batchRunning = useRef(false);
+  const schedulePausedForUnreal = useRef(false);
   const scheduleNextRef = useRef<string | undefined>(undefined);
   const [checking, setChecking] = useState(false);
   const [scheduleNextAt, setScheduleNextAt] = useState<string | undefined>();
@@ -55,7 +56,7 @@ export function RemoteBuildProvider({ children }: { children: React.ReactNode })
   const [keepBuildsCount, setKeepBuildsCount] = useState(3);
   const [archiveOnly, setArchiveOnly] = useState(false);
   const { appendLine } = useLog();
-  const { startProgress, finishProgress } = useProgress();
+  const { startProgress, finishProgress, setNotifyOnComplete } = useProgress();
 
   useEffect(() => {
     void getStore().then(async (store) => {
@@ -131,7 +132,7 @@ export function RemoteBuildProvider({ children }: { children: React.ReactNode })
     inFlight.current = true;
     setChecking(true);
     if (!batchInvocation) {
-      startProgress({ showOutputLog: true });
+      startProgress({ showOutputLog: true, notifyOnComplete: false });
     }
     const checkedAt = new Date().toISOString();
     try {
@@ -276,6 +277,7 @@ export function RemoteBuildProvider({ children }: { children: React.ReactNode })
         lastRunAt: run.startedAt,
         buildHistory: [run, ...profile.buildHistory].slice(0, 50)
       });
+      setNotifyOnComplete(true);
       stages = {...stages, repo: 'success', package: 'running', zip: archiveOnly ? 'pending' : 'disabled', cleanup: keepBuildsEnabled || archiveOnly ? 'pending' : 'disabled'};
       await log(`packaging started: project='${projectPath}', platform='${profile.platform}', configuration='${profile.packageConfig}'`);
 
@@ -363,7 +365,7 @@ export function RemoteBuildProvider({ children }: { children: React.ReactNode })
         finishProgress();
       }
     }
-  }, [appendLine, archiveOnly, finishProgress, keepBuildsCount, keepBuildsEnabled, startProgress, updateProfile]);
+  }, [appendLine, archiveOnly, finishProgress, keepBuildsCount, keepBuildsEnabled, setNotifyOnComplete, startProgress, updateProfile]);
 
   const pullNow = useCallback((profile: RemoteBuildProfile) => checkProfile(profile, true, true), [checkProfile]);
 
@@ -455,6 +457,24 @@ export function RemoteBuildProvider({ children }: { children: React.ReactNode })
       }
       if (batchRunning.current || inFlight.current) return;
 
+      let unrealRunning = false;
+      try {
+        unrealRunning = await invoke<boolean>('has_blocking_processes', {groupName: 'uproject'});
+      } catch (error) {
+        console.warn('[automatic-build] failed to check Unreal Engine process state', error);
+      }
+      if (unrealRunning) {
+        if (!schedulePausedForUnreal.current) {
+          schedulePausedForUnreal.current = true;
+          appendLine({line: 'Automatic build schedule paused while Unreal Engine is running.', color: 'orange'});
+        }
+        return;
+      }
+      if (schedulePausedForUnreal.current) {
+        schedulePausedForUnreal.current = false;
+        appendLine({line: 'Automatic build schedule resumed after Unreal Engine closed.', color: 'green'});
+      }
+
       const now = Date.now();
       const next = scheduleNextRef.current;
       if (!next) {
@@ -477,7 +497,7 @@ export function RemoteBuildProvider({ children }: { children: React.ReactNode })
       // guaranteed to be released and the scheduler can't get stuck again.
       try {
         await persistScheduleNext(undefined);
-        startProgress({ showOutputLog: true });
+        startProgress({ showOutputLog: true, notifyOnComplete: false });
         appendLine({ line: `Automatic build schedule started: ${enabledProfiles.length} enabled job(s).`, color: 'blue' });
         for (const profile of enabledProfiles) {
           try {
