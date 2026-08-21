@@ -64,6 +64,10 @@ function App() {
   const [updateError, setUpdateError] = useState<string | null>(null);
 
   useEffect(() => {
+    if (!import.meta.env.PROD) {
+      return;
+    }
+
     void checkForUpdate(__APP_VERSION__).then((info) => {
       setUpdateInfo(info);
       setUpdatePromptOpen(Boolean(info));
