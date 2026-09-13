@@ -8,6 +8,10 @@ mod utils;
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .setup(|app| {
+            commands::github_auth::start_github_callback_server(app.handle().clone());
+            Ok(())
+        })
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_autostart::Builder::new().build())
         .plugin(tauri_plugin_shell::init())
@@ -50,6 +54,7 @@ pub fn run() {
             commands::process::open_file,
             commands::process::get_project_folder_availability,
             commands::process::open_project_folder,
+            commands::process::open_folder_in_explorer,
             commands::process::open_uproject_with_rider,
             commands::process::launch_ide_for_project,
             commands::process::launch_project_with_map,

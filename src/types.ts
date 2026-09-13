@@ -69,6 +69,51 @@ export type RemoteBuildStatus = 'idle' | 'checking' | 'fetching' | 'pulling' | '
 export type RemoteBuildRunStatus = 'queued' | 'running' | 'success' | 'failed' | 'blocked' | 'cancelled';
 export type ChecklistState = 'blocking' | 'warning' | 'passed' | 'not-applicable';
 
+export type PipelineStepId = 'clone' | 'repo' | 'package' | 'zip' | 'cleanup';
+
+export type ChecklistItemState = 'passed' | 'blocking' | 'warning' | 'info';
+
+export interface ChecklistItem {
+  id: string;
+  label: string;
+  state: ChecklistItemState;
+  message: string;
+  detail?: string;
+  remediation?: string;
+}
+
+export type StepPrerequisiteStatus = 'ready' | 'blocked' | 'warning' | 'running' | 'waiting' | 'disabled' | 'checking';
+
+export interface StepPrerequisiteReport {
+  stepId: PipelineStepId;
+  label: string;
+  status: StepPrerequisiteStatus;
+  items: ChecklistItem[];
+  blockingReason?: string;
+}
+
+export interface ProfilePrerequisites {
+  profileId: string;
+  evaluatedAt: string;
+  isCloned: boolean;
+  steps: Record<PipelineStepId, StepPrerequisiteReport>;
+}
+
+export interface BuildRunSummary {
+  id: string;
+  commitHash: string;
+  commitSubject?: string;
+  author?: string;
+  trigger: 'scheduled' | 'manual';
+  startedAt: string;
+  completedAt?: string;
+  durationSeconds?: number;
+  status: RemoteBuildRunStatus;
+  failedStage?: PipelineStepId;
+  errorSummary?: string;
+  logExcerpt?: string;
+}
+
 export interface GitHubAccount {
   accountId: string;
   login: string;
@@ -140,9 +185,12 @@ export interface CheckoutStatus {
   behindCount: number;
   worktreeClean: boolean;
   indexClean: boolean;
+  gitignoreValid?: boolean;
+  gitignoreMissingEntries?: string[];
   remoteUrl?: string;
   gitLfsAvailable: boolean;
   gitLfsError?: string;
+  requiresGitLfs?: boolean;
   remotes: string[];
   branches: string[];
   projects: DetectedRemoteProject[];
@@ -158,11 +206,20 @@ export interface DetectedRemoteProject {
 export interface RemoteBuildRun {
   id: string;
   commit: string;
+  commitSubject?: string;
+  author?: string;
+  trigger?: 'scheduled' | 'manual';
   startedAt?: string;
   completedAt?: string;
+  durationSeconds?: number;
   status: RemoteBuildRunStatus;
+  failedStage?: PipelineStepId;
   error?: string;
+  errorSummary?: string;
+  logExcerpt?: string;
   logPath?: string;
+  outputPath?: string;
+  count?: number;
 }
 
 export interface RemoteBuildProfile {
@@ -191,6 +248,7 @@ export interface RemoteBuildProfile {
   lastCheckedAt?: string;
   nextCheckAt?: string;
   lastRunAt?: string;
+  cloneProgress?: number;
   buildProgress?: number;
   zipProgress?: number;
   repoProgress?: number;

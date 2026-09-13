@@ -17,6 +17,8 @@ import { SettingsProvider } from './contexts/SettingsContext';
 import IdeProvider from './contexts/IdeContext';
 import { SettingsPanel } from './components/SettingsPanel';
 import { checkForUpdate, type UpdateInfo } from './utils/updateCheck';
+import { FaListCheck } from 'react-icons/fa6';
+import { TbClockPlay } from 'react-icons/tb';
 
 const TAB_ICONS = {
   launcher: (
@@ -30,9 +32,7 @@ const TAB_ICONS = {
     </svg>
   ),
   scheduler: (
-    <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
-      <path strokeLinecap="round" strokeLinejoin="round" d="M6.75 3v2.25M17.25 3v2.25M3 18.75V7.5a2.25 2.25 0 012.25-2.25h13.5A2.25 2.25 0 0121 7.5v11.25m-18 0A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75m-18 0v-7.5A2.25 2.25 0 015.25 9h13.5A2.25 2.25 0 0121 11.25v7.5" />
-    </svg>
+    <FaListCheck className="h-5 w-5 shrink-0" />
   ),
   links: (
     <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
@@ -40,14 +40,14 @@ const TAB_ICONS = {
     </svg>
   ),
   remoteBuild: (
-    <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}><path strokeLinecap="round" strokeLinejoin="round" d="M4.5 6.75h15m-15 0A2.25 2.25 0 012.25 4.5v-.75A2.25 2.25 0 014.5 1.5h15a2.25 2.25 0 012.25 2.25v.75a2.25 2.25 0 01-2.25 2.25m-15 0h15M6.75 10.5h10.5M6.75 14.25h6" /></svg>
+    <TbClockPlay className="h-5 w-5 shrink-0" />
   ),
 } as const;
 
 const TABS = [
   { id: 'launcher' as const, label: 'Launcher' },
   { id: 'toolbox' as const, label: 'ToolBox' },
-  { id: 'scheduler' as const, label: 'Scheduler' },
+  { id: 'scheduler' as const, label: 'Batch jobs' },
   { id: 'remoteBuild' as const, label: 'Automatic build' },
   { id: 'links' as const, label: 'Links' },
 ] as const;

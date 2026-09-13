@@ -27,6 +27,7 @@ export function createRemoteBuildProfile(overrides: Partial<RemoteBuildProfile> 
     dirtyWorktreePolicy: 'block',
     buildHistory: [],
     lastStatus: 'idle',
+    cloneProgress: undefined,
     buildProgress: undefined,
     zipProgress: undefined,
     repoProgress: undefined,
@@ -59,10 +60,44 @@ export function remoteBuildOutputPath(targetPath: string, projectPath: string, p
   return `${outputRoot}\\${projectName}_${appConfig}_${timestamp}`;
 }
 
+let sharedProfiles: RemoteBuildProfile[] = [];
+let sharedActiveProfileId: string | null = null;
+let sharedLoading = true;
+let isStoreLoaded = false;
+const listeners = new Set<() => void>();
+
+function notifySubscribers() {
+  for (const listener of listeners) {
+    listener();
+  }
+}
+
+function updateSharedState(profiles: RemoteBuildProfile[], activeId: string | null, loading: boolean) {
+  sharedProfiles = profiles;
+  sharedActiveProfileId = activeId;
+  sharedLoading = loading;
+  notifySubscribers();
+}
+
 export function useRemoteBuildProfiles() {
-  const [profiles, setProfiles] = useState<RemoteBuildProfile[]>([]);
-  const [activeProfileId, setActiveProfileId] = useState<string | null>(null);
-  const [loading, setLoading] = useState(true);
+  const [profiles, setProfiles] = useState<RemoteBuildProfile[]>(sharedProfiles);
+  const [activeProfileId, setActiveProfileId] = useState<string | null>(sharedActiveProfileId);
+  const [loading, setLoading] = useState(sharedLoading);
+
+  useEffect(() => {
+    const listener = () => {
+      setProfiles(sharedProfiles);
+      setActiveProfileId(sharedActiveProfileId);
+      setLoading(sharedLoading);
+    };
+    listeners.add(listener);
+    setProfiles(sharedProfiles);
+    setActiveProfileId(sharedActiveProfileId);
+    setLoading(sharedLoading);
+    return () => {
+      listeners.delete(listener);
+    };
+  }, []);
 
   const refresh = useCallback(async () => {
     const store = await getStore();
@@ -84,56 +119,56 @@ export function useRemoteBuildProfiles() {
       pollingIntervalMinutes: REMOTE_BUILD_INTERVALS.includes(profile.pollingIntervalMinutes as typeof REMOTE_BUILD_INTERVALS[number]) ? profile.pollingIntervalMinutes : DEFAULT_INTERVAL_MINUTES,
       nextCheckAt: undefined,
     }));
-    setProfiles(nextProfiles);
-    setActiveProfileId((await store.get<string>(STORE_KEYS.REMOTE_BUILD_ACTIVE_PROFILE)) ?? null);
-    setLoading(false);
+    const nextActive = (await store.get<string>(STORE_KEYS.REMOTE_BUILD_ACTIVE_PROFILE)) ?? null;
+    isStoreLoaded = true;
+    updateSharedState(nextProfiles, nextActive, false);
     return nextProfiles;
   }, []);
 
   useEffect(() => {
-    const timer = window.setTimeout(() => { void refresh(); }, 0);
-    return () => window.clearTimeout(timer);
+    if (!isStoreLoaded) {
+      void refresh();
+    }
   }, [refresh]);
 
   const saveProfiles = useCallback(async (next: RemoteBuildProfile[]) => {
+    updateSharedState(next, sharedActiveProfileId, false);
     const store = await getStore();
     await store.set(STORE_KEYS.REMOTE_BUILD_PROFILES, next);
-    setProfiles(next);
   }, []);
 
   const addProfile = useCallback(async (profile: RemoteBuildProfile = createRemoteBuildProfile()) => {
-    await saveProfiles([...profiles, profile]);
+    const next = [...sharedProfiles, profile];
+    updateSharedState(next, profile.id, false);
     const store = await getStore();
+    await store.set(STORE_KEYS.REMOTE_BUILD_PROFILES, next);
     await store.set(STORE_KEYS.REMOTE_BUILD_ACTIVE_PROFILE, profile.id);
-    setActiveProfileId(profile.id);
     return profile;
-  }, [profiles, saveProfiles]);
+  }, []);
 
   const updateProfile = useCallback(async (id: string, updates: Partial<RemoteBuildProfile>) => {
+    const next = sharedProfiles.map((profile) => (profile.id === id ? { ...profile, ...updates } : profile));
+    updateSharedState(next, sharedActiveProfileId, false);
     const store = await getStore();
-    const current = (await store.get<RemoteBuildProfile[]>(STORE_KEYS.REMOTE_BUILD_PROFILES)) ?? [];
-    const next = current.map((profile) => profile.id === id ? { ...profile, ...updates } : profile);
     await store.set(STORE_KEYS.REMOTE_BUILD_PROFILES, next);
-    setProfiles(next);
   }, []);
-
 
   const removeProfile = useCallback(async (id: string) => {
-    const next = profiles.filter((profile) => profile.id !== id);
-    await saveProfiles(next);
-    if (activeProfileId === id) {
-      const store = await getStore();
-      const nextActive = next[0]?.id ?? null;
-      await store.set(STORE_KEYS.REMOTE_BUILD_ACTIVE_PROFILE, nextActive);
-      setActiveProfileId(nextActive);
-    }
-  }, [activeProfileId, profiles, saveProfiles]);
-
-  const setActive = useCallback(async (id: string | null) => {
+    const next = sharedProfiles.filter((profile) => profile.id !== id);
+    const nextActive = sharedActiveProfileId === id ? next[0]?.id ?? null : sharedActiveProfileId;
+    updateSharedState(next, nextActive, false);
     const store = await getStore();
-    await store.set(STORE_KEYS.REMOTE_BUILD_ACTIVE_PROFILE, id);
-    setActiveProfileId(id);
+    await store.set(STORE_KEYS.REMOTE_BUILD_PROFILES, next);
+    if (sharedActiveProfileId === id) {
+      await store.set(STORE_KEYS.REMOTE_BUILD_ACTIVE_PROFILE, nextActive);
+    }
   }, []);
 
-  return { profiles, activeProfileId, activeProfile: profiles.find((p) => p.id === activeProfileId) ?? null, loading, addProfile, updateProfile, removeProfile, setActive, refresh };
+  const setActive = useCallback(async (id: string | null) => {
+    updateSharedState(sharedProfiles, id, false);
+    const store = await getStore();
+    await store.set(STORE_KEYS.REMOTE_BUILD_ACTIVE_PROFILE, id);
+  }, []);
+
+  return { profiles, activeProfileId, activeProfile: profiles.find((p) => p.id === activeProfileId) ?? null, loading, addProfile, updateProfile, removeProfile, saveProfiles, setActive, refresh };
 }

@@ -35,9 +35,12 @@ pub struct CheckoutStatus {
     pub behind_count: u32,
     pub worktree_clean: bool,
     pub index_clean: bool,
+    pub gitignore_valid: bool,
+    pub gitignore_missing_entries: Vec<String>,
     pub remote_url: Option<String>,
     pub git_lfs_available: bool,
     pub git_lfs_error: Option<String>,
+    pub requires_git_lfs: bool,
     pub remotes: Vec<String>,
     pub branches: Vec<String>,
     pub projects: Vec<DetectedRemoteProject>,
@@ -182,7 +185,7 @@ mod path_tests {
 
 #[cfg(test)]
 mod tests {
-    use super::{actionable_git_error, clone_destination_error};
+    use super::{actionable_git_error, clone_destination_error, validate_unreal_gitignore};
     use std::fs;
     use std::path::PathBuf;
 
@@ -191,6 +194,73 @@ mod tests {
         let _ = fs::remove_dir_all(&path);
         fs::create_dir_all(&path).expect("create test directory");
         path
+    }
+
+    #[test]
+    fn validates_complete_unreal_gitignore() {
+        let path = test_directory("complete-gitignore");
+        let content = "# Unreal standard ignores\nBinaries/\nDerivedDataCache/\nIntermediate/\n";
+        fs::write(path.join(".gitignore"), content).expect("write gitignore");
+
+        let (valid, missing) = validate_unreal_gitignore(&path);
+        assert!(valid);
+        assert!(missing.is_empty());
+
+        fs::remove_dir_all(path).expect("cleanup");
+    }
+
+    #[test]
+    fn detects_missing_entries_in_unreal_gitignore() {
+        let path = test_directory("partial-gitignore");
+        let content = "# Partial ignore\nBinaries/\n";
+        fs::write(path.join(".gitignore"), content).expect("write gitignore");
+
+        let (valid, missing) = validate_unreal_gitignore(&path);
+        assert!(!valid);
+        assert_eq!(missing, vec!["DerivedDataCache".to_string(), "Intermediate".to_string()]);
+
+        fs::remove_dir_all(path).expect("cleanup");
+    }
+
+    #[test]
+    fn detects_missing_gitignore_file() {
+        let path = test_directory("no-gitignore");
+
+        let (valid, missing) = validate_unreal_gitignore(&path);
+        assert!(!valid);
+        assert_eq!(missing, vec![
+            "Binaries".to_string(),
+            "DerivedDataCache".to_string(),
+            "Intermediate".to_string(),
+        ]);
+
+        fs::remove_dir_all(path).expect("cleanup");
+    }
+
+    #[test]
+    fn validates_pattern_variations_in_gitignore() {
+        let path = test_directory("pattern-gitignore");
+        let content = "**/Binaries/\n/DerivedDataCache\nIntermediate/\n";
+        fs::write(path.join(".gitignore"), content).expect("write gitignore");
+
+        let (valid, missing) = validate_unreal_gitignore(&path);
+        assert!(valid);
+        assert!(missing.is_empty());
+
+        fs::remove_dir_all(path).expect("cleanup");
+    }
+
+    #[test]
+    fn rejects_wildcard_child_ignores_in_gitignore() {
+        let path = test_directory("wildcard-gitignore");
+        let content = "Binaries/*\nDerivedDataCache/**\nIntermediate\n";
+        fs::write(path.join(".gitignore"), content).expect("write gitignore");
+
+        let (valid, missing) = validate_unreal_gitignore(&path);
+        assert!(!valid);
+        assert_eq!(missing, vec!["Binaries".to_string(), "DerivedDataCache".to_string()]);
+
+        fs::remove_dir_all(path).expect("cleanup");
     }
 
     #[test]
@@ -255,6 +325,7 @@ mod tests {
 
         assert_eq!(args, vec![
             "clone",
+            "--progress",
             "--no-tags",
             "--branch",
             "main",
@@ -262,6 +333,18 @@ mod tests {
             "https://github.com/example/repo.git",
             r"C:\build\BuildRepo",
         ]);
+    }
+
+    #[test]
+    fn parses_git_clone_progress_percentages() {
+        assert_eq!(super::parse_git_clone_progress("Receiving objects:  45% (450/1000), 12.34 MiB | 5.67 MiB/s"), Some(45));
+        assert_eq!(super::parse_git_clone_progress("Receiving objects: 100% (1000/1000), 25.10 MiB | 8.12 MiB/s, done."), Some(100));
+        assert_eq!(super::parse_git_clone_progress("Resolving deltas:  80% (80/100), done."), Some(80));
+        assert_eq!(super::parse_git_clone_progress("Updating files:  90% (450/500)"), Some(90));
+        assert_eq!(super::parse_git_clone_progress("remote: Compressing objects:  50% (10/20)"), Some(50));
+        assert_eq!(super::parse_git_clone_progress("remote: Counting objects:  20% (7/35)"), Some(20));
+        assert_eq!(super::parse_git_clone_progress("remote: Enumerating objects: 100, done."), None);
+        assert_eq!(super::parse_git_clone_progress("Cloning into 'BuildRepo'..."), None);
     }
 }
 
@@ -300,9 +383,25 @@ fn detected_projects(repository: &Path) -> Vec<DetectedRemoteProject> {
         .collect()
 }
 
+pub fn parse_git_clone_progress(line: &str) -> Option<u32> {
+    for prefix in &["Receiving objects:", "Resolving deltas:", "Updating files:", "Compressing objects:", "Counting objects:"] {
+        if let Some(pos) = line.find(prefix) {
+            let after = &line[pos + prefix.len()..];
+            if let Some(percent_pos) = after.find('%') {
+                let num_str = after[..percent_pos].trim();
+                if let Ok(p) = num_str.parse::<u32>() {
+                    return Some(p.min(100));
+                }
+            }
+        }
+    }
+    None
+}
+
 fn clone_arguments(build_branch: &str, clone_url: &str, destination: &str) -> Vec<String> {
     vec![
         "clone".to_owned(),
+        "--progress".to_owned(),
         "--no-tags".to_owned(),
         "--branch".to_owned(),
         build_branch.to_owned(),
@@ -433,6 +532,85 @@ fn archive_remote_build_output_impl(app: AppHandle, output_directory: String) ->
     Ok(archive_path.to_string_lossy().to_string())
 }
 
+fn repository_uses_lfs(repository: &Path) -> bool {
+    let gitattributes = repository.join(".gitattributes");
+    if gitattributes.is_file() {
+        if let Ok(content) = std::fs::read_to_string(&gitattributes) {
+            let lower = content.to_ascii_lowercase();
+            if lower.contains("filter=lfs") || lower.contains("merge=lfs") || lower.contains("diff=lfs") {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+pub fn validate_unreal_gitignore(repository: &Path) -> (bool, Vec<String>) {
+    const REQUIRED_ENTRIES: &[&str] = &["Binaries", "DerivedDataCache", "Intermediate"];
+    let gitignore_path = repository.join(".gitignore");
+
+    let gitignore_content = match std::fs::read_to_string(&gitignore_path) {
+        Ok(content) => content,
+        Err(_) => {
+            let mut missing = Vec::new();
+            for entry in REQUIRED_ENTRIES {
+                let test_path = format!("{entry}/");
+                let check = run_git(repository, &["check-ignore", "-q", &test_path]);
+                if !check.ok {
+                    missing.push((*entry).to_owned());
+                }
+            }
+            if missing.is_empty() {
+                return (true, vec![]);
+            }
+            return (false, REQUIRED_ENTRIES.iter().map(|s| (*s).to_owned()).collect());
+        }
+    };
+
+    let mut ignored_by_file = std::collections::HashSet::new();
+    for raw_line in gitignore_content.lines() {
+        let line = raw_line.trim();
+        if line.is_empty() || line.starts_with('#') || line.starts_with('!') {
+            continue;
+        }
+        let lower = line.to_ascii_lowercase();
+        let cleaned = lower
+            .trim_start_matches('/')
+            .trim_start_matches("**/")
+            .trim_end_matches('/');
+
+        for entry in REQUIRED_ENTRIES {
+            let entry_lower = entry.to_ascii_lowercase();
+            if cleaned == entry_lower
+                || lower == entry_lower
+                || lower == format!("{entry_lower}/")
+                || lower == format!("/{entry_lower}/")
+                || lower == format!("/{entry_lower}")
+                || lower == format!("**/{entry_lower}")
+                || lower == format!("**/{entry_lower}/")
+            {
+                ignored_by_file.insert(*entry);
+            }
+        }
+    }
+
+    let mut missing = Vec::new();
+    for entry in REQUIRED_ENTRIES {
+        if ignored_by_file.contains(entry) {
+            continue;
+        }
+        let test_dir = format!("{entry}/");
+        let check = run_git(repository, &["check-ignore", "-q", &test_dir]);
+        if check.ok {
+            continue;
+        }
+        missing.push((*entry).to_owned());
+    }
+
+    let is_valid = missing.is_empty();
+    (is_valid, missing)
+}
+
 #[tauri::command]
 pub fn inspect_remote_build_checkout(repository_path: String, remote_name: String, build_branch: String) -> CheckoutStatus {
     eprintln!("[automatic-build] checkout inspection starting: repository={}, branch={}", repository_path, build_branch);
@@ -447,9 +625,12 @@ pub fn inspect_remote_build_checkout(repository_path: String, remote_name: Strin
             behind_count: 0,
             worktree_clean: false,
             index_clean: false,
+            gitignore_valid: false,
+            gitignore_missing_entries: vec![],
             remote_url: None,
             git_lfs_available: false,
             git_lfs_error: result.error.clone(),
+            requires_git_lfs: false,
             remotes: vec![],
             branches: vec![],
             projects: vec![],
@@ -477,6 +658,7 @@ pub fn inspect_remote_build_checkout(repository_path: String, remote_name: Strin
     let remote_url = run_git(&repository, &["remote", "get-url", &remote_name]);
     let status = run_git(&repository, &["status", "--porcelain"]);
     let lfs = run_git(&repository, &["lfs", "version"]);
+    let (gitignore_valid, gitignore_missing_entries) = validate_unreal_gitignore(&repository);
     let remotes_result = run_git(&repository, &["remote"]);
     let branches_result = run_git(&repository, &["for-each-ref", "--format=%(refname:short)", "refs/heads", "refs/remotes"]);
     let result = if !branch.ok { branch.clone() } else if !head.ok { head.clone() } else { status.clone() };
@@ -506,9 +688,12 @@ pub fn inspect_remote_build_checkout(repository_path: String, remote_name: Strin
         behind_count,
         worktree_clean: status.ok && status.stdout.is_empty(),
         index_clean: status.ok && status.stdout.lines().all(|line| line.as_bytes().first() == Some(&b' ')),
+        gitignore_valid,
+        gitignore_missing_entries,
         remote_url: remote_url.ok.then_some(remote_url.stdout),
         git_lfs_available: lfs.ok,
         git_lfs_error: lfs.error,
+        requires_git_lfs: repository_uses_lfs(&repository),
         remotes: remotes_result.stdout.lines().map(str::to_owned).collect(),
         branches: branches_result.stdout.lines().filter(|branch| !branch.ends_with(&format!("/{build_branch}"))).map(str::to_owned).collect(),
         projects: detected_projects(&repository),
@@ -560,7 +745,18 @@ pub fn update_remote_build_checkout(repository_path: String, build_branch: Strin
 /// The token is supplied to Git through an ephemeral environment configuration,
 /// never through the remote URL, persisted files, or a serialized result.
 #[tauri::command]
-pub fn clone_github_repository(clone_url: String, destination: String, build_branch: String) -> GitCommandResult {
+pub async fn clone_github_repository(app: AppHandle, clone_url: String, destination: String, build_branch: String) -> GitCommandResult {
+    tauri::async_runtime::spawn_blocking(move || clone_github_repository_impl(app, clone_url, destination, build_branch))
+        .await
+        .unwrap_or_else(|error| GitCommandResult {
+            ok: false,
+            stdout: String::new(),
+            stderr: String::new(),
+            error: Some(format!("Clone task failed: {error}")),
+        })
+}
+
+fn clone_github_repository_impl(app: AppHandle, clone_url: String, destination: String, build_branch: String) -> GitCommandResult {
     let destination_path = PathBuf::from(&destination);
     if !clone_url.starts_with("https://github.com/") || !clone_url.ends_with(".git") {
         return GitCommandResult { ok: false, stdout: String::new(), stderr: String::new(), error: Some("Only HTTPS GitHub repository URLs returned by the GitHub API can be cloned.".to_owned()) };
@@ -586,12 +782,130 @@ pub fn clone_github_repository(clone_url: String, destination: String, build_bra
     eprintln!("[automatic-build] clone starting: branch='{build_branch}', destination='{destination}'");
     let mut command = build_cmd("git", &args, None);
     command.env("GIT_TERMINAL_PROMPT", "0").env("GIT_CONFIG_COUNT", "1").env("GIT_CONFIG_KEY_0", "http.extraHeader").env("GIT_CONFIG_VALUE_0", format!("Authorization: Basic {credential}"));
-    match command_output_with_timeout(command, Duration::from_secs(600)) {
-        Ok(output) => {
-            let stdout = String::from_utf8_lossy(&output.stdout).trim().to_owned();
-            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
-            let mut result = GitCommandResult { ok: output.status.success(), stdout, stderr: stderr.clone(), error: (!output.status.success()).then(|| actionable_git_error(&stderr)) };
+    command.stdout(Stdio::piped()).stderr(Stdio::piped());
+
+    let started = Instant::now();
+    stream_processor::emit_progress(&app, 0, 0);
+
+    let mut child = match command.spawn() {
+        Ok(child) => child,
+        Err(error) => {
+            eprintln!("[automatic-build] clone could not start: branch='{build_branch}', destination='{destination}', error='{error}'");
+            return GitCommandResult { ok: false, stdout: String::new(), stderr: String::new(), error: Some(format!("Unable to start git: {error}")) };
+        }
+    };
+
+    let stderr = child.stderr.take();
+    let stdout = child.stdout.take();
+
+    let app_stderr = app.clone();
+    let stderr_handle = std::thread::spawn(move || {
+        let mut collected = Vec::new();
+        if let Some(reader) = stderr {
+            let mut reader = std::io::BufReader::new(reader);
+            let mut buffer = [0u8; 1024];
+            let mut current_line = Vec::new();
+            while let Ok(n) = reader.read(&mut buffer) {
+                if n == 0 { break; }
+                for &b in &buffer[..n] {
+                    collected.push(b);
+                    if b == b'\r' || b == b'\n' {
+                        if !current_line.is_empty() {
+                            let line_str = String::from_utf8_lossy(&current_line);
+                            let trimmed = line_str.trim();
+                            if !trimmed.is_empty() {
+                                if let Some(percent) = parse_git_clone_progress(trimmed) {
+                                    stream_processor::emit_progress(&app_stderr, percent, started.elapsed().as_millis() as u64);
+                                }
+                                stream_processor::emit_log(&app_stderr, trimmed, None);
+                            }
+                            current_line.clear();
+                        }
+                    } else {
+                        current_line.push(b);
+                    }
+                }
+            }
+            if !current_line.is_empty() {
+                let line_str = String::from_utf8_lossy(&current_line);
+                let trimmed = line_str.trim();
+                if !trimmed.is_empty() {
+                    if let Some(percent) = parse_git_clone_progress(trimmed) {
+                        stream_processor::emit_progress(&app_stderr, percent, started.elapsed().as_millis() as u64);
+                    }
+                    stream_processor::emit_log(&app_stderr, trimmed, None);
+                }
+            }
+        }
+        String::from_utf8_lossy(&collected).to_string()
+    });
+
+    let app_stdout = app.clone();
+    let stdout_handle = std::thread::spawn(move || {
+        let mut collected = Vec::new();
+        if let Some(reader) = stdout {
+            let mut reader = std::io::BufReader::new(reader);
+            let mut buffer = [0u8; 1024];
+            let mut current_line = Vec::new();
+            while let Ok(n) = reader.read(&mut buffer) {
+                if n == 0 { break; }
+                for &b in &buffer[..n] {
+                    collected.push(b);
+                    if b == b'\r' || b == b'\n' {
+                        if !current_line.is_empty() {
+                            let line_str = String::from_utf8_lossy(&current_line);
+                            let trimmed = line_str.trim();
+                            if !trimmed.is_empty() {
+                                stream_processor::emit_log(&app_stdout, trimmed, None);
+                            }
+                            current_line.clear();
+                        }
+                    } else {
+                        current_line.push(b);
+                    }
+                }
+            }
+            if !current_line.is_empty() {
+                let line_str = String::from_utf8_lossy(&current_line);
+                let trimmed = line_str.trim();
+                if !trimmed.is_empty() {
+                    stream_processor::emit_log(&app_stdout, trimmed, None);
+                }
+            }
+        }
+        String::from_utf8_lossy(&collected).to_string()
+    });
+
+    let exit_status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break Ok(status),
+            Ok(None) => {
+                if started.elapsed() >= Duration::from_secs(600) {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    break Err("Git clone timed out after 600 seconds.".to_string());
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            Err(error) => break Err(format!("Wait failed: {error}")),
+        }
+    };
+
+    let stderr_str = stderr_handle.join().unwrap_or_default();
+    let stdout_str = stdout_handle.join().unwrap_or_default();
+
+    match exit_status {
+        Ok(status) => {
+            let stdout = stdout_str.trim().to_owned();
+            let stderr = stderr_str.trim().to_owned();
+            let mut result = GitCommandResult {
+                ok: status.success(),
+                stdout,
+                stderr: stderr.clone(),
+                error: (!status.success()).then(|| actionable_git_error(&stderr)),
+            };
             if result.ok {
+                stream_processor::emit_progress(&app, 100, started.elapsed().as_millis() as u64);
                 let checkout = ensure_clone_branch(&destination_path, &build_branch);
                 if checkout.ok && checkout.stdout == build_branch {
                     eprintln!("[automatic-build] clone checkout ready: branch='{build_branch}', destination='{destination}'");
@@ -608,9 +922,14 @@ pub fn clone_github_repository(clone_url: String, destination: String, build_bra
             }
             result
         }
-        Err(error) => {
-            eprintln!("[automatic-build] clone could not start: branch='{build_branch}', destination='{destination}', error='{error}'");
-            GitCommandResult { ok: false, stdout: String::new(), stderr: String::new(), error: Some(format!("Unable to start git: {error}")) }
+        Err(error_msg) => {
+            eprintln!("[automatic-build] clone failed: branch='{build_branch}', destination='{destination}', error='{error_msg}'");
+            GitCommandResult {
+                ok: false,
+                stdout: stdout_str.trim().to_owned(),
+                stderr: stderr_str.trim().to_owned(),
+                error: Some(error_msg),
+            }
         }
     }
 }

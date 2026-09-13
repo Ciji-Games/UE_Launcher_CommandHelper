@@ -286,6 +286,24 @@ pub fn open_project_folder(project_path: String, folder: String) -> Result<(), S
     Ok(())
 }
 
+/// Open an existing automatic-build output folder in Windows Explorer.
+#[tauri::command]
+pub fn open_folder_in_explorer(path: String) -> Result<(), String> {
+    let target = std::path::Path::new(&path);
+    if !target.is_dir() {
+        return Err("The packaged build output folder no longer exists.".to_string());
+    }
+    #[cfg(windows)]
+    std::process::Command::new("explorer.exe")
+        .arg(target)
+        .creation_flags(0x0800_0000u32)
+        .spawn()
+        .map_err(|e| e.to_string())?;
+    #[cfg(not(windows))]
+    return Err("open_folder_in_explorer is only supported on Windows".to_string());
+    Ok(())
+}
+
 #[tauri::command]
 pub fn run_command(command: String, args: Vec<String>, cwd: Option<String>) -> Result<(), String> {
     let cwd_ref = cwd.as_deref();

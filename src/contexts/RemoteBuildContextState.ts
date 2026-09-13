@@ -1,5 +1,5 @@
 import { createContext } from 'react';
-import type { RemoteBuildProfile } from '../types';
+import type { ProfilePrerequisites, RemoteBuildProfile } from '../types';
 
 export interface RemoteBuildContextValue {
   checkProfile: (profile: RemoteBuildProfile, runBuild?: boolean, force?: boolean, batchInvocation?: boolean) => Promise<void>;
@@ -13,6 +13,9 @@ export interface RemoteBuildContextValue {
   keepBuildsCount: number;
   archiveOnly: boolean;
   applyScheduleSettings: (settings: { intervalMinutes: number; keepBuildsEnabled: boolean; keepBuildsCount: number; archiveOnly: boolean }) => Promise<void>;
+  prerequisites: Record<string, ProfilePrerequisites>;
+  getProfilePrerequisites: (profileId: string) => ProfilePrerequisites | undefined;
+  refreshPrerequisites: (profileId?: string) => Promise<void>;
 }
 
 export const RemoteBuildContext = createContext<RemoteBuildContextValue | null>(null);

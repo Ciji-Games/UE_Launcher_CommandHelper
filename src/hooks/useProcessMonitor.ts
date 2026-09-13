@@ -3,7 +3,7 @@
  * Use with predefined groups (e.g. "regenerate") to check if blocking processes are running.
  */
 
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import type { ProcessStatus } from '../types';
 import { useAppActivity } from './useAppActivity';
@@ -23,7 +23,23 @@ export function useProcessMonitor(groupName: string, pollIntervalMs = 1500) {
           groupName,
         });
         if (!cancelled) {
-          setStatuses(result);
+          setStatuses((prev) => {
+            if (prev.length === result.length) {
+              const unchanged = prev.every((p, idx) => {
+                const n = result[idx];
+                return (
+                  n &&
+                  p.id === n.id &&
+                  p.displayName === n.displayName &&
+                  p.isRunning === n.isRunning &&
+                  p.pids.length === n.pids.length &&
+                  p.pids.every((pid, i) => pid === n.pids[i])
+                );
+              });
+              if (unchanged) return prev;
+            }
+            return result;
+          });
           setError(null);
         }
       } catch (e) {
@@ -51,7 +67,7 @@ export function useProcessMonitor(groupName: string, pollIntervalMs = 1500) {
     };
   }, [groupName, pollIntervalMs, isAppActive]);
 
-  const runningProcesses = statuses.filter((s) => s.isRunning);
+  const runningProcesses = useMemo(() => statuses.filter((s) => s.isRunning), [statuses]);
   const hasBlockingProcesses = runningProcesses.length > 0;
 
   return {
