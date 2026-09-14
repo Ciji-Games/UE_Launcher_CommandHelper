@@ -286,21 +286,44 @@ pub fn open_project_folder(project_path: String, folder: String) -> Result<(), S
     Ok(())
 }
 
+pub fn resolve_folder_to_open(path: &str) -> Result<std::path::PathBuf, String> {
+    let target = std::path::Path::new(path);
+    if target.is_dir() {
+        return Ok(target.to_path_buf());
+    }
+    if target.is_file() {
+        if let Some(parent) = target.parent() {
+            if parent.is_dir() {
+                return Ok(parent.to_path_buf());
+            }
+        }
+    }
+    let zip_target = target.with_extension("zip");
+    if zip_target.is_file() {
+        if let Some(parent) = zip_target.parent() {
+            if parent.is_dir() {
+                return Ok(parent.to_path_buf());
+            }
+        }
+    }
+    Err("The packaged build output folder no longer exists.".to_string())
+}
+
 /// Open an existing automatic-build output folder in Windows Explorer.
 #[tauri::command]
 pub fn open_folder_in_explorer(path: String) -> Result<(), String> {
-    let target = std::path::Path::new(&path);
-    if !target.is_dir() {
-        return Err("The packaged build output folder no longer exists.".to_string());
-    }
+    let folder = resolve_folder_to_open(&path)?;
     #[cfg(windows)]
     std::process::Command::new("explorer.exe")
-        .arg(target)
+        .arg(&folder)
         .creation_flags(0x0800_0000u32)
         .spawn()
         .map_err(|e| e.to_string())?;
     #[cfg(not(windows))]
-    return Err("open_folder_in_explorer is only supported on Windows".to_string());
+    {
+        let _ = folder;
+        return Err("open_folder_in_explorer is only supported on Windows".to_string());
+    }
     Ok(())
 }
 
@@ -315,4 +338,55 @@ pub fn run_command(command: String, args: Vec<String>, cwd: Option<String>) -> R
 #[tauri::command]
 pub fn kill_process(pid: u32) -> Result<(), String> {
     kill_pid(pid)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::resolve_folder_to_open;
+    use std::fs::{self, File};
+
+    #[test]
+    fn resolves_existing_directory() {
+        let temp_dir = std::env::temp_dir().join(format!("test_open_folder_dir_{}", std::process::id()));
+        fs::create_dir_all(&temp_dir).unwrap();
+
+        let resolved = resolve_folder_to_open(&temp_dir.to_string_lossy());
+        assert_eq!(resolved.unwrap(), temp_dir);
+
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn resolves_containing_folder_for_existing_zip_file() {
+        let temp_dir = std::env::temp_dir().join(format!("test_open_folder_zip_{}", std::process::id()));
+        fs::create_dir_all(&temp_dir).unwrap();
+        let zip_file = temp_dir.join("build_archive.zip");
+        File::create(&zip_file).unwrap();
+
+        let resolved = resolve_folder_to_open(&zip_file.to_string_lossy());
+        assert_eq!(resolved.unwrap(), temp_dir);
+
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn resolves_containing_folder_when_directory_was_archived_to_zip() {
+        let temp_dir = std::env::temp_dir().join(format!("test_open_folder_converted_{}", std::process::id()));
+        fs::create_dir_all(&temp_dir).unwrap();
+        let unarchived_path = temp_dir.join("build_output");
+        let zip_file = temp_dir.join("build_output.zip");
+        File::create(&zip_file).unwrap();
+
+        let resolved = resolve_folder_to_open(&unarchived_path.to_string_lossy());
+        assert_eq!(resolved.unwrap(), temp_dir);
+
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn returns_error_when_neither_folder_nor_zip_exists() {
+        let non_existent = std::env::temp_dir().join("definitely_non_existent_folder_or_file_12345");
+        let result = resolve_folder_to_open(&non_existent.to_string_lossy());
+        assert!(result.is_err());
+    }
 }

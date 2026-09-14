@@ -448,6 +448,7 @@ export function RemoteBuildProvider({ children }: { children: React.ReactNode })
               outputDirectory: buildOutputPath,
             });
             await log(`build archived to '${archivePath}'`);
+            packagedOutputPath = archivePath;
             await updateStages({ zip: 'success', cleanup: keepBuildsEnabled ? 'running' : 'success' });
           } catch (zipErr) {
             failedStage = 'zip';
