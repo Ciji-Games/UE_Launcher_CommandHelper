@@ -2,6 +2,8 @@
 
 The Launcher tab is your home base for Unreal Engine projects and engine versions.
 
+![Launcher](../public/assets/launcher.png)
+
 ## Settings
 
 A settings icon appears in the navigation bar between the app version and the documentation icon. Click it to open the **Settings** panel, which includes:

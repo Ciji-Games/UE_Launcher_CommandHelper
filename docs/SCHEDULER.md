@@ -4,6 +4,8 @@ The Scheduler tab lets you create **named batch jobs**—sequences of tools that
 
 > Delete HLOD → Build HLOD → Build Lighting → Cook → Package
 
+![Batch Jobs](../public/assets/batchJob.png)
+
 ## Creating a Job
 
 1. Click **Create Job**

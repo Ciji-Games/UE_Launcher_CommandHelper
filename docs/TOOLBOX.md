@@ -2,6 +2,8 @@
 
 The ToolBox tab provides a set of standalone tools for common Unreal Engine workflows. Select a tool from the left menu to configure and run it.
 
+![ToolBox](../public/assets/shaderbooster.png)
+
 ## Tools
 
 ### Shader Booster
