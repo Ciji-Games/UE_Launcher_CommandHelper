@@ -304,6 +304,36 @@ pub async fn run_resave_packages(
     result
 }
 
+fn parse_additional_args(args_str: &str) -> Vec<String> {
+    let mut args = Vec::new();
+    let mut current = String::new();
+    let mut in_double_quote = false;
+    let mut in_single_quote = false;
+
+    for c in args_str.chars() {
+        match c {
+            '"' if !in_single_quote => {
+                in_double_quote = !in_double_quote;
+            }
+            '\'' if !in_double_quote => {
+                in_single_quote = !in_single_quote;
+            }
+            c if c.is_whitespace() && !in_double_quote && !in_single_quote => {
+                if !current.is_empty() {
+                    args.push(std::mem::take(&mut current));
+                }
+            }
+            _ => {
+                current.push(c);
+            }
+        }
+    }
+    if !current.is_empty() {
+        args.push(current);
+    }
+    args
+}
+
 /// Package (BuildCookRun): RunUAT.bat BuildCookRun -project="path" -platform=Win64 -clientconfig=Development -build -cook -stage -pak -archive -archivedirectory="..."
 #[tauri::command]
 pub async fn run_package(
@@ -314,6 +344,7 @@ pub async fn run_package(
     engine_path: String,
     bump_project_version: bool,
     project_version: Option<String>,
+    additional_args: Option<String>,
     app: AppHandle,
 ) -> Result<(), String> {
     if monitor::has_blocking_processes("uproject".to_string())? {
@@ -356,7 +387,7 @@ pub async fn run_package(
         );
     }
 
-    let args = vec![
+    let mut args = vec![
         "BuildCookRun".to_string(),
         format!("-project={}", project_path),
         format!("-platform={}", platform),
@@ -368,6 +399,12 @@ pub async fn run_package(
         "-archive".to_string(),
         format!("-archivedirectory={}", archive_directory),
     ];
+
+    if let Some(ref extra) = additional_args {
+        for arg in parse_additional_args(extra) {
+            args.push(arg);
+        }
+    }
 
     stream_processor::emit_log(
         &app,
@@ -382,6 +419,16 @@ pub async fn run_package(
         &format!("Archive directory: {}", archive_directory),
         None,
     );
+    if let Some(ref extra) = additional_args {
+        let trimmed = extra.trim();
+        if !trimmed.is_empty() {
+            stream_processor::emit_log(
+                &app,
+                &format!("Additional arguments: {}", trimmed),
+                None,
+            );
+        }
+    }
 
     let run_uat_str = run_uat.to_string_lossy().to_string();
     let result = tokio::task::spawn_blocking({

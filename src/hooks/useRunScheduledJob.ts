@@ -170,6 +170,7 @@ export function useRunScheduledJob() {
               enginePath,
               bumpProjectVersion: params.bumpProjectVersion ?? false,
               projectVersion: null,
+              additionalArgs: (params.additionalArgs as string)?.trim() || null,
             });
           } else if (step.id === 'archive') {
             const outPath =

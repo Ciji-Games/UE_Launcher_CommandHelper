@@ -32,6 +32,7 @@ export function UProjectHelperPanel() {
   const [platform, setPlatform] = useState('Win64');
   const [packageConfig, setPackageConfig] = useState('Development');
   const [outputPath, setOutputPath] = useState<string>('');
+  const [additionalArgs, setAdditionalArgs] = useState<string>('');
   const [running, setRunning] = useState(false);
   const [fixupRedirects, setFixupRedirects] = useState(true);
   const [autocheckout, setAutocheckout] = useState(false);
@@ -180,6 +181,7 @@ export function UProjectHelperPanel() {
         enginePath,
         bumpProjectVersion,
         projectVersion: bumpProjectVersion ? newProjectVersion : null,
+        additionalArgs: additionalArgs.trim() || null,
       });
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
@@ -375,6 +377,20 @@ export function UProjectHelperPanel() {
                 Browse
               </button>
             </div>
+          </div>
+
+          <div>
+            <label className="block text-sm text-slate-300 mb-1">
+              Additional arguments
+            </label>
+            <input
+              type="text"
+              value={additionalArgs}
+              onChange={(e) => setAdditionalArgs(e.target.value)}
+              placeholder="-compressed -prereqs"
+              disabled={!selectedProjectPath}
+              className="w-full rounded-md bg-slate-700/50 border border-slate-600 text-slate-100 px-3 py-2 text-sm focus:border-sky-500 focus:outline-none focus:ring-1 focus:ring-sky-500/30 disabled:opacity-50"
+            />
           </div>
 
           <button

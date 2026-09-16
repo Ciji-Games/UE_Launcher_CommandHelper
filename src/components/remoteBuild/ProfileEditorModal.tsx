@@ -36,6 +36,7 @@ export function ProfileEditorModal({
   const [platform, setPlatform] = useState('Win64');
   const [packageConfig, setPackageConfig] = useState('Development');
   const [outputPath, setOutputPath] = useState('');
+  const [additionalArgs, setAdditionalArgs] = useState('');
   const [enabled, setEnabled] = useState(true);
 
   const [branches, setBranches] = useState<GitHubBranch[]>([]);
@@ -85,6 +86,7 @@ export function ProfileEditorModal({
       setPlatform(profile.platform || 'Win64');
       setPackageConfig(profile.packageConfig || 'Development');
       setOutputPath(profile.outputPath || '');
+      setAdditionalArgs(profile.additionalArgs || '');
       setEnabled(profile.enabled);
     } else {
       setName('');
@@ -96,6 +98,7 @@ export function ProfileEditorModal({
       setPlatform('Win64');
       setPackageConfig('Development');
       setOutputPath('');
+      setAdditionalArgs('');
       setEnabled(true);
     }
     setValidationError(null);
@@ -192,6 +195,7 @@ export function ProfileEditorModal({
           platform,
           packageConfig,
           outputPath: outputPath.trim(),
+          additionalArgs: additionalArgs.trim() || undefined,
           enabled,
         };
         await onSave(updated);
@@ -206,6 +210,7 @@ export function ProfileEditorModal({
           platform,
           packageConfig,
           outputPath: outputPath.trim(),
+          additionalArgs: additionalArgs.trim() || undefined,
           enabled,
         });
         await onSave(newProfile);
@@ -550,6 +555,19 @@ export function ProfileEditorModal({
                 <option value="Test">Test</option>
               </select>
             </div>
+          </div>
+
+          <div>
+            <label className="block text-xs font-semibold text-slate-300 mb-1">
+              Additional arguments
+            </label>
+            <input
+              type="text"
+              value={additionalArgs}
+              onChange={(e) => setAdditionalArgs(e.target.value)}
+              placeholder="-compressed -prereqs"
+              className="w-full px-3 py-2 text-xs font-mono rounded-lg border border-slate-700 bg-slate-950 text-slate-200 focus:outline-none focus:ring-1 focus:ring-sky-500"
+            />
           </div>
         </form>
 

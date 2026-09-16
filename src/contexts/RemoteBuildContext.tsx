@@ -439,6 +439,7 @@ export function RemoteBuildProvider({ children }: { children: React.ReactNode })
           enginePath,
           bumpProjectVersion: false,
           projectVersion: null,
+          additionalArgs: profile.additionalArgs?.trim() || null,
         });
         if (archiveOnly) {
           await updateStages({ package: 'running', zip: 'running', cleanup: 'pending' });

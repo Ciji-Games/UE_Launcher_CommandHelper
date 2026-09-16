@@ -235,6 +235,7 @@ export interface RemoteBuildProfile {
   platform: string;
   packageConfig: string;
   outputPath: string;
+  additionalArgs?: string;
   pollingIntervalMinutes: number;
   enabled: boolean;
   cloneStatus: RemoteBuildCloneStatus;

@@ -29,6 +29,7 @@ export function StepParamPanelUProject({ stepId, value, onChange }: StepParamPan
   const platform = (value.platform as string) ?? 'Win64';
   const packageConfig = (value.config as string) ?? 'Development';
   const outputPath = (value.outputPath as string) ?? (value.archiveDirectory as string) ?? '';
+  const additionalArgs = (value.additionalArgs as string) ?? '';
   const bumpProjectVersion = (value.bumpProjectVersion as boolean) ?? false;
   const [projectVersion, setProjectVersion] = useState('');
 
@@ -160,6 +161,17 @@ export function StepParamPanelUProject({ stepId, value, onChange }: StepParamPan
                 Browse
               </button>
             </div>
+          </div>
+          <div>
+            <label className="block text-sm text-slate-300 mb-1">Additional arguments</label>
+            <input
+              type="text"
+              value={additionalArgs}
+              onChange={(e) => onChange({ ...value, additionalArgs: e.target.value })}
+              placeholder="-compressed -prereqs"
+              disabled={!projectPath}
+              className="w-full rounded-md bg-slate-700/50 border border-slate-600 text-slate-100 px-3 py-2 text-sm focus:border-sky-500 focus:outline-none focus:ring-1 focus:ring-sky-500/30 disabled:opacity-50"
+            />
           </div>
         </>
       )}
