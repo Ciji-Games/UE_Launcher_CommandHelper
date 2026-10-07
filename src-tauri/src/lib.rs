@@ -77,6 +77,11 @@ pub fn run() {
             commands::plugin::list_plugins_for_project,
             commands::plugin::build_plugin,
             commands::movie_render_queue::run_movie_render_queue,
+            commands::include_finder::get_include_index_status,
+            commands::include_finder::scan_engine_includes,
+            commands::include_finder::scan_project_includes,
+            commands::include_finder::search_includes,
+            commands::include_finder::clear_engine_include_index,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

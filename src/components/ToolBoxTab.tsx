@@ -15,6 +15,7 @@ import { MovieRenderQueuePanel } from './MovieRenderQueuePanel';
 import { BatchCommitPanel } from './BatchCommitPanel';
 import { OutputLogPanel } from './OutputLogPanel';
 import { UELogAnalyzerPanel } from './UELogAnalyzerPanel';
+import { IncludeModuleFinderPanel } from './IncludeModuleFinderPanel';
 
 const TOOLS = [
   { id: 'shader', label: 'Shader Booster', panel: ShaderBoosterPanel, contentOverflow: 'auto' },
@@ -25,12 +26,14 @@ const TOOLS = [
   { id: 'uproject', label: 'UProject Helper', panel: UProjectHelperPanel, contentOverflow: 'auto' },
   { id: 'movierenderqueue', label: 'Movie Render Queue', panel: MovieRenderQueuePanel, contentOverflow: 'auto' },
   { id: 'log-analyzer', label: 'UE Log Analyzer', panel: UELogAnalyzerPanel, contentOverflow: 'hidden' },
+  { id: 'include-finder', label: 'Include & module finder', panel: IncludeModuleFinderPanel, contentOverflow: 'hidden' },
 ] as const;
 
 type ToolId = (typeof TOOLS)[number]['id'];
 
 function ToolIcon({ id }: { id: ToolId }) {
   const paths: Record<ToolId, string> = {
+    'include-finder': 'M10 20l4-16m4 4l4 4-4 4M6 16l-4-4 4-4',
     shader: 'M12 3v2m0 14v2M5.636 5.636l1.414 1.414m9.9 9.9l1.414 1.414M3 12h2m14 0h2M5.636 18.364l1.414-1.414m9.9-9.9l1.414-1.414M15.5 8.5l-1.25 3h2.25l-4 4 1.25-3h-2.25l4-4z',
     regenerate: 'M20 11a8 8 0 00-14.9-4M4 5v4h4M4 13a8 8 0 0014.9 4M20 19v-4h-4',
     batchcommit: 'M6 3v18m0-15h8a3 3 0 010 6H6m0 0h9a3 3 0 010 6H6',

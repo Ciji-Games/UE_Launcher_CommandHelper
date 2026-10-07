@@ -64,6 +64,17 @@ Analyze Unreal Engine `.log` / `.txt` files locally with:
 > [!NOTE]
 > This tool is **separate from the Output Log** at the bottom of the ToolBox tab and does not modify it.
 
+### Include & module finder
+
+Quickly search and locate `#include` directives and parent `.Build.cs` module dependencies for Unreal Engine core headers, engine plugins, project source code, and project plugins.
+
+| Feature | Description |
+|---------|-------------|
+| **Auto-deduced Engine Association** | Selecting an active project automatically detects its associated engine version and checks whether the local engine index is ready. |
+| **Persistent SQLite Caching** | Scans an engine version once and persists the index in a local SQLite database for instant subsequent searches without memory bloat. |
+| **Instant Search & Scope Filtering** | Debounced search matching header file names, include paths, and module names. Filter by `Engine Core`, `Engine Plugins`, `Project Source`, and `Project Plugins`. |
+| **Direct Pill Copying** | Click the `#include` or module pill directly to copy the exact directive or module name to clipboard, with quick buttons to open headers in IDE or reveal in File Explorer. |
+
 ## Output Log
 
 The collapsible **Output Log** at the bottom shows real-time output from running tools.
