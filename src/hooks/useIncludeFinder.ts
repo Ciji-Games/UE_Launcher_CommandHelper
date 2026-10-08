@@ -7,13 +7,14 @@ import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { useProjects } from './useProjects';
 import { useEngines } from './useEngines';
+import { getShortEngineVersion } from '../utils/project';
 import type {
   IncludeEntry,
   IndexStatus,
   ScanProgressPayload,
   SearchFilterOptions,
 } from '../types/includeFinder';
-import type { ProjectInfo } from '../types';
+import type { ProjectInfo, EngineEntry } from '../types';
 
 export function useIncludeFinder() {
   const { projects } = useProjects();
@@ -43,10 +44,42 @@ export function useIncludeFinder() {
     const version = selectedProject.engineVersion || '';
     let installPath = selectedProject.engineInstallPath || '';
 
-    // If install path is missing or looks like an exe, resolve from engines context
-    const matchedEngine =
-      engines.find((e) => e.version === version || e.id === version || e.editorPath === installPath) ||
-      allEngines.find((e) => e.version === version || e.id === version || e.editorPath === installPath);
+    const normalizePath = (p?: string) => (p || '').toLowerCase().replace(/\\/g, '/').replace(/\/+$/, '');
+    const cleanInstallPath = normalizePath(installPath);
+    const cleanGuid = version.replace(/[{}]/g, '').toLowerCase();
+
+    // Match engine from engines list
+    const findEngine = (list: EngineEntry[]) => {
+      // 1. By editor path
+      if (cleanInstallPath && cleanInstallPath !== 'unknown') {
+        const byPath = list.find((e) => normalizePath(e.editorPath) === cleanInstallPath);
+        if (byPath) return byPath;
+      }
+      // 2. By ID / GUID
+      if (cleanGuid) {
+        const byId = list.find((e) => e.id && e.id.replace(/[{}]/g, '').toLowerCase() === cleanGuid);
+        if (byId) return byId;
+      }
+      // 3. By exact version
+      if (version && version !== 'Unknown') {
+        const byVer = list.find((e) => e.version.toLowerCase() === version.toLowerCase());
+        if (byVer) return byVer;
+      }
+      // 4. By short version (e.g. 5.4 matches 5.4.4)
+      const short = getShortEngineVersion(version);
+      if (short && short !== 'Unknown') {
+        const byShort = list.find((e) => getShortEngineVersion(e.version) === short);
+        if (byShort) return byShort;
+      }
+      // 5. By major version (e.g. 5 matches 5.4.4)
+      if (/^\d+$/.test(version)) {
+        const byMajor = list.find((e) => e.version.startsWith(`${version}.`));
+        if (byMajor) return byMajor;
+      }
+      return undefined;
+    };
+
+    const matchedEngine = findEngine(engines) || findEngine(allEngines);
 
     if (matchedEngine) {
       if (!installPath || installPath === 'Unknown') {
@@ -62,8 +95,12 @@ export function useIncludeFinder() {
       root = root.substring(0, binIdx);
     }
 
+    const resolvedVersion = matchedEngine
+      ? getShortEngineVersion(matchedEngine.version)
+      : getShortEngineVersion(version);
+
     return {
-      engineVersion: version || (matchedEngine ? matchedEngine.version : 'Unknown'),
+      engineVersion: resolvedVersion || (matchedEngine ? matchedEngine.version : version || 'Unknown'),
       engineRoot: root,
     };
   }, [selectedProject, engines, allEngines]);

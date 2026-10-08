@@ -6,12 +6,103 @@ use tauri::async_runtime::spawn_blocking;
 use walkdir::WalkDir;
 
 use crate::commands::registry;
-use crate::types::ProjectInfo;
+use crate::types::{EngineEntry, ProjectInfo};
 
 #[derive(serde::Deserialize)]
 struct UProjectJson {
     #[serde(rename = "EngineAssociation")]
     engine_association: Option<String>,
+}
+
+fn parse_semver(ver: &str) -> (u32, u32, u32) {
+    let parts: Vec<u32> = ver
+        .split('.')
+        .filter_map(|p| p.parse::<u32>().ok())
+        .collect();
+    (
+        *parts.get(0).unwrap_or(&0),
+        *parts.get(1).unwrap_or(&0),
+        *parts.get(2).unwrap_or(&0),
+    )
+}
+
+/// Match an engine association string against discovered engines.
+/// Handles GUIDs (with or without braces), full versions, Major.Minor ("5.4"),
+/// and Major-only ("5") associations.
+pub(crate) fn match_engine<'a>(
+    engine_association: &str,
+    engines: &'a [EngineEntry],
+) -> Option<&'a EngineEntry> {
+    let assoc = engine_association.trim();
+    if assoc.is_empty() || assoc.eq_ignore_ascii_case("Unknown") {
+        return None;
+    }
+
+    let clean_guid = assoc.trim_matches('{').trim_matches('}');
+
+    // 1. Exact GUID / ID match (with or without braces, case-insensitive)
+    for engine in engines {
+        if let Some(id) = &engine.id {
+            let clean_id = id.trim_matches('{').trim_matches('}');
+            if clean_id.eq_ignore_ascii_case(clean_guid) {
+                return Some(engine);
+            }
+        }
+    }
+
+    let clean_assoc = assoc
+        .strip_prefix("UE_")
+        .or_else(|| assoc.strip_prefix("ue_"))
+        .unwrap_or(assoc);
+
+    // 2. Exact version match (e.g. "5.4.4" == "5.4.4")
+    for engine in engines {
+        if engine.version.eq_ignore_ascii_case(clean_assoc) {
+            return Some(engine);
+        }
+    }
+
+    // 3. Major.Minor prefix match (e.g. "5.4" matches "5.4.4")
+    let mut minor_matches: Vec<&'a EngineEntry> = engines
+        .iter()
+        .filter(|e| {
+            if clean_assoc.is_empty() {
+                return false;
+            }
+            if e.version.starts_with(clean_assoc) {
+                let next_char = e.version.as_bytes().get(clean_assoc.len());
+                next_char.is_none() || next_char == Some(&b'.')
+            } else {
+                false
+            }
+        })
+        .collect();
+    if !minor_matches.is_empty() {
+        minor_matches.sort_by_key(|e| parse_semver(&e.version));
+        return minor_matches.last().copied();
+    }
+
+    // 4. Major-only match (e.g. "5" matches "5.4.4" or "5.5.0")
+    if clean_assoc.chars().all(|c| c.is_ascii_digit()) {
+        let prefix = format!("{}.", clean_assoc);
+        let mut major_matches: Vec<&'a EngineEntry> = engines
+            .iter()
+            .filter(|e| e.version == clean_assoc || e.version.starts_with(&prefix))
+            .collect();
+        if !major_matches.is_empty() {
+            major_matches.sort_by_key(|e| parse_semver(&e.version));
+            return major_matches.last().copied();
+        }
+    }
+
+    // 5. Match by editor path
+    for engine in engines {
+        if engine.editor_path.eq_ignore_ascii_case(assoc) {
+            return Some(engine);
+        }
+    }
+
+    None
 }
 
 /// Analyse a .uproject file and return ProjectInfo.
@@ -54,29 +145,12 @@ fn analyse_uproject_impl(path: String) -> Result<ProjectInfo, String> {
     let source_dir = project_dir.join("Source");
     let is_cpp = source_dir.exists();
 
-    // Match engine path from registry (project may have "5.7", engine "5.7.1", or a GUID)
-    // Require version boundary to avoid "4" matching "41.0.0"
+    // Match engine path from registry (project may have "5.7", engine "5.7.1", "5", or a GUID)
     let installed_engines = registry::discover_installed_engine_paths()
         .ok()
         .unwrap_or_default();
 
-    let matched_engine = installed_engines.iter().find(|e| {
-        if engine_version.is_empty() || engine_version == "Unknown" {
-            return false;
-        }
-        // Match by GUID (id) if available
-        if let Some(id) = &e.id {
-            if id == &engine_version {
-                return true;
-            }
-        }
-        // Match by version string
-        e.version == engine_version
-            || (engine_version.len() <= e.version.len()
-                && e.version.starts_with(&engine_version)
-                && (e.version.len() == engine_version.len()
-                    || e.version.as_bytes().get(engine_version.len()) == Some(&b'.')))
-    });
+    let matched_engine = match_engine(&engine_version, &installed_engines);
 
     let engine_install_path = matched_engine
         .map(|e| e.editor_path.clone())
@@ -166,4 +240,68 @@ fn scan_project_maps_impl(project_path: String) -> Result<Vec<String>, String> {
     }
     let project_dir = path.parent().ok_or("Invalid project path")?;
     Ok(scan_maps_for_project_dir(project_dir))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_match_engine_by_guid() {
+        let engines = vec![
+            EngineEntry {
+                version: "5.4.4".to_string(),
+                editor_path: r"D:\Epic Games\UE_5.4\Engine\Binaries\Win64\UnrealEditor.exe".to_string(),
+                display_name: None,
+                is_custom: false,
+                id: Some("{12345678-ABCD-EF01-2345-6789ABCDEF01}".to_string()),
+            },
+        ];
+
+        // Match with braces
+        let matched = match_engine("{12345678-ABCD-EF01-2345-6789ABCDEF01}", &engines);
+        assert!(matched.is_some());
+        assert_eq!(matched.unwrap().version, "5.4.4");
+
+        // Match without braces, lowercase
+        let matched_lower = match_engine("12345678-abcd-ef01-2345-6789abcdef01", &engines);
+        assert!(matched_lower.is_some());
+        assert_eq!(matched_lower.unwrap().version, "5.4.4");
+    }
+
+    #[test]
+    fn test_match_engine_by_version_formats() {
+        let engines = vec![
+            EngineEntry {
+                version: "5.3.2".to_string(),
+                editor_path: r"C:\Program Files\Epic Games\UE_5.3\Engine\Binaries\Win64\UnrealEditor.exe".to_string(),
+                display_name: None,
+                is_custom: false,
+                id: None,
+            },
+            EngineEntry {
+                version: "5.4.4".to_string(),
+                editor_path: r"D:\Epic Games\UE_5.4\Engine\Binaries\Win64\UnrealEditor.exe".to_string(),
+                display_name: None,
+                is_custom: false,
+                id: None,
+            },
+        ];
+
+        // Exact match
+        assert_eq!(match_engine("5.4.4", &engines).unwrap().editor_path, engines[1].editor_path);
+
+        // Major.Minor match
+        assert_eq!(match_engine("5.4", &engines).unwrap().editor_path, engines[1].editor_path);
+        assert_eq!(match_engine("UE_5.4", &engines).unwrap().editor_path, engines[1].editor_path);
+
+        // Major-only match ("5" should resolve to latest 5.x)
+        assert_eq!(match_engine("5", &engines).unwrap().version, "5.4.4");
+        assert_eq!(match_engine("UE_5", &engines).unwrap().version, "5.4.4");
+
+        // Unknown / empty associations
+        assert!(match_engine("", &engines).is_none());
+        assert!(match_engine("Unknown", &engines).is_none());
+        assert!(match_engine("6.0", &engines).is_none());
+    }
 }

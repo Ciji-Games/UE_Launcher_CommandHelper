@@ -9,6 +9,7 @@ import { useEffect, useState, useRef } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { convertFileSrc } from '@tauri-apps/api/core';
 import { ASSETS } from '../config/assets';
+import { getShortEngineVersion } from '../utils/project';
 import type { ProjectInfo } from '../types';
 
 const LAUNCH_COOLDOWN_MS = 5000;
@@ -365,7 +366,10 @@ export function LauncherCard({ project, isEngine = false, isCustomEngine = false
           </span>
         )}
         {/* Bottom right: short engine version + custom icon */}
-        <span className="absolute bottom-1.5 right-1.5 flex items-center gap-1 px-1.5 py-0.5 rounded text-xs font-medium text-slate-300 bg-slate-900/30">
+        <span
+          className="absolute bottom-1.5 right-1.5 flex items-center gap-1 px-1.5 py-0.5 rounded text-xs font-medium text-slate-300 bg-slate-900/30"
+          title={project.engineVersion && project.engineVersion !== getShortEngineVersion(project.engineVersion) ? `Engine: ${project.engineVersion}` : undefined}
+        >
           {isCustomEngine && (
             <span title="Custom engine">
               <svg xmlns="http://www.w3.org/2000/svg" className="h-3.5 w-3.5 text-slate-400 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" aria-hidden>
@@ -373,7 +377,7 @@ export function LauncherCard({ project, isEngine = false, isCustomEngine = false
               </svg>
             </span>
           )}
-          {project.engineVersion}
+          {getShortEngineVersion(project.engineVersion)}
         </span>
       </div>
 

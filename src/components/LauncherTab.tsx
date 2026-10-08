@@ -144,7 +144,8 @@ export function LauncherTab({ onOpenSettings, onOpenSchedulerWithOutput, onQuick
           {projects.map((p) => {
             const effectiveEnginePath = settings.projectEngineOverrides?.[p.projectPath] ?? p.engineInstallPath;
             const effectiveProject = { ...p, engineInstallPath: effectiveEnginePath };
-            const engineEntry = engines.find((e) => e.editorPath === effectiveEnginePath);
+            const normalizePath = (pathStr?: string) => (pathStr || '').toLowerCase().replace(/\\/g, '/').replace(/\/+$/, '');
+            const engineEntry = engines.find((e) => normalizePath(e.editorPath) === normalizePath(effectiveEnginePath));
             const isCustomEngine = engineEntry?.isCustom ?? false;
             return (
               <LauncherCard

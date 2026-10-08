@@ -30,12 +30,13 @@ export function EnginesProvider({ children }: { children: React.ReactNode }) {
     try {
       setLoading(true);
       const registryEngines = await invoke<EngineEntry[]>('get_installed_engine_paths');
-      const disabledSet = new Set(settings.disabledEnginePaths.map(p => p.toLowerCase()));
+      const normalizePath = (p?: string) => (p || '').toLowerCase().replace(/\\/g, '/').replace(/\/+$/, '');
+      const disabledSet = new Set(settings.disabledEnginePaths.map(normalizePath));
 
       const registryMapped = registryEngines.map((e) => ({
         ...e,
         displayName: e.displayName ?? undefined,
-        isCustom: false,
+        isCustom: e.isCustom ?? false,
         id: e.id ?? e.editorPath,
       }));
 
@@ -51,18 +52,18 @@ export function EnginesProvider({ children }: { children: React.ReactNode }) {
 
       // Deduplicate: If a custom engine has the same editorPath as a registry engine,
       // we prefer the custom one (it might have a custom name).
-      const customPaths = new Set(customEngines.map((c) => c.editorPath.toLowerCase()));
+      const customPaths = new Set(customEngines.map((c) => normalizePath(c.editorPath)));
       const filteredRegistry = registryMapped.filter((r) => {
-        const isDuplicate = customPaths.has(r.editorPath.toLowerCase());
+        const isDuplicate = customPaths.has(normalizePath(r.editorPath));
         return !isDuplicate;
       });
 
       const allMerged = [...filteredRegistry, ...customEngines];
 
-      // Final deduplication by editorPath to ensure no duplicates at all (case-insensitive)
+      // Final deduplication by editorPath to ensure no duplicates at all (case-insensitive & slash-normalized)
       const uniqueEnginesMap = new Map<string, EngineEntry>();
-      allMerged.forEach(e => {
-        const key = e.editorPath.toLowerCase();
+      allMerged.forEach((e) => {
+        const key = normalizePath(e.editorPath);
         // If we already have it, prefer the one with a display name or the custom one
         if (uniqueEnginesMap.has(key)) {
           const existing = uniqueEnginesMap.get(key)!;
@@ -79,8 +80,8 @@ export function EnginesProvider({ children }: { children: React.ReactNode }) {
       const deduplicatedAll = Array.from(uniqueEnginesMap.values());
 
       const filtered = deduplicatedAll.filter((e) => {
-        // Use lowercase for case-insensitive comparison on Windows
-        return !disabledSet.has(e.editorPath.toLowerCase());
+        // Use normalized path for case-insensitive and slash-agnostic comparison
+        return !disabledSet.has(normalizePath(e.editorPath));
       });
       setEngines(filtered);
       setAllEngines(deduplicatedAll);
