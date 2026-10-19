@@ -5,6 +5,7 @@
 import { startTransition, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
+import { revealItemInDir } from '@tauri-apps/plugin-opener';
 import { useProjects } from './useProjects';
 import { useEngines } from './useEngines';
 import { getShortEngineVersion } from '../utils/project';
@@ -378,7 +379,7 @@ export function useIncludeFinder() {
 
   const openFolderInExplorer = useCallback(async (entry: IncludeEntry) => {
     try {
-      await invoke('open_folder_in_explorer', { path: entry.filePath });
+      await revealItemInDir(entry.filePath);
     } catch (err) {
       console.error('Failed to reveal file in explorer:', err);
     }
