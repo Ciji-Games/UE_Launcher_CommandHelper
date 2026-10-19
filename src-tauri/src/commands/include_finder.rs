@@ -149,11 +149,15 @@ fn read_db_stats(db_path: &Path) -> Option<(usize, usize, Option<String>)> {
     .ok()?;
 
     let header_count: usize = conn
-        .query_row("SELECT COUNT(*) FROM headers", [], |row| row.get(0))
+        .query_row(
+            "SELECT COUNT(*) FROM headers WHERE LOWER(file_path) LIKE '%.h'",
+            [],
+            |row| row.get(0),
+        )
         .unwrap_or(0);
     let module_count: usize = conn
         .query_row(
-            "SELECT COUNT(DISTINCT module_name) FROM headers",
+            "SELECT COUNT(DISTINCT module_name) FROM headers WHERE LOWER(file_path) LIKE '%.h'",
             [],
             |row| row.get(0),
         )
@@ -185,14 +189,9 @@ fn is_header_file(path: &Path) -> bool {
         return false;
     }
 
-    if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
-        matches!(
-            ext.to_lowercase().as_str(),
-            "h" | "hpp" | "hxx" | "inl" | "inc"
-        )
-    } else {
-        false
-    }
+    path.extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("h"))
 }
 
 /// Calculate standard include path for a header file relative to its module root.
@@ -676,15 +675,11 @@ fn scope_priority_score(scope: &str) -> i32 {
     }
 }
 
-/// Strips common C++ header extensions (.h, .hpp, .inl, .inc) for comparison
+/// Strips the supported C++ header extension (.h) for comparison.
 fn strip_header_extension(s: &str) -> &str {
     if let Some(stripped) = s
         .strip_suffix(".h")
-        .or_else(|| s.strip_suffix(".hpp"))
-        .or_else(|| s.strip_suffix(".inl"))
-        .or_else(|| s.strip_suffix(".inc"))
         .or_else(|| s.strip_suffix(".H"))
-        .or_else(|| s.strip_suffix(".HPP"))
     {
         stripped
     } else {
@@ -875,6 +870,7 @@ fn query_sqlite_db(
                 OR header_name LIKE ?6 OR include_path LIKE ?6 OR module_name LIKE ?6)
            AND header_name NOT LIKE '%.generated.h'
            AND header_name NOT LIKE '%.gen.h'
+           AND LOWER(file_path) LIKE '%.h'
          {}
          ORDER BY scope_order ASC, relevance ASC, LENGTH(header_name) ASC, header_name ASC
          LIMIT {}",
@@ -1004,6 +1000,19 @@ pub async fn clear_engine_include_index(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_is_header_file_accepts_only_h_files() {
+        assert!(is_header_file(Path::new("Actor.h")));
+        assert!(is_header_file(Path::new("Actor.H")));
+
+        assert!(!is_header_file(Path::new("Actor.hpp")));
+        assert!(!is_header_file(Path::new("Actor.hxx")));
+        assert!(!is_header_file(Path::new("Actor.inl")));
+        assert!(!is_header_file(Path::new("Actor.inc")));
+        assert!(!is_header_file(Path::new("Actor.generated.h")));
+        assert!(!is_header_file(Path::new("Actor.gen.h")));
+    }
 
     #[test]
     fn test_get_normalized_query() {

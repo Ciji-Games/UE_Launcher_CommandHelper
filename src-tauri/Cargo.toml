@@ -1,6 +1,6 @@
 [package]
 name = "ue-launcher"
-version = "1.0.1"
+version = "1.0.2"
 description = "UE Launcher - Unreal Engine project launcher"
 edition = "2021"
 license = "Polyform-Noncommercial-1.0.0"
