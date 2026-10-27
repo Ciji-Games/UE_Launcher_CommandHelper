@@ -3,7 +3,7 @@
  * Step 10: Two-column layout with ToolGroup panels. Step 11: UmapHelper.
  */
 
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useCallback, lazy, Suspense } from 'react';
 import { useProgress } from '../contexts/ProgressContext';
 import { LogAnalyzerImportProvider } from '../contexts/LogAnalyzerImportContext';
 import { RegenerateProjectPanel } from './RegenerateProjectPanel';
@@ -17,6 +17,10 @@ import { OutputLogPanel } from './OutputLogPanel';
 import { UELogAnalyzerPanel } from './UELogAnalyzerPanel';
 import { IncludeModuleFinderPanel } from './IncludeModuleFinderPanel';
 
+const TraceAnalyzerPanel = lazy(() =>
+  import('./TraceAnalyzerPanel').then((m) => ({ default: m.TraceAnalyzerPanel }))
+);
+
 const TOOLS = [
   { id: 'shader', label: 'Shader Booster', panel: ShaderBoosterPanel, contentOverflow: 'auto' },
   { id: 'regenerate', label: 'Regenerate Project', panel: RegenerateProjectPanel, contentOverflow: 'auto' },
@@ -26,6 +30,7 @@ const TOOLS = [
   { id: 'uproject', label: 'UProject Helper', panel: UProjectHelperPanel, contentOverflow: 'auto' },
   { id: 'movierenderqueue', label: 'Movie Render Queue', panel: MovieRenderQueuePanel, contentOverflow: 'auto' },
   { id: 'log-analyzer', label: 'UE Log Analyzer', panel: UELogAnalyzerPanel, contentOverflow: 'hidden' },
+  { id: 'trace-analyzer', label: 'Trace Analyzer', panel: TraceAnalyzerPanel, contentOverflow: 'hidden' },
   { id: 'include-finder', label: 'Include & module finder', panel: IncludeModuleFinderPanel, contentOverflow: 'hidden' },
 ] as const;
 
@@ -42,6 +47,7 @@ function ToolIcon({ id }: { id: ToolId }) {
     uproject: 'M5 3h9l5 5v13H5V3zm9 0v5h5M8 13h8m-8 4h5',
     movierenderqueue: 'M4 5a2 2 0 012-2h12a2 2 0 012 2v14a2 2 0 01-2 2H6a2 2 0 01-2-2V5zm0 4h16M9 3v6m6-6v6m-4 5l3 2-3 2v-4z',
     'log-analyzer': 'M4 19V5m0 14h16M7 15l3-4 3 2 4-6',
+    'trace-analyzer': 'M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z',
   };
 
   return (
@@ -60,25 +66,21 @@ function ToolIcon({ id }: { id: ToolId }) {
 }
 
 export function ToolBoxTab({ initialRegenerateProjectPath }: { initialRegenerateProjectPath?: string | null }) {
-  const [selectedToolId, setSelectedToolId] = useState<ToolId>(TOOLS[0].id);
-  const [showOutputLog, setShowOutputLog] = useState(false);
+  const [selectedToolId, setSelectedToolId] = useState<ToolId>(() =>
+    initialRegenerateProjectPath ? 'regenerate' : TOOLS[0].id
+  );
+  const [userToggledLog, setUserToggledLog] = useState<boolean | null>(null);
   const { running, shouldOpenOutputLog } = useProgress();
+
+  const showOutputLog = userToggledLog !== null ? userToggledLog : Boolean(running && shouldOpenOutputLog);
 
   const selectedTool = TOOLS.find((t) => t.id === selectedToolId);
   const SelectedPanel = selectedTool?.panel ?? RegenerateProjectPanel;
   const contentOverflow = selectedTool?.contentOverflow ?? 'auto';
 
-  useEffect(() => {
-    if (running && shouldOpenOutputLog) setShowOutputLog(true);
-  }, [running, shouldOpenOutputLog]);
-
   const openLogAnalyzer = useCallback(() => {
     setSelectedToolId('log-analyzer');
   }, []);
-
-  useEffect(() => {
-    if (initialRegenerateProjectPath) setSelectedToolId('regenerate');
-  }, [initialRegenerateProjectPath]);
 
   return (
     <LogAnalyzerImportProvider onOpenAnalyzer={openLogAnalyzer}>
@@ -116,7 +118,13 @@ export function ToolBoxTab({ initialRegenerateProjectPath }: { initialRegenerate
             contentOverflow === 'hidden' ? 'overflow-hidden' : 'overflow-y-auto'
           }`}
         >
-          {selectedToolId === 'regenerate' ? <RegenerateProjectPanel initialSelectedPath={initialRegenerateProjectPath} /> : <SelectedPanel />}
+          {selectedToolId === 'regenerate' ? (
+            <RegenerateProjectPanel initialSelectedPath={initialRegenerateProjectPath} />
+          ) : (
+            <Suspense fallback={<div className="p-6 text-slate-400 text-sm animate-pulse">Loading tool...</div>}>
+              <SelectedPanel />
+            </Suspense>
+          )}
         </div>
       </div>
 
@@ -128,7 +136,7 @@ export function ToolBoxTab({ initialRegenerateProjectPath }: { initialRegenerate
       >
         <button
           type="button"
-          onClick={() => setShowOutputLog((prev) => !prev)}
+          onClick={() => setUserToggledLog(!showOutputLog)}
           className="flex items-center justify-between w-full px-4 py-2 hover:bg-slate-700/50 text-left transition-colors"
         >
           <span className="text-sm font-medium text-slate-300">Output Log</span>

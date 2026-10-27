@@ -2,7 +2,7 @@
 //! Dedicated module - monitor.rs is read-only for blocking checks; this needs Windows API for priority.
 
 use serde::Serialize;
-use sysinfo::System;
+use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System};
 use windows::Win32::Foundation::CloseHandle;
 use windows::Win32::System::Threading::{
     GetPriorityClass, OpenProcess, SetPriorityClass, ABOVE_NORMAL_PRIORITY_CLASS,
@@ -34,8 +34,12 @@ fn priority_name_from_class(class: u32) -> &'static str {
 }
 
 fn get_shader_worker_pids() -> Vec<u32> {
-    let mut sys = System::new_all();
-    sys.refresh_all();
+    let mut sys = System::new();
+    sys.refresh_processes_specifics(
+        ProcessesToUpdate::All,
+        true,
+        ProcessRefreshKind::nothing(),
+    );
     let mut pids = Vec::new();
     for (pid, process) in sys.processes() {
         let name = process.name().to_string_lossy();

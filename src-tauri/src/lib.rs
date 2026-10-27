@@ -2,6 +2,7 @@ mod commands;
 mod progress_parser;
 mod running_process;
 mod stream_processor;
+mod trace;
 mod types;
 mod utils;
 
@@ -82,6 +83,18 @@ pub fn run() {
             commands::include_finder::scan_project_includes,
             commands::include_finder::search_includes,
             commands::include_finder::clear_engine_include_index,
+            commands::trace_analyzer::trace_find_insights,
+            commands::trace_analyzer::trace_list_candidates,
+            commands::trace_analyzer::trace_open,
+            commands::trace_analyzer::trace_cancel,
+            commands::trace_analyzer::trace_get_summary,
+            commands::trace_analyzer::trace_get_frame_series,
+            commands::trace_analyzer::trace_get_episodes,
+            commands::trace_analyzer::trace_get_findings,
+            commands::trace_analyzer::trace_get_episode_detail,
+            commands::trace_analyzer::trace_open_in_insights,
+            commands::trace_analyzer::trace_cache_info,
+            commands::trace_analyzer::trace_clear_cache,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

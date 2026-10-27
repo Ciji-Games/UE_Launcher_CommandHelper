@@ -1,0 +1,23 @@
+{
+  "id": "spawn-burst",
+  "title": "Actor spawning burst in single frame",
+  "applies_to": ["hitch"],
+  "when": {
+    "timers": ["SpawnActor", "FinishSpawning", "PostSpawnInitialize", "RegisterAllComponents", "OnRegister", "UserConstructionScript", "BeginPlay", "UWorld::SpawnActor"],
+    "threads": ["game"],
+    "min_excess_ms": 5.0,
+    "min_share_of_excess": 0.20,
+    "expects_periodic": false
+  },
+  "specificity": 0.85,
+  "fix_likelihood": "high",
+  "fix_rationale": "Burst actor spawns cause simultaneous component registration and construction script execution. Spreading spawns over multiple frames or object pooling resolves the hitch.",
+  "evidence_template": "{timer} took {ms} ms ({share}% of excess frame time) executing actor spawning and initialization logic.",
+  "fixes": [
+    { "text": "Implement an Actor Pool for frequently spawned entities (projectiles, effects, enemies).", "effort": "medium" },
+    { "text": "Stagger multi-actor spawning across several frames using a spawn queue.", "effort": "low" },
+    { "text": "Simplify Blueprint Construction Scripts and move heavy logic to BeginPlay or C++.", "effort": "medium" }
+  ],
+  "verify": "Re-test the gameplay trigger (e.g. enemy wave start) and check that SpawnActor frame time drops below budget.",
+  "caveats": []
+}

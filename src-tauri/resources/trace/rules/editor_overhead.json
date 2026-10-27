@@ -1,0 +1,23 @@
+{
+  "id": "editor-overhead",
+  "title": "Unreal Editor tooling and viewport overhead",
+  "applies_to": ["hitch", "slow_region"],
+  "when": {
+    "timers": ["UEditorEngine::Tick", "FEditorViewportClient", "FUnrealEdEngine", "EditorInit", "FEditorPerformance", "LevelEditor", "ContentBrowser"],
+    "threads": ["game", "render"],
+    "min_excess_ms": 4.0,
+    "min_share_of_excess": 0.15,
+    "expects_periodic": false
+  },
+  "specificity": 0.90,
+  "fix_likelihood": "high",
+  "fix_rationale": "Editor tooling, level editor ticking, and viewport client logic do not run in packaged game builds.",
+  "evidence_template": "{timer} consumed {ms} ms ({share}% of excess time) servicing Unreal Editor tooling and viewport client.",
+  "fixes": [
+    { "text": "Profile using a packaged Development or Test build to measure true player performance without editor overhead.", "effort": "low" },
+    { "text": "In editor: Close auxiliary tabs, output logs, asset editors, and extra viewports.", "effort": "low" },
+    { "text": "Run editor PIE in 'Standalone Game' mode to isolate game execution from editor tool ticking.", "effort": "low" }
+  ],
+  "verify": "Profile a packaged game build to confirm Editor-specific tick overhead is eliminated.",
+  "caveats": ["This is an editor profiling artifact and will not impact standalone or packaged game builds."]
+}

@@ -1,0 +1,23 @@
+{
+  "id": "unattributed-gap",
+  "title": "Unattributed CPU gap (external thread preemption / OS stall)",
+  "applies_to": ["hitch", "slow_region"],
+  "when": {
+    "timers": [".*"],
+    "threads": ["game"],
+    "min_excess_ms": 10.0,
+    "min_share_of_excess": 0.30,
+    "expects_periodic": false
+  },
+  "specificity": 0.5,
+  "fix_likelihood": "low",
+  "fix_rationale": "Large unaccounted gaps where no Unreal engine scopes are active typically indicate operating system context switching, antivirus file scanning, disk paging, or background process contention.",
+  "evidence_template": "The GameThread spent {ms} ms with no active profiled Unreal scopes ({share}% of extra frame time).",
+  "fixes": [
+    { "text": "Add your project root and Unreal Engine directories to Windows Defender / Antivirus exclusions.", "effort": "low" },
+    { "text": "Set Windows Power Plan to 'High Performance' to prevent CPU core clock throttling or core parking.", "effort": "low" },
+    { "text": "Close resource-heavy background applications, web browsers, and recording software.", "effort": "low" }
+  ],
+  "verify": "Re-capture a trace and check if unaccounted timing gaps on the GameThread disappear.",
+  "caveats": ["This represents time spent outside Unreal Engine code execution (OS scheduling, paging, or hardware interrupts)."]
+}

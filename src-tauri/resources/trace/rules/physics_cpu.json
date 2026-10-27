@@ -1,0 +1,23 @@
+{
+  "id": "physics-cpu",
+  "title": "CPU physics simulation or trace collision queries",
+  "applies_to": ["hitch", "slow_region"],
+  "when": {
+    "timers": ["Chaos", "PhysScene", "StartPhysics", "EndPhysics", "SolverAdvance", "LineTrace", "SweepMulti", "OverlapMulti", "Chaos_PhysicsParallelFor"],
+    "threads": ["game"],
+    "min_excess_ms": 4.0,
+    "min_share_of_excess": 0.20,
+    "expects_periodic": false
+  },
+  "specificity": 0.82,
+  "fix_likelihood": "medium",
+  "fix_rationale": "Physics load can be reduced by tuning Chaos solver iterations, simplifying collision geometry, or caching scene trace queries.",
+  "evidence_template": "{timer} took {ms} ms evaluating Chaos physics simulation or collision traces ({share}% of excess time).",
+  "fixes": [
+    { "text": "Ensure inactive rigid bodies enter sleep state; disable collision on non-interactive aesthetic meshes.", "effort": "low" },
+    { "text": "Replace complex per-poly collision queries with simple primitives (capsule/box).", "effort": "medium" },
+    { "text": "Tune Chaos solver sub-stepping and position iteration counts in Project Settings.", "effort": "low" }
+  ],
+  "verify": "Re-run test scene and ensure Chaos simulation time drops below 3 ms per frame.",
+  "caveats": []
+}

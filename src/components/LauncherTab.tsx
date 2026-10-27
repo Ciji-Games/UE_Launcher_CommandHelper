@@ -52,16 +52,16 @@ export function LauncherTab({ onOpenSettings, onOpenSchedulerWithOutput, onQuick
   const selectedIde = ideCandidates.find((ide) => ide.id === settings.preferredIdeId);
   const { jobs } = useScheduledJobs();
   const { runJob, running: runJobRunning } = useRunScheduledJob();
-  const umapMonitor = useProcessMonitor('umap');
-  const uprojectMonitor = useProcessMonitor('uproject');
-  const regenerateMonitor = useProcessMonitor('regenerate');
+  const pinnedJobs = jobs.filter((j) => j.pinned);
+  const hasPinnedJobs = pinnedJobs.length > 0;
+  const umapMonitor = useProcessMonitor('umap', 1500, hasPinnedJobs);
+  const uprojectMonitor = useProcessMonitor('uproject', 1500, hasPinnedJobs);
+  const regenerateMonitor = useProcessMonitor('regenerate', 1500, hasPinnedJobs);
   const monitors = {
     umap: umapMonitor,
     uproject: uprojectMonitor,
     regenerate: regenerateMonitor,
   };
-
-  const pinnedJobs = jobs.filter((j) => j.pinned);
 
   const handleAddProject = async (uprojectPath: string) => {
     try {

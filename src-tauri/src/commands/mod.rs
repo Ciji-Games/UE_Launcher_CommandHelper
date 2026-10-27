@@ -16,5 +16,6 @@ pub mod projects;
 pub mod regenerate;
 pub mod registry;
 pub mod shader;
+pub mod trace_analyzer;
 pub mod umap;
 pub mod uproject;

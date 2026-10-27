@@ -34,7 +34,7 @@ Unreal Engine project launcher and toolbox for Windows. Launch projects, run com
 | Feature | Description |
 |---------|-------------|
 | [**Launcher**](docs/LAUNCHER.md) | Browse installed Unreal Engine versions, manage projects (`.uproject`), run pinned jobs |
-| [**ToolBox**](docs/TOOLBOX.md) | Shader Booster, Regenerate Project, Batch Commit, UMap Helper, Plugin Helper, UProject Helper, Movie Render Queue |
+| [**ToolBox**](docs/TOOLBOX.md) | Shader Booster, Regenerate Project, Batch Commit, UMap Helper, Plugin Helper, UProject Helper, Movie Render Queue, UE Log Analyzer, Trace Analyzer, Include Finder |
 | [**Batch Jobs**](docs/SCHEDULER.md) | Create named batch jobs (sequences of tools) and run them in order |
 | [**Automatic Build**](docs/AUTOMATIC_BUILD.md) | Automated repository synchronization, Unreal Engine project packaging (`BuildCookRun`), archive compression, and retention cleanup |
 

@@ -1,0 +1,23 @@
+{
+  "id": "render-cpu",
+  "title": "Render thread CPU bottleneck (visibility / mesh draw calls)",
+  "applies_to": ["hitch", "slow_region"],
+  "when": {
+    "timers": ["InitViews", "ComputeVisibility", "GatherDynamicMeshElements", "FRelevancePacket", "ShadowSetup", "Render_BeginFrame", "Render_EndFrame", "FrameRenderFinish"],
+    "threads": ["render"],
+    "min_excess_ms": 4.0,
+    "min_share_of_excess": 0.20,
+    "expects_periodic": false
+  },
+  "specificity": 0.85,
+  "fix_likelihood": "high",
+  "fix_rationale": "High RenderThread time is caused by excessive visible primitives, dynamic mesh draw elements, or unbatched draw calls.",
+  "evidence_template": "{timer} took {ms} ms on the RenderThread ({share}% of excess time) performing visibility culling and mesh draw generation.",
+  "fixes": [
+    { "text": "Merge static meshes or convert repeated static actors to Hierarchical Instanced Static Meshes (HISM).", "effort": "medium" },
+    { "text": "Set up aggressive Cull Distance Volumes and adjust LOD draw distances for dense foliage and props.", "effort": "low" },
+    { "text": "Reduce the number of active shadow-casting movable lights affecting the scene.", "effort": "low" }
+  ],
+  "verify": "Check 'stat initviews' in editor and verify that visible primitive counts and RenderThread time decrease.",
+  "caveats": []
+}

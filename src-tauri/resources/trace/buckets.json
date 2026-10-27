@@ -1,0 +1,97 @@
+[
+  {
+    "pattern": "^(FEngineLoop_UpdateTimeAndHandleMaxTickRate|Sleep|WaitForNextFrame|FEngineLoop::UpdateTimeAndHandleMaxTickRate)",
+    "bucket": "Idle",
+    "kind": "idle"
+  },
+  {
+    "pattern": "^(WaitForTasks|WaitUntilTasksComplete|ProcessUntilTasksComplete|FRenderCommandFence|GpuWait|WaitForFrame|TaskWorkerIsLookingForWork|FTaskGraphImplementation::WaitUntilTasksComplete|FQueuedThreadPoolWrapper::WaitForWork|FEvent::Wait)",
+    "bucket": "Wait",
+    "kind": "wait"
+  },
+  {
+    "pattern": "^(UEditorEngine::Tick|FEditorViewportClient|FUnrealEdEngine|EditorInit|MainFrame|FEditorPerformance|LevelEditor|ContentBrowser|AssetEditor)",
+    "bucket": "Editor",
+    "kind": "editor_only"
+  },
+  {
+    "pattern": "^(Slate::|SViewport|DrawWindow|Prepass|PaintSlowPath|FSlateApplication::|SWidget::Paint|SCompoundWidget|SPanel|SOverlay|SBox|STextBlock|SImage|SButton)",
+    "bucket": "UI / Slate",
+    "kind": "work"
+  },
+  {
+    "pattern": "^(CollectGarbage|PerformReachabilityAnalysis|IncrementalPurgeGarbage|ConditionalBeginDestroy|FinishDestroy|FGCArrayPool|GarbageCollection)",
+    "bucket": "GC",
+    "kind": "work"
+  },
+  {
+    "pattern": "^(FlushAsyncLoading|LoadPackage|StaticLoadObject|LoadObject|LoadSynchronous|PostLoad|Precache|FAsyncLoadingThread|SerializeImports|CreateExport)",
+    "bucket": "Loading",
+    "kind": "work"
+  },
+  {
+    "pattern": "^(ShaderCompilingManager|ProcessAsyncResults|CompileGlobalShaderMap|FinishAllCompilation|FShaderCompilingManager::|CompileShaders)",
+    "bucket": "ShaderCompile/PSO",
+    "kind": "work"
+  },
+  {
+    "pattern": "^(PipelineStateCache|CreateGraphicsPipelineState|CreateComputePipelineState|FPipelineFileCache|PSOPrecache|RHICreateGraphicsPipelineState)",
+    "bucket": "ShaderCompile/PSO",
+    "kind": "work"
+  },
+  {
+    "pattern": "^(ExecuteUbergraph_|ProcessEvent|BlueprintTime|UFunction::Invoke|ProcessLocalScriptFunction)",
+    "bucket": "Blueprint",
+    "kind": "work"
+  },
+  {
+    "pattern": "^(SpawnActor|FinishSpawning|PostSpawnInitialize|RegisterAllComponents|OnRegister|UserConstructionScript|BeginPlay|UWorld::SpawnActor)",
+    "bucket": "Spawning",
+    "kind": "work"
+  },
+  {
+    "pattern": "^(Chaos|PhysScene|StartPhysics|EndPhysics|SolverAdvance|LineTrace|SweepMulti|OverlapMulti|Chaos_PhysicsParallelFor)",
+    "bucket": "Physics",
+    "kind": "work"
+  },
+  {
+    "pattern": "^(SkeletalMeshComponent|TickPose|RefreshBoneTransforms|EvaluateAnimation|AnimGraph|UpdateAnimation|AnimInstance)",
+    "bucket": "Animation",
+    "kind": "work"
+  },
+  {
+    "pattern": "^(Niagara|FNiagaraSystemInstance|NiagaraSimulation|UNiagaraComponent)",
+    "bucket": "Niagara/FX",
+    "kind": "work"
+  },
+  {
+    "pattern": "^(InitViews|ComputeVisibility|GatherDynamicMeshElements|FRelevancePacket|ShadowSetup|Render_BeginFrame|Render_EndFrame|FrameRenderFinish)",
+    "bucket": "Render CPU",
+    "kind": "work"
+  },
+  {
+    "pattern": "^(RHI_|SubmissionQueue_Process|RHIBeginFrame|RHIEndFrame|FD3D12CommandListHandle)",
+    "bucket": "RHI",
+    "kind": "work"
+  },
+  {
+    "pattern": "^(Lumen|Nanite|ShadowDepths|BasePass|Translucency|PostProcess|TemporalSuperResolution|TSR|DLSS|XeSS|FSR)",
+    "bucket": "GPU",
+    "kind": "work"
+  },
+  {
+    "pattern": "^(UpdateLevelStreaming|AddToWorld|IncrementalUpdateComponents|RouteActorInitialize|WorldPartition)",
+    "bucket": "Streaming",
+    "kind": "work"
+  },
+  {
+    "pattern": "^(RenderAssetStreaming|UpdateStreamingRenderAssets|FStreamingManagerTexture)",
+    "bucket": "Streaming",
+    "kind": "work"
+  },
+  {
+    "pattern": ".*",
+    "bucket": "Other",
+    "kind": "work"
+  }
+]

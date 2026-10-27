@@ -1,12 +1,8 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, lazy, Suspense } from 'react';
 import { openUrl } from '@tauri-apps/plugin-opener';
 import { relaunch } from '@tauri-apps/plugin-process';
 import { BaseLayout } from './components/BaseLayout';
 import { LauncherTab } from './components/LauncherTab';
-import { ToolBoxTab } from './components/ToolBoxTab';
-import { SchedulerTab } from './components/SchedulerTab';
-import { LinksTab } from './components/LinksTab';
-import { RemoteBuildTab } from './components/RemoteBuildTab';
 import { ShaderBoosterBackground } from './components/ShaderBoosterBackground';
 import { LogProvider } from './contexts/LogContext';
 import { ProgressProvider } from './contexts/ProgressContext';
@@ -15,10 +11,15 @@ import { ProjectsProvider } from './contexts/ProjectsContext';
 import { EnginesProvider } from './contexts/EnginesContext';
 import { SettingsProvider } from './contexts/SettingsContext';
 import IdeProvider from './contexts/IdeContext';
-import { SettingsPanel } from './components/SettingsPanel';
 import { checkForUpdate, type UpdateInfo } from './utils/updateCheck';
 import { FaListCheck } from 'react-icons/fa6';
 import { TbClockPlay } from 'react-icons/tb';
+
+const ToolBoxTab = lazy(() => import('./components/ToolBoxTab').then((m) => ({ default: m.ToolBoxTab })));
+const SchedulerTab = lazy(() => import('./components/SchedulerTab').then((m) => ({ default: m.SchedulerTab })));
+const LinksTab = lazy(() => import('./components/LinksTab').then((m) => ({ default: m.LinksTab })));
+const RemoteBuildTab = lazy(() => import('./components/RemoteBuildTab').then((m) => ({ default: m.RemoteBuildTab })));
+const SettingsPanel = lazy(() => import('./components/SettingsPanel').then((m) => ({ default: m.SettingsPanel })));
 
 const TAB_ICONS = {
   launcher: (
@@ -218,22 +219,24 @@ function App() {
                     onQuickRegenerate={openQuickRegenerate}
                   />
                 )}
-                {activeTab === 'toolbox' && (
-                  <div className="flex min-h-0 flex-1 flex-col">
-                    <ToolBoxTab initialRegenerateProjectPath={quickRegenerateProjectPath} />
-                  </div>
-                )}
-                {activeTab === 'scheduler' && (
-                  <div className="flex min-h-0 flex-1 flex-col">
-                    <SchedulerTab outputOpenSignal={schedulerOutputOpenSignal} />
-                  </div>
-                )}
-                {activeTab === 'remoteBuild' && <RemoteBuildTab />}
-                {activeTab === 'links' && <LinksTab />}
+                <Suspense fallback={<div className="p-6 text-slate-400 text-sm animate-pulse">Loading...</div>}>
+                  {activeTab === 'toolbox' && (
+                    <div className="flex min-h-0 flex-1 flex-col">
+                      <ToolBoxTab initialRegenerateProjectPath={quickRegenerateProjectPath} />
+                    </div>
+                  )}
+                  {activeTab === 'scheduler' && (
+                    <div className="flex min-h-0 flex-1 flex-col">
+                      <SchedulerTab outputOpenSignal={schedulerOutputOpenSignal} />
+                    </div>
+                  )}
+                  {activeTab === 'remoteBuild' && <RemoteBuildTab />}
+                  {activeTab === 'links' && <LinksTab />}
+                  {settingsOpen && <SettingsPanel open={settingsOpen} onClose={() => setSettingsOpen(false)} />}
+                </Suspense>
               </div>
             </div>
           </BaseLayout>
-          <SettingsPanel open={settingsOpen} onClose={() => setSettingsOpen(false)} />
           {updateInfo && updatePromptOpen && (
             <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/60 p-4">
               <div className="w-full max-w-sm rounded-xl border border-slate-700 bg-slate-900 p-5 shadow-2xl">

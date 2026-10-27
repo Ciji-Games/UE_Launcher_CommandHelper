@@ -1,0 +1,23 @@
+{
+  "id": "ui-slate-overhead",
+  "title": "UI layout and Slate widget rendering overhead",
+  "applies_to": ["hitch", "slow_region"],
+  "when": {
+    "timers": ["Slate::Prepass", "Slate_PaintSlowPath", "Slate::DrawWindow", "Slate::TickPlatform", "SViewport_OnPaint", "Slate::AddShapedTextElement", "Slate::AddBoxElements", "Slate::MergeRenderBatches", "SWidget::Paint"],
+    "threads": ["game", "render"],
+    "min_excess_ms": 4.0,
+    "min_share_of_excess": 0.15,
+    "expects_periodic": false
+  },
+  "specificity": 0.85,
+  "fix_likelihood": "high",
+  "fix_rationale": "Excessive Slate Prepass, un-invalidated dynamic widget trees, or slow Slate widget painting spike frame time.",
+  "evidence_template": "{timer} consumed {ms} ms ({share}% of excess time) processing Slate widget layouts or UI drawing.",
+  "fixes": [
+    { "text": "Wrap complex or static UMG widget hierarchies in RetainerBoxes or InvalidationBoxes to avoid full-tree Prepass and Paint every frame.", "effort": "medium" },
+    { "text": "Avoid binding Blueprint functions directly to UMG widget property bindings (e.g. Text or Visibility); update properties via event dispatchers instead.", "effort": "low" },
+    { "text": "Reduce the number of active transparent/overlapping Slate widgets and collapse Visibility of hidden widgets instead of setting opacity to 0.", "effort": "low" }
+  ],
+  "verify": "Profile in Unreal Insights and verify that Slate::Prepass and Slate_PaintSlowPath times drop below 2 ms.",
+  "caveats": []
+}

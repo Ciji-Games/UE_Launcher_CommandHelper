@@ -1,0 +1,23 @@
+{
+  "id": "pso-hitch",
+  "title": "Pipeline State Object (PSO) creation hitch",
+  "applies_to": ["hitch"],
+  "when": {
+    "timers": ["PipelineStateCache", "CreateGraphicsPipelineState", "CreateComputePipelineState", "FPipelineFileCache", "PSOPrecache", "RHICreateGraphicsPipelineState"],
+    "threads": ["render", "rhi"],
+    "min_excess_ms": 4.0,
+    "min_share_of_excess": 0.20,
+    "expects_periodic": false
+  },
+  "specificity": 0.9,
+  "fix_likelihood": "high",
+  "fix_rationale": "PSO hitches occur when encountering novel shader/mesh/state combinations for the first time. Bundling a recorded PSO cache or enabling PSO precaching eliminates first-seen hitches.",
+  "evidence_template": "{timer} took {ms} ms creating graphics or compute pipeline states on the {thread} thread ({share}% of excess time).",
+  "fixes": [
+    { "text": "Enable PSO Precaching in Project Settings (r.PSOPrecaching=1).", "effort": "low", "cvarsOrApis": ["r.PSOPrecaching", "r.PSOPrecaching.Validation"] },
+    { "text": "Record a Pipeline State Object (.rec.upipelinecache) playthrough and bundle the compiled PSO cache into your game package.", "effort": "medium" },
+    { "text": "Pre-warm major gameplay shaders and particle PSOs during loading screens.", "effort": "medium" }
+  ],
+  "verify": "Re-test the exact camera or ability activation in a packaged build with bundled PSO cache; check that PSO creation times drop to 0 ms.",
+  "caveats": ["In the editor, PSO precaching behaves differently and shader caches are invalidated frequently."]
+}

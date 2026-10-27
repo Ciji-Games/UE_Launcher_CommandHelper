@@ -1,0 +1,23 @@
+{
+  "id": "sync-load",
+  "title": "Synchronous asset loading on GameThread",
+  "applies_to": ["hitch"],
+  "when": {
+    "timers": ["FlushAsyncLoading", "LoadPackage", "StaticLoadObject", "LoadObject", "LoadSynchronous", "PostLoad", "Precache", "FAsyncLoadingThread", "SerializeImports"],
+    "threads": ["game"],
+    "min_excess_ms": 6.0,
+    "min_share_of_excess": 0.25,
+    "expects_periodic": false
+  },
+  "specificity": 0.88,
+  "fix_likelihood": "high",
+  "fix_rationale": "Replacing hard synchronous object loads with soft object references and asynchronous loading completely avoids blocking the game loop.",
+  "evidence_template": "{timer} stalled the GameThread for {ms} ms (normally {baseline_ms} ms), accounting for {share}% of the hitch duration.",
+  "fixes": [
+    { "text": "Convert hard asset pointers (TObjectPtr, UTexture2D*, etc.) in Blueprints and C++ to soft references (TSoftObjectPtr, TSoftClassPtr).", "effort": "medium" },
+    { "text": "Preload required assets asynchronously using StreamableManager or Async Loading Screen during transitions.", "effort": "medium", "cvarsOrApis": ["FStreamableManager::RequestAsyncLoad", "UAssetManager"] },
+    { "text": "Inspect reference graph with Size Map / Reference Viewer to prune unexpected transitive asset dependencies.", "effort": "low" }
+  ],
+  "verify": "Re-trigger the asset spawn or UI opening and verify that StaticLoadObject / LoadPackage times drop to 0 ms.",
+  "caveats": ["Synchronous asset loading in PIE may also include compiling or disk caching costs not present in cooked builds."]
+}

@@ -64,6 +64,18 @@ Analyze Unreal Engine `.log` / `.txt` files locally with:
 > [!NOTE]
 > This tool is **separate from the Output Log** at the bottom of the ToolBox tab and does not modify it.
 
+### Trace Analyzer
+
+Analyze Unreal Engine `.utrace` performance captures locally using headless Unreal Insights export and deterministic diagnosis rules.
+
+| Feature | Description |
+|---|---|
+| **Two-Pass Streaming Loading** | Pass A immediately loads and renders the interactive canvas frame time graph; Pass B exports targeted episode windows for exclusive-time baseline analysis. |
+| **Interactive Canvas Frame Graph** | Multi-LOD downsampled rendering, budget guide thresholds (16.7 / 33.3 / 66.7 ms), hitch indicators, sustained slow-region bands, and pan/zoom/selection controls. |
+| **Root Cause Diagnosis** | Identifies Garbage Collection, shader compile blocking, PSO creation, sync asset loading, Blueprint tick VM overhead, physics/animation costs, editor overhead, and GPU bottlenecks. |
+| **Actionable Finding Cards** | Displays match confidence percentages, fix likelihood ratings, quantitative evidence bullets, ordered remediation steps with effort tags, and verification guidelines. |
+| **Zero Memory Bloat** | Streams multi-gigabyte traces directly into local SQLite caches with instant reopen times. |
+
 ### Include & module finder
 
 Quickly search and locate `#include` directives and parent `.Build.cs` module dependencies for Unreal Engine core headers, engine plugins, project source code, and project plugins.

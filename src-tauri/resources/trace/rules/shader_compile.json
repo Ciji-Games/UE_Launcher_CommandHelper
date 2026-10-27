@@ -1,0 +1,23 @@
+{
+  "id": "shader-compile",
+  "title": "On-demand shader compilation blocking game thread",
+  "applies_to": ["hitch", "slow_region"],
+  "when": {
+    "timers": ["ShaderCompilingManager", "ProcessAsyncResults", "CompileGlobalShaderMap", "FinishAllCompilation", "FShaderCompilingManager::", "CompileShaders"],
+    "threads": ["game"],
+    "min_excess_ms": 5.0,
+    "min_share_of_excess": 0.20,
+    "expects_periodic": false
+  },
+  "specificity": 0.85,
+  "fix_likelihood": "high",
+  "fix_rationale": "In editor builds, shader compilation is temporary. In packaged builds, cooking all material permutations prevents runtime shader compiler stalls.",
+  "evidence_template": "{timer} consumed {ms} ms on the GameThread ({share}% of excess time) waiting for shader compilation.",
+  "fixes": [
+    { "text": "Editor: Allow background shader compilation to complete before profiling, or connect to a shared Derived Data Cache (DDC).", "effort": "low" },
+    { "text": "Packaged Build: Ensure all shader formats and quality levels are pre-cooked into the Global Shader Cache.", "effort": "medium" },
+    { "text": "Avoid runtime material parameter modifications that force new shader permutations.", "effort": "medium" }
+  ],
+  "verify": "Re-run after shaders have compiled or in a fully cooked Test build; confirm shader compiling scopes disappear.",
+  "caveats": ["Shader compilation spikes during editor playback are normal and do not affect cooked packaged builds."]
+}

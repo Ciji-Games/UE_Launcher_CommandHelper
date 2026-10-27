@@ -1,0 +1,23 @@
+{
+  "id": "bp-tick",
+  "title": "Heavy Blueprint tick or VM script execution",
+  "applies_to": ["hitch", "slow_region"],
+  "when": {
+    "timers": ["ExecuteUbergraph_", "ProcessEvent", "BlueprintTime", "UFunction::Invoke", "ProcessLocalScriptFunction"],
+    "threads": ["game"],
+    "min_excess_ms": 4.0,
+    "min_share_of_excess": 0.20,
+    "expects_periodic": false
+  },
+  "specificity": 0.8,
+  "fix_likelihood": "medium",
+  "fix_rationale": "Blueprint tick costs can be mitigated by disabling unused ticks, reducing tick intervals, or moving tight calculation loops to C++.",
+  "evidence_template": "{timer} spent {ms} ms executing Blueprint bytecode across game actors ({share}% of excess time).",
+  "fixes": [
+    { "text": "Disable 'Start with Tick Enabled' on actors/components that do not need continuous updates; switch to event-driven logic or timers.", "effort": "low" },
+    { "text": "Increase Tick Interval (e.g. SetActorTickInterval(0.1)) for non-critical gameplay updates.", "effort": "low" },
+    { "text": "Profile specific Blueprint graphs and nativize or rewrite math-heavy loops in C++.", "effort": "medium" }
+  ],
+  "verify": "Re-run profile and confirm that ProcessEvent and ExecuteUbergraph times drop significantly.",
+  "caveats": []
+}

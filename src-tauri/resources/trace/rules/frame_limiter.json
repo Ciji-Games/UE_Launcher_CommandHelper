@@ -1,0 +1,21 @@
+{
+  "id": "frame-limiter",
+  "title": "Engine frame rate limiter active (headroom available)",
+  "applies_to": ["slow_region"],
+  "when": {
+    "timers": ["FEngineLoop_UpdateTimeAndHandleMaxTickRate", "Sleep", "WaitForNextFrame", "FEngineLoop::UpdateTimeAndHandleMaxTickRate"],
+    "threads": ["game"],
+    "min_excess_ms": 1.0,
+    "min_share_of_excess": 0.20,
+    "expects_periodic": false
+  },
+  "specificity": 0.9,
+  "fix_likelihood": "low",
+  "fix_rationale": "Frame limiter sleep indicates the engine intentionally throttled execution to match target framerate; this represents available performance headroom.",
+  "evidence_template": "The engine spent {ms} ms sleeping inside {timer} to adhere to frame rate limits.",
+  "fixes": [
+    { "text": "If higher framerates are desired, adjust t.MaxFPS or Project Frame Rate settings.", "effort": "low", "cvarsOrApis": ["t.MaxFPS", "r.VSync"] }
+  ],
+  "verify": "Verify that increasing t.MaxFPS increases measured FPS without bottlenecks.",
+  "caveats": ["This is informational and indicates healthy frame rate limiting."]
+}

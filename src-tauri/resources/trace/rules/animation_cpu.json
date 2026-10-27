@@ -1,0 +1,23 @@
+{
+  "id": "animation-cpu",
+  "title": "Skeletal mesh animation evaluation",
+  "applies_to": ["hitch", "slow_region"],
+  "when": {
+    "timers": ["SkeletalMeshComponent", "TickPose", "RefreshBoneTransforms", "EvaluateAnimation", "AnimGraph", "UpdateAnimation", "AnimInstance"],
+    "threads": ["game"],
+    "min_excess_ms": 4.0,
+    "min_share_of_excess": 0.20,
+    "expects_periodic": false
+  },
+  "specificity": 0.85,
+  "fix_likelihood": "high",
+  "fix_rationale": "Skeletal animation evaluation costs scale directly with visible characters and bone counts; using URO (Update Rate Optimization) or Animation Budget Allocator reliably fixes sustained CPU animation overhead.",
+  "evidence_template": "{timer} took {ms} ms updating animation poses and bone transforms ({share}% of excess time).",
+  "fixes": [
+    { "text": "Enable Significance Manager and Animation Budget Allocator plugin for crowded scenes.", "effort": "medium" },
+    { "text": "Enable Update Rate Optimization (URO) on SkeletalMeshComponents to throttle tick rates for distant actors.", "effort": "low" },
+    { "text": "Set 'Visibility Based Anim Tick Option' to 'Only Tick Pose when Rendered' on offscreen meshes.", "effort": "low" }
+  ],
+  "verify": "Re-run in multi-character scenario and confirm SkeletalMeshComponent tick time decreases.",
+  "caveats": []
+}
