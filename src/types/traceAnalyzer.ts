@@ -151,6 +151,8 @@ export interface EpisodeDetailResponse {
 }
 
 export type TraceStage =
+  | 'launching_game'
+  | 'monitoring_game'
   | 'locating_insights'
   | 'exporting_frames'
   | 'ingesting_frames'

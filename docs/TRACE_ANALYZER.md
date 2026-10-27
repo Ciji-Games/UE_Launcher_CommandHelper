@@ -4,6 +4,16 @@ The **Trace Analyzer** is a diagnostic tool for Unreal Engine `.utrace` performa
 
 ---
 
+## 0. Executable Launch & Automated Tracing
+
+In addition to importing existing `.utrace` files, the Trace Analyzer can launch a game executable (`.exe`) directly:
+- **Automatic Trace Arguments**: Appends `-trace=cpu,gpu,frame,loadtime,counters,bookmark`, `-cpuprofilertrace`, and `-tracefile="<StorePath>"` to the executable invocation.
+- **Default UE Trace Store**: Saves captures to `%LOCALAPPDATA%/UnrealEngine/Common/UnrealTrace/Store/001/YYYYMMDD_HHMMSS.utrace`.
+- **Process Monitoring**: Tracks the game process (PID, running duration) and displays live monitoring progress.
+- **Auto-Load Upon Exit**: When the game closes, the newly generated trace file is immediately loaded and headlessly analyzed without manual intervention.
+
+---
+
 ## 1. Unreal Insights CLI Integration (Verified UE 5.7)
 
 ### Executable Location
@@ -66,5 +76,8 @@ The Trace Analyzer detects which profiling channels are present in the `.utrace`
 - `bookmark`: User and system bookmarks
 - `log`: Engine logging messages
 
-### "Need More Details?" Diagnostic Guidance
-When a diagnostic finding lacks granularity due to missing trace channels (for example, unattributed CPU stalls or generic GPU bottleneck), the tool displays a **"Need more details?"** badge specifying the exact command-line flags (`-trace=...`) and engine settings required to attribute the root cause.
+### Granular Scope Attribution & Channel Insights
+The diagnostic engine extracts granular asset and system attribution:
+- **Blueprint & Widget Disambiguation**: Identifies Blueprint classes and UMG widget names from `ExecuteUbergraph_*`, `*_C::Function`, and `Function /Game/...` scopes (enabled by `-cpuprofilertrace` and Blueprint CPU Profiling).
+- **Package & Asset Association**: When `loadtime` channels are recorded, parses specific package paths (`/Game/...`, `LoadPackage`, `Serialize`, `PostLoad`) to pinpoint synchronous asset loading stalls.
+- **"Need More Details?" Diagnostic Guidance**: When a diagnostic finding is limited by missing channels (e.g., unattributed CPU gaps or generic GPU passes), the tool presents an actionable badge with recommended flags (`-trace=...`, `-cpuprofilertrace`) to reveal exact asset identities on subsequent captures.

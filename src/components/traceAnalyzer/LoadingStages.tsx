@@ -5,7 +5,7 @@ interface LoadingStagesProps {
   onCancel: () => void;
 }
 
-const STAGES: { id: TraceStage; label: string }[] = [
+const TRACE_STAGES: { id: TraceStage; label: string }[] = [
   { id: 'locating_insights', label: '1. Locating Unreal Insights' },
   { id: 'exporting_frames', label: '2. Pass A: Exporting Frame Boundaries' },
   { id: 'ingesting_frames', label: '3. Streaming Frame Timeline' },
@@ -15,9 +15,23 @@ const STAGES: { id: TraceStage; label: string }[] = [
   { id: 'analyzing', label: '7. Matching Diagnosis Catalog' },
 ];
 
+const GAME_TRACE_STAGES: { id: TraceStage; label: string }[] = [
+  { id: 'launching_game', label: '1. Launching Game Executable' },
+  { id: 'monitoring_game', label: '2. Monitoring Game & Tracing' },
+  { id: 'locating_insights', label: '3. Locating Unreal Insights' },
+  { id: 'exporting_frames', label: '4. Pass A: Exporting Frame Boundaries' },
+  { id: 'ingesting_frames', label: '5. Streaming Frame Timeline' },
+  { id: 'detecting_episodes', label: '6. Detecting Hitches & Slow Regions' },
+  { id: 'exporting_windows', label: '7. Pass B: Targeted Window Export' },
+  { id: 'ingesting_windows', label: '8. Computing Exclusive Times' },
+  { id: 'analyzing', label: '9. Matching Diagnosis Catalog' },
+];
+
 export function LoadingStages({ progress, onCancel }: LoadingStagesProps) {
   const currentStage = progress?.stage || 'locating_insights';
-  const stageIndex = STAGES.findIndex((s) => s.id === currentStage);
+  const isGameMode = currentStage === 'launching_game' || currentStage === 'monitoring_game';
+  const stages = isGameMode ? GAME_TRACE_STAGES : TRACE_STAGES;
+  const stageIndex = stages.findIndex((s) => s.id === currentStage);
 
   const elapsedSec = ((progress?.elapsedMs || 0) / 1000).toFixed(1);
 
@@ -29,7 +43,9 @@ export function LoadingStages({ progress, onCancel }: LoadingStagesProps) {
             <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
             <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z" />
           </svg>
-          <span className="text-sm font-semibold text-slate-100">Analyzing Performance Capture...</span>
+          <span className="text-sm font-semibold text-slate-100">
+            {isGameMode ? 'Running & Profiling Game...' : 'Analyzing Performance Capture...'}
+          </span>
         </div>
 
         <span className="font-mono text-xs text-slate-400">{elapsedSec}s elapsed</span>
@@ -39,7 +55,7 @@ export function LoadingStages({ progress, onCancel }: LoadingStagesProps) {
       <div className="w-full bg-slate-700/50 rounded-full h-2 overflow-hidden border border-slate-600/40">
         <div
           className="bg-sky-500 h-2 rounded-full transition-all duration-300 relative overflow-hidden"
-          style={{ width: `${Math.max(10, ((Math.max(0, stageIndex) + 1) / STAGES.length) * 100)}%` }}
+          style={{ width: `${Math.max(10, ((Math.max(0, stageIndex) + 1) / stages.length) * 100)}%` }}
         >
           <div className="absolute inset-0 bg-white/20 animate-pulse" />
         </div>
@@ -47,7 +63,7 @@ export function LoadingStages({ progress, onCancel }: LoadingStagesProps) {
 
       {/* Stage Breakdown */}
       <div className="flex flex-col gap-2 w-full text-xs">
-        {STAGES.map((s, idx) => {
+        {stages.map((s, idx) => {
           const isDone = stageIndex > idx;
           const isCurrent = stageIndex === idx;
 
@@ -66,7 +82,9 @@ export function LoadingStages({ progress, onCancel }: LoadingStagesProps) {
               {isDone ? (
                 <span className="text-emerald-400 font-bold">✓</span>
               ) : isCurrent ? (
-                <span className="text-sky-400 animate-pulse font-semibold">Running</span>
+                <span className="text-sky-400 animate-pulse font-semibold">
+                  {s.id === 'monitoring_game' ? 'Running' : 'In Progress'}
+                </span>
               ) : (
                 <span>•</span>
               )}
@@ -86,7 +104,7 @@ export function LoadingStages({ progress, onCancel }: LoadingStagesProps) {
         onClick={onCancel}
         className="px-4 py-1.5 bg-rose-900/40 hover:bg-rose-800/60 text-rose-200 border border-rose-700/50 rounded text-xs font-medium transition-colors"
       >
-        Cancel Analysis
+        {isGameMode ? 'Stop Game & Cancel' : 'Cancel Analysis'}
       </button>
     </div>
   );

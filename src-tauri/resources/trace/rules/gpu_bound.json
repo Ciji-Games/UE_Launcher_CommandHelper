@@ -12,7 +12,7 @@
   "specificity": 0.8,
   "fix_likelihood": "high",
   "fix_rationale": "GPU frame time is most effectively reduced by lowering internal resolution scaling (TSR/DLSS/FSR) or tuning heavy feature passes like Lumen GI and Virtual Shadow Maps.",
-  "evidence_template": "GPU stage duration took {ms} ms ({share}% of excess time), outlasting CPU thread workloads.",
+  "evidence_template": "{timer} took {ms} ms ({share}% of excess time), outlasting CPU thread workloads.",
   "fixes": [
     { "text": "Enable or tune Dynamic Resolution / Temporal Super Resolution (r.ScreenPercentage) for your target framerate.", "effort": "low", "cvarsOrApis": ["r.ScreenPercentage", "r.TSR.Quality"] },
     { "text": "Review Lumen and Reflection scalability settings in Project Settings.", "effort": "medium", "cvarsOrApis": ["r.Lumen.Reflections.HardwareRayTracing", "r.Lumen.DiffuseIndirect.Allow"] },

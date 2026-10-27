@@ -86,6 +86,7 @@ pub fn run() {
             commands::trace_analyzer::trace_find_insights,
             commands::trace_analyzer::trace_list_candidates,
             commands::trace_analyzer::trace_open,
+            commands::trace_analyzer::trace_launch_and_monitor,
             commands::trace_analyzer::trace_cancel,
             commands::trace_analyzer::trace_get_summary,
             commands::trace_analyzer::trace_get_frame_series,

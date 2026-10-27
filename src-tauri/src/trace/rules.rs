@@ -74,6 +74,73 @@ pub struct FindingPayload {
     pub channel_suggestion: Option<ChannelSuggestion>,
 }
 
+pub fn format_timer_display_name(tname: &str, rule_id: &str) -> String {
+    if tname == "Frame" && rule_id == "gpu-bound" {
+        return "GPU total frame duration".to_string();
+    }
+    if let Some(rest) = tname.strip_prefix("ExecuteUbergraph_") {
+        return format!("Blueprint '{}' (ExecuteUbergraph)", rest);
+    }
+    if tname.starts_with("Function ") {
+        let after = &tname["Function ".len()..];
+        if let Some((asset_path, func_name)) = after.split_once(':') {
+            let asset_name = asset_path
+                .split('/')
+                .last()
+                .unwrap_or(asset_path)
+                .trim_end_matches("_C")
+                .trim_end_matches(".Default__")
+                .split('.')
+                .last()
+                .unwrap_or(asset_path);
+            return format!("Blueprint '{}' ({})", asset_name, func_name);
+        }
+    }
+    if tname.contains("_C::") {
+        let mut parts = tname.split("_C::");
+        if let (Some(asset_part), Some(func_name)) = (parts.next(), parts.next()) {
+            let asset_name = asset_part.split('/').last().unwrap_or(asset_part);
+            if asset_name.starts_with("WBP_") || asset_name.contains("Widget") {
+                return format!("Widget '{}' ({})", asset_name, func_name);
+            } else {
+                return format!("Blueprint '{}' ({})", asset_name, func_name);
+            }
+        }
+    }
+    if let Some(rest) = tname.strip_prefix("LoadPackage ") {
+        return format!("Package '{}' (LoadPackage)", rest.trim());
+    }
+    if let Some(rest) = tname.strip_prefix("LoadPackage:") {
+        return format!("Package '{}' (LoadPackage)", rest.trim());
+    }
+    if let Some(rest) = tname.strip_prefix("Serialize ") {
+        return format!("Package '{}' (Serialize)", rest.trim());
+    }
+    if let Some(rest) = tname.strip_prefix("Serialize:") {
+        return format!("Package '{}' (Serialize)", rest.trim());
+    }
+    if let Some(rest) = tname.strip_prefix("PostLoad ") {
+        return format!("Package '{}' (PostLoad)", rest.trim());
+    }
+    if let Some(rest) = tname.strip_prefix("PostLoad:") {
+        return format!("Package '{}' (PostLoad)", rest.trim());
+    }
+    if let Some(rest) = tname.strip_prefix("CreateExport ") {
+        return format!("Export '{}' (CreateExport)", rest.trim());
+    }
+    if tname.starts_with("/Game/") || tname.starts_with("/Engine/") {
+        return format!("Package '{}'", tname);
+    }
+    if (tname.starts_with("WBP_") || tname.starts_with("BP_")) && !tname.contains("::") {
+        if tname.starts_with("WBP_") {
+            return format!("Widget '{}'", tname);
+        } else {
+            return format!("Blueprint '{}'", tname);
+        }
+    }
+    tname.to_string()
+}
+
 pub fn load_all_rules() -> Vec<RuleDef> {
     let raw_rules = [
         include_str!("../../resources/trace/rules/gc_hitch.json"),
@@ -458,6 +525,14 @@ pub fn evaluate_and_save_findings(
                 continue;
             }
 
+            // Frame limiter rule only applies if the episode was actually classified as idle_limited
+            if rule.def.id == "frame-limiter" {
+                let bound_by = episode_bound_by.get(&ep.id).copied().unwrap_or("unknown");
+                if bound_by != "idle_limited" {
+                    continue;
+                }
+            }
+
             if rule.def.id == "unattributed-gap" {
                 // Special evaluation for unattributed gap
                 let mut sum_profiled_ms = 0.0;
@@ -574,6 +649,16 @@ pub fn evaluate_and_save_findings(
             timer_ranks.sort_by(|a, b| b.4.partial_cmp(&a.4).unwrap_or(std::cmp::Ordering::Equal));
             let top_evidence_timers = timer_ranks.into_iter().take(4).collect::<Vec<_>>();
 
+            let default_thread_name = if rule.def.when.threads.iter().any(|t| t == "gpu") {
+                "GPU"
+            } else if rule.def.when.threads.iter().any(|t| t == "render") {
+                "RenderThread"
+            } else if rule.def.when.threads.iter().any(|t| t == "rhi") {
+                "RHIThread"
+            } else {
+                "GameThread"
+            };
+
             let mut evidence = Vec::new();
             for (tname, tms, bms, calls, _excess) in top_evidence_timers {
                 let periodic_clause = if has_periodic && rule.def.when.expects_periodic {
@@ -588,6 +673,8 @@ pub fn evaluate_and_save_findings(
                     0.0
                 };
 
+                let display_timer_name = format_timer_display_name(&tname, &rule.def.id);
+
                 let label = if rule.def.id == "unattributed-gap" {
                     format!(
                         "The GameThread spent {:.1} ms with no active profiled Unreal scopes ({:.0}% of extra frame time).",
@@ -596,11 +683,11 @@ pub fn evaluate_and_save_findings(
                 } else {
                     rule.def
                         .evidence_template
-                        .replace("{timer}", &tname)
+                        .replace("{timer}", &display_timer_name)
                         .replace("{ms}", &format!("{:.1}", tms))
                         .replace("{baseline_ms}", &format!("{:.1}", bms))
                         .replace("{share}", &format!("{:.0}", share_pct))
-                        .replace("{thread}", "GameThread")
+                        .replace("{thread}", default_thread_name)
                         .replace("{periodic_clause}", periodic_clause)
                 };
 
@@ -609,7 +696,7 @@ pub fn evaluate_and_save_findings(
                     value_ms: Some(tms),
                     baseline_ms: Some(bms),
                     calls: Some(calls),
-                    thread: Some("GameThread".to_string()),
+                    thread: Some(default_thread_name.to_string()),
                     note: None,
                 });
             }
@@ -642,12 +729,17 @@ pub fn evaluate_and_save_findings(
                 "low"
             };
 
-            let rank = total_explains_ms * match_score;
+            // Frame limiter is an informational signal representing headroom; give it low rank so actual bottlenecks take priority
+            let rank = if rule.def.id == "frame-limiter" {
+                0.01 * match_score
+            } else {
+                total_explains_ms * match_score
+            };
             let channel_suggestion = match rule.def.id.as_str() {
                 "unattributed-gap" => Some(ChannelSuggestion {
                     badge: "Need more details?".to_string(),
-                    channel_flags: "-trace=cpu,loadtime,counters".to_string(),
-                    description: "GameThread execution occurred outside active profiled Unreal scopes. Capture with -trace=cpu,loadtime,counters and enable 'Blueprint CPU Profiling' in Project Settings to pinpoint exact Blueprint events, actor ticks, and synchronous package loads.".to_string(),
+                    channel_flags: "-trace=cpu,loadtime,counters -cpuprofilertrace".to_string(),
+                    description: "GameThread execution occurred outside active profiled Unreal scopes. Capture with -trace=cpu,loadtime,counters -cpuprofilertrace to pinpoint exact Blueprint events, actor ticks, and synchronous package loads.".to_string(),
                     missing_channels: ["cpu", "loadtime", "counters"]
                         .iter()
                         .filter(|&&c| !detected_channels.iter().any(|d| d == c))
@@ -670,11 +762,21 @@ pub fn evaluate_and_save_findings(
                         .map(|&c| c.to_string())
                         .collect(),
                 }),
-                "sync-load" if !detected_channels.iter().any(|d| d == "loadtime") => Some(ChannelSuggestion {
+                "sync-load" => Some(ChannelSuggestion {
                     badge: "Need more details?".to_string(),
-                    channel_flags: "-trace=loadtime,file".to_string(),
-                    description: "Enable -trace=loadtime,file to record exact .uasset package paths, disk read latency, and async loading stalls.".to_string(),
-                    missing_channels: vec!["loadtime".to_string(), "file".to_string()],
+                    channel_flags: "-trace=loadtime,file -cpuprofilertrace".to_string(),
+                    description: "Synchronous loading stalled the GameThread. Capture with -trace=loadtime,file -cpuprofilertrace to record exact .uasset package paths, disk read latency, and async loading stalls.".to_string(),
+                    missing_channels: ["loadtime", "file"]
+                        .iter()
+                        .filter(|&&c| !detected_channels.iter().any(|d| d == c))
+                        .map(|&c| c.to_string())
+                        .collect(),
+                }),
+                "ui-slate-overhead" | "ui-slate" => Some(ChannelSuggestion {
+                    badge: "Need more details?".to_string(),
+                    channel_flags: "-trace=cpu -cpuprofilertrace".to_string(),
+                    description: "Slate recorded generic container sweeps (Slate::Prepass / Slate::TickPlatform). Launch with -cpuprofilertrace (and execute 'Slate.EnableWidgetScopeCycleCounters 1' in development builds) to isolate specific UMG widget hierarchies (WBP_*).".to_string(),
+                    missing_channels: if !detected_channels.iter().any(|d| d == "cpu") { vec!["cpu".to_string()] } else { Vec::new() },
                 }),
                 "shader-compile" | "pso-hitch" if !detected_channels.iter().any(|d| d == "counters") || !detected_channels.iter().any(|d| d == "loadtime") => Some(ChannelSuggestion {
                     badge: "Need more details?".to_string(),
@@ -704,9 +806,9 @@ pub fn evaluate_and_save_findings(
                 }),
                 "bp-tick" => Some(ChannelSuggestion {
                     badge: "Need more details?".to_string(),
-                    channel_flags: "-trace=cpu".to_string(),
-                    description: "Turn on 'Blueprint CPU Profiling' in Project Settings → Engine → General Settings (or execute 'stat namedevents' in console) to attribute individual Blueprint events and nodes.".to_string(),
-                    missing_channels: Vec::new(),
+                    channel_flags: "-trace=cpu -cpuprofilertrace".to_string(),
+                    description: "Turn on 'Blueprint CPU Profiling' in Project Settings → Engine → General Settings (or launch with -cpuprofilertrace) to isolate individual Blueprint graphs, functions, and tick events.".to_string(),
+                    missing_channels: if !detected_channels.iter().any(|d| d == "cpu") { vec!["cpu".to_string()] } else { Vec::new() },
                 }),
                 _ => None,
             };
@@ -797,19 +899,30 @@ pub fn generate_verdict(
         }
     }
 
-    let top = &findings[0];
-    let top_payload: Option<FindingPayload> = serde_json::from_str(&top.payload).ok();
+    let primary_finding = findings.iter().find(|f| f.rule_id != "frame-limiter").or_else(|| findings.first());
 
-    if let Some(p) = top_payload {
-        let confidence_str = match p.match_confidence.as_str() {
-            "high" => "high confidence",
-            "medium" => "moderate confidence",
-            _ => "low confidence",
-        };
-        format!(
-            "Median {} fps ({} hitches, {} slow regions). Primary bottleneck: {} ({}; fix likelihood: {}).",
-            fps, hitch_count, slow_region_count, p.title, confidence_str, p.fix_likelihood
-        )
+    if let Some(top) = primary_finding {
+        let top_payload: Option<FindingPayload> = serde_json::from_str(&top.payload).ok();
+        if let Some(p) = top_payload {
+            if top.rule_id == "frame-limiter" {
+                format!(
+                    "Median {} fps ({} hitches, {} slow regions). Target framerate maintained with available performance headroom.",
+                    fps, hitch_count, slow_region_count
+                )
+            } else {
+                let confidence_str = match p.match_confidence.as_str() {
+                    "high" => "high confidence",
+                    "medium" => "moderate confidence",
+                    _ => "low confidence",
+                };
+                format!(
+                    "Median {} fps ({} hitches, {} slow regions). Primary bottleneck: {} ({}; fix likelihood: {}).",
+                    fps, hitch_count, slow_region_count, p.title, confidence_str, p.fix_likelihood
+                )
+            }
+        } else {
+            format!("Median {} fps with {} detected performance episodes.", fps, hitch_count + slow_region_count)
+        }
     } else {
         format!("Median {} fps with {} detected performance episodes.", fps, hitch_count + slow_region_count)
     }
@@ -894,5 +1007,41 @@ mod tests {
         let payload: FindingPayload = serde_json::from_str(&gc_finding.payload).unwrap();
         assert_eq!(payload.evidence.len(), 1);
         assert!(payload.evidence[0].label.contains("CollectGarbage took 70.0 ms"));
+    }
+
+    #[test]
+    fn test_format_timer_display_name() {
+        assert_eq!(
+            format_timer_display_name("Frame", "gpu-bound"),
+            "GPU total frame duration"
+        );
+        assert_eq!(
+            format_timer_display_name("ExecuteUbergraph_WBP_InventoryMenu", "bp-tick"),
+            "Blueprint 'WBP_InventoryMenu' (ExecuteUbergraph)"
+        );
+        assert_eq!(
+            format_timer_display_name("WBP_HealthBar_C::Tick", "ui-slate-overhead"),
+            "Widget 'WBP_HealthBar' (Tick)"
+        );
+        assert_eq!(
+            format_timer_display_name("BP_Enemy_C::ReceiveTick", "bp-tick"),
+            "Blueprint 'BP_Enemy' (ReceiveTick)"
+        );
+        assert_eq!(
+            format_timer_display_name("Function /Game/UI/WBP_Menu.WBP_Menu_C:Construct", "bp-tick"),
+            "Blueprint 'WBP_Menu' (Construct)"
+        );
+        assert_eq!(
+            format_timer_display_name("LoadPackage /Game/Maps/Level01", "sync-load"),
+            "Package '/Game/Maps/Level01' (LoadPackage)"
+        );
+        assert_eq!(
+            format_timer_display_name("Serialize /Game/Textures/T_Atlas", "sync-load"),
+            "Package '/Game/Textures/T_Atlas' (Serialize)"
+        );
+        assert_eq!(
+            format_timer_display_name("/Game/Characters/SK_Hero", "sync-load"),
+            "Package '/Game/Characters/SK_Hero'"
+        );
     }
 }

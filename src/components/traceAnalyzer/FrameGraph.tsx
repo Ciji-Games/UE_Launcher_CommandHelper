@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import type { Episode, FramePoint, FrameSeriesResponse } from '../../types/traceAnalyzer';
+import type { Episode, FrameSeriesResponse } from '../../types/traceAnalyzer';
 
 interface FrameGraphProps {
   durationS: number;
@@ -53,12 +53,15 @@ export function FrameGraph({
   const [showGame, setShowGame] = useState(false);
   const [showRender, setShowRender] = useState(false);
   const [showGpu, setShowGpu] = useState(false);
+  const [scaleMode, setScaleMode] = useState<'p99' | 'fit'>('p99');
 
   const [hoverInfo, setHoverInfo] = useState<{
     x: number;
     y: number;
     timeS: number;
     frameMs: number;
+    minMs?: number;
+    maxMs?: number;
     gameMs?: number;
     renderMs?: number;
     gpuMs?: number;
@@ -121,22 +124,42 @@ export function FrameGraph({
     const graphH = height - padT - padB;
 
     // Determine max Y scale (ms)
-    let maxY = Math.max(targetMs * 3.5, 40.0);
+    // We use p99.5 auto-scaling by default so rare multi-second hitches do not crush 99% of normal frames.
+    let maxY = Math.max(targetMs * 4.2, 45.0);
+    let absoluteMaxMs = maxY;
+
     if (seriesData) {
-      if (seriesData.isBucketed) {
+      if (seriesData.isBucketed && seriesData.buckets.length > 0) {
         for (const b of seriesData.buckets) {
-          if (b.maxMs > maxY) maxY = b.maxMs;
+          if (b.maxMs > absoluteMaxMs) absoluteMaxMs = b.maxMs;
         }
-      } else {
+        if (scaleMode === 'fit') {
+          maxY = Math.max(maxY, absoluteMaxMs * 1.12);
+        } else {
+          // p99.5 auto-scaling gives high vertical resolution to normal frames
+          const sortedAvgs = seriesData.buckets.map((b) => b.avgMs).sort((a, b) => a - b);
+          const p99_5 = sortedAvgs[Math.floor(sortedAvgs.length * 0.995)] ?? sortedAvgs[sortedAvgs.length - 1];
+          maxY = Math.max(maxY, p99_5 * 1.35);
+        }
+      } else if (!seriesData.isBucketed && seriesData.points.length > 0) {
         for (const p of seriesData.points) {
-          if (p.frameMs > maxY) maxY = p.frameMs;
+          if (p.frameMs > absoluteMaxMs) absoluteMaxMs = p.frameMs;
+        }
+        if (scaleMode === 'fit') {
+          maxY = Math.max(maxY, absoluteMaxMs * 1.12);
+        } else {
+          const sortedFrames = seriesData.points.map((p) => p.frameMs).sort((a, b) => a - b);
+          const p99_5 = sortedFrames[Math.floor(sortedFrames.length * 0.995)] ?? sortedFrames[sortedFrames.length - 1];
+          maxY = Math.max(maxY, p99_5 * 1.35);
         }
       }
     }
-    maxY = Math.min(maxY * 1.15, 2000.0); // allow headroom for multi-second hitches
 
     const timeToX = (t: number) => padL + ((t - vStart) / vDuration) * graphW;
-    const msToY = (ms: number) => padT + graphH - (ms / maxY) * graphH;
+    const msToY = (ms: number) => {
+      const clampedMs = Math.min(ms, maxY);
+      return padT + graphH - (clampedMs / maxY) * graphH;
+    };
     const baseBottomY = padT + graphH;
 
     // Draw grid lines & budget guides
@@ -185,6 +208,7 @@ export function FrameGraph({
           const x1 = timeToX(b.t0);
           const x2 = timeToX(b.t1);
           const barW = Math.max(x2 - x1, 1);
+          const isOffScale = b.maxMs > maxY;
 
           const yMin = msToY(b.minMs);
           const yMax = msToY(b.maxMs);
@@ -209,8 +233,17 @@ export function FrameGraph({
           ctx.fillStyle = barColor;
           ctx.fillRect(x1, yAvg, barW, Math.max(baseBottomY - yAvg, 1));
 
-          // 3. Top peak indicator if distinct
-          if (yMin - yMax > 2) {
+          // 3. Top peak indicator or off-scale chevron cap
+          if (isOffScale) {
+            ctx.fillStyle = '#ef4444'; // Red cap for off-scale hitch
+            ctx.fillRect(x1, padT, barW, 2.5);
+            if (barW >= 6) {
+              ctx.fillStyle = '#fca5a5';
+              ctx.font = 'bold 9px sans-serif';
+              ctx.textAlign = 'center';
+              ctx.fillText('▲', x1 + barW / 2, padT - 2);
+            }
+          } else if (yMin - yMax > 2) {
             ctx.fillStyle = '#f8fafc';
             ctx.fillRect(x1, yMax, barW, 1.5);
           }
@@ -224,6 +257,7 @@ export function FrameGraph({
           const x = timeToX(p.t);
           const y = msToY(p.frameMs);
           const barH = Math.max(baseBottomY - y, 1.0);
+          const isOffScale = p.frameMs > maxY;
 
           let color = '#38bdf8'; // sky
           if (p.frameMs >= targetMs * 2) {
@@ -234,6 +268,15 @@ export function FrameGraph({
 
           ctx.fillStyle = color;
           ctx.fillRect(x - ptWidth / 2, y, ptWidth, barH);
+
+          if (isOffScale) {
+            ctx.fillStyle = '#ef4444';
+            ctx.fillRect(x - ptWidth / 2, padT, ptWidth, 2.5);
+            ctx.fillStyle = '#fca5a5';
+            ctx.font = 'bold 8px sans-serif';
+            ctx.textAlign = 'center';
+            ctx.fillText('▲', x, padT - 2);
+          }
 
           // Optional sub-stages
           if (showGame && p.gameMs) {
@@ -316,7 +359,7 @@ export function FrameGraph({
     ctx.stroke();
 
     ctx.restore();
-  }, [viewRange, seriesData, targetMs, episodes, selectedEpisodeId, selectionRange, showGame, showRender, showGpu]);
+  }, [viewRange, seriesData, targetMs, episodes, selectedEpisodeId, selectionRange, showGame, showRender, showGpu, scaleMode]);
 
   // Handle ResizeObserver & Canvas resolution
   useEffect(() => {
@@ -460,21 +503,35 @@ export function FrameGraph({
     } else {
       // Hover tooltip info
       const t = pixelToTime(x, rect.width);
-      let hoveredPoint: FramePoint | undefined;
       if (seriesData && !seriesData.isBucketed) {
-        hoveredPoint = seriesData.points.find((p) => Math.abs(p.t - t) < 0.05);
-      }
-
-      if (hoveredPoint) {
-        setHoverInfo({
-          x: e.clientX - rect.left,
-          y: e.clientY - rect.top,
-          timeS: hoveredPoint.t,
-          frameMs: hoveredPoint.frameMs,
-          gameMs: hoveredPoint.gameMs,
-          renderMs: hoveredPoint.renderMs,
-          gpuMs: hoveredPoint.gpuMs,
-        });
+        const hoveredPoint = seriesData.points.find((p) => Math.abs(p.t - t) < 0.05);
+        if (hoveredPoint) {
+          setHoverInfo({
+            x: e.clientX - rect.left,
+            y: e.clientY - rect.top,
+            timeS: hoveredPoint.t,
+            frameMs: hoveredPoint.frameMs,
+            gameMs: hoveredPoint.gameMs,
+            renderMs: hoveredPoint.renderMs,
+            gpuMs: hoveredPoint.gpuMs,
+          });
+        } else {
+          setHoverInfo(null);
+        }
+      } else if (seriesData && seriesData.isBucketed) {
+        const bucket = seriesData.buckets.find((b) => t >= b.t0 && t <= b.t1);
+        if (bucket) {
+          setHoverInfo({
+            x: e.clientX - rect.left,
+            y: e.clientY - rect.top,
+            timeS: (bucket.t0 + bucket.t1) / 2,
+            frameMs: bucket.avgMs,
+            minMs: bucket.minMs,
+            maxMs: bucket.maxMs,
+          });
+        } else {
+          setHoverInfo(null);
+        }
       } else {
         setHoverInfo(null);
       }
@@ -543,6 +600,34 @@ export function FrameGraph({
         </div>
 
         <div className="flex items-center gap-2">
+          {/* Vertical Scale Mode Toggle */}
+          <div className="flex items-center bg-slate-800/80 rounded border border-slate-700/80 p-0.5 text-[11px]">
+            <button
+              type="button"
+              onClick={() => setScaleMode('p99')}
+              title="Percentile Clamping: prioritizes frame-to-frame baseline resolution, capping off-scale spikes"
+              className={`px-2 py-0.5 rounded transition-colors ${
+                scaleMode === 'p99'
+                  ? 'bg-sky-600/70 text-sky-100 font-medium'
+                  : 'text-slate-400 hover:text-slate-200'
+              }`}
+            >
+              Auto (p99)
+            </button>
+            <button
+              type="button"
+              onClick={() => setScaleMode('fit')}
+              title="Fit Peaks: scales vertical axis to fit the absolute highest hitch spike"
+              className={`px-2 py-0.5 rounded transition-colors ${
+                scaleMode === 'fit'
+                  ? 'bg-sky-600/70 text-sky-100 font-medium'
+                  : 'text-slate-400 hover:text-slate-200'
+              }`}
+            >
+              Fit Peaks
+            </button>
+          </div>
+
           <span className="text-slate-500">
             Range: {formatTime(viewRange[0])} – {formatTime(viewRange[1])}
           </span>
@@ -581,10 +666,19 @@ export function FrameGraph({
             }}
           >
             <div className="font-semibold text-sky-300">{formatTime(hoverInfo.timeS)}</div>
-            <div>Frame: <span className="font-mono text-amber-300">{hoverInfo.frameMs.toFixed(1)} ms</span></div>
-            {hoverInfo.gameMs && <div className="text-emerald-400">Game: {hoverInfo.gameMs.toFixed(1)} ms</div>}
-            {hoverInfo.renderMs && <div className="text-purple-400">Render: {hoverInfo.renderMs.toFixed(1)} ms</div>}
-            {hoverInfo.gpuMs && <div className="text-orange-400">GPU: {hoverInfo.gpuMs.toFixed(1)} ms</div>}
+            <div>
+              {hoverInfo.minMs !== undefined && hoverInfo.maxMs !== undefined ? (
+                <span>
+                  Avg: <span className="font-mono text-amber-300">{hoverInfo.frameMs.toFixed(1)} ms</span>{' '}
+                  <span className="text-slate-400">({hoverInfo.minMs.toFixed(1)}–{hoverInfo.maxMs.toFixed(1)} ms)</span>
+                </span>
+              ) : (
+                <span>Frame: <span className="font-mono text-amber-300">{hoverInfo.frameMs.toFixed(1)} ms</span></span>
+              )}
+            </div>
+            {hoverInfo.gameMs !== undefined && <div className="text-emerald-400">Game: {hoverInfo.gameMs.toFixed(1)} ms</div>}
+            {hoverInfo.renderMs !== undefined && <div className="text-purple-400">Render: {hoverInfo.renderMs.toFixed(1)} ms</div>}
+            {hoverInfo.gpuMs !== undefined && <div className="text-orange-400">GPU: {hoverInfo.gpuMs.toFixed(1)} ms</div>}
           </div>
         )}
       </div>

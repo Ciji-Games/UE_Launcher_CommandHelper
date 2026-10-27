@@ -7,7 +7,6 @@ import { useProgress } from '../contexts/ProgressContext';
 import type {
   AnalysisOptions,
   Episode,
-  EpisodeDetailResponse,
   Finding,
   FindingPayload,
   FrameSeriesResponse,
@@ -40,8 +39,6 @@ export function useTraceAnalyzer() {
   const [episodes, setEpisodes] = useState<Episode[]>([]);
   const [findings, setFindings] = useState<Finding[]>([]);
   const [selectedEpisodeId, setSelectedEpisodeId] = useState<number | null>(null);
-  const [episodeDetail, setEpisodeDetail] = useState<EpisodeDetailResponse | null>(null);
-  const [episodeDetailLoading, setEpisodeDetailLoading] = useState(false);
 
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [progressPayload, setProgressPayload] = useState<TraceProgressPayload | null>(null);
@@ -145,7 +142,6 @@ export function useTraceAnalyzer() {
       setEpisodes([]);
       setFindings([]);
       setSelectedEpisodeId(null);
-      setEpisodeDetail(null);
 
       startProgress();
 
@@ -202,6 +198,84 @@ export function useTraceAnalyzer() {
     [insightsInfo, availableEngines, selectedEngineRoot, options, startProgress, finishProgress, refreshCandidates]
   );
 
+  // Launch game executable with trace flags and monitor until exit
+  const launchAndTraceExe = useCallback(
+    async (exePath: string, customArgs?: string, traceFilePath?: string) => {
+      let resolvedInsights = insightsInfo?.path;
+      if (!resolvedInsights && selectedEngineRoot) {
+        try {
+          const info = await invoke<InsightsExeInfo>('trace_find_insights', {
+            engineRoot: selectedEngineRoot,
+          });
+          resolvedInsights = info.path;
+        } catch {
+          // ignore
+        }
+      }
+
+      if (!resolvedInsights) {
+        setError(
+          'Unreal Insights executable not found. Please ensure an engine with Unreal Insights is selected.'
+        );
+        return;
+      }
+
+      setIsAnalyzing(true);
+      setError(null);
+      setSummary(null);
+      setEpisodes([]);
+      setFindings([]);
+      setSelectedEpisodeId(null);
+      startProgress();
+
+      try {
+        const engVer =
+          availableEngines.find((e) => e.root === selectedEngineRoot)?.version || '5.7';
+
+        const res = await invoke<TraceSummary>('trace_launch_and_monitor', {
+          exePath,
+          customArgs: customArgs || null,
+          traceFilePath: traceFilePath || null,
+          insightsPath: resolvedInsights,
+          engineVersion: engVer,
+          options,
+        });
+
+        setSummary(res);
+        setCurrentTracePath(res.path);
+
+        const [eps, fnds] = await Promise.all([
+          invoke<Episode[]>('trace_get_episodes', { traceId: res.traceId }),
+          invoke<Finding[]>('trace_get_findings', { traceId: res.traceId }),
+        ]);
+
+        const parsedFindings: Finding[] = fnds.map((f) => {
+          try {
+            const parsed = JSON.parse(f.payload) as FindingPayload;
+            return { ...f, parsedPayload: parsed };
+          } catch {
+            return f;
+          }
+        });
+
+        setEpisodes(eps);
+        setFindings(parsedFindings);
+
+        if (eps.length > 0) {
+          setSelectedEpisodeId(eps[0].id);
+        }
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        setError(msg);
+      } finally {
+        setIsAnalyzing(false);
+        finishProgress();
+        refreshCandidates();
+      }
+    },
+    [insightsInfo, availableEngines, selectedEngineRoot, options, startProgress, finishProgress, refreshCandidates]
+  );
+
   // Cancel running analysis
   const cancelAnalysis = useCallback(async () => {
     try {
@@ -232,23 +306,6 @@ export function useTraceAnalyzer() {
     },
     [summary?.traceId]
   );
-
-  // Fetch episode detail when selection changes
-  useEffect(() => {
-    if (!summary?.traceId || selectedEpisodeId === null) {
-      setEpisodeDetail(null);
-      return;
-    }
-
-    setEpisodeDetailLoading(true);
-    invoke<EpisodeDetailResponse>('trace_get_episode_detail', {
-      traceId: summary.traceId,
-      episodeId: selectedEpisodeId,
-    })
-      .then((detail) => setEpisodeDetail(detail))
-      .catch((e) => console.error('Failed to load episode detail:', e))
-      .finally(() => setEpisodeDetailLoading(false));
-  }, [summary?.traceId, selectedEpisodeId]);
 
   // Open in Unreal Insights GUI
   const openInInsights = useCallback(
@@ -303,13 +360,12 @@ export function useTraceAnalyzer() {
     findings,
     selectedEpisodeId,
     setSelectedEpisodeId,
-    episodeDetail,
-    episodeDetailLoading,
     isAnalyzing,
     progressPayload,
     error,
     options,
     openTrace,
+    launchAndTraceExe,
     cancelAnalysis,
     fetchFrameSeries,
     openInInsights,

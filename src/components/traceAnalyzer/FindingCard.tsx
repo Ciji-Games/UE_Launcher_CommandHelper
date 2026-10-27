@@ -1,12 +1,29 @@
-import type { Finding } from '../../types/traceAnalyzer';
+import type { Episode, Finding } from '../../types/traceAnalyzer';
 
 interface FindingCardProps {
   finding: Finding;
   isSelected: boolean;
+  selectedEpisodeId: number | null;
+  episodes?: Episode[];
   onSelectEpisode: (episodeId: number) => void;
+  onOpenInInsights?: () => void;
 }
 
-export function FindingCard({ finding, isSelected, onSelectEpisode }: FindingCardProps) {
+function formatTime(s: number): string {
+  if (s < 60) return `${s.toFixed(1)}s`;
+  const m = Math.floor(s / 60);
+  const sec = (s % 60).toFixed(1);
+  return `${m}m ${sec}s`;
+}
+
+export function FindingCard({
+  finding,
+  isSelected,
+  selectedEpisodeId,
+  episodes = [],
+  onSelectEpisode,
+  onOpenInInsights,
+}: FindingCardProps) {
   const p = finding.parsedPayload;
   if (!p) return null;
 
@@ -31,23 +48,47 @@ export function FindingCard({ finding, isSelected, onSelectEpisode }: FindingCar
       ? 'text-sky-300 bg-sky-900/40 border-sky-600/50'
       : 'text-slate-300 bg-slate-700/50 border-slate-600/50';
 
+  const episodesMap = new Map<number, Episode>(episodes.map((ep) => [ep.id, ep]));
+
   return (
     <div
-      className={`flex flex-col gap-3 rounded-lg border p-4 transition-all ${
+      className={`flex flex-col gap-3.5 rounded-lg border p-4.5 transition-all ${
         isSelected
-          ? 'bg-slate-800/80 border-sky-500/80 ring-1 ring-sky-500/50'
+          ? 'bg-slate-800/90 border-sky-500/90 ring-1 ring-sky-500/50 shadow-lg shadow-sky-950/30'
           : 'bg-slate-800/40 border-slate-700/60 hover:bg-slate-800/60'
       }`}
     >
-      {/* Title & Badges */}
-      <div className="flex flex-col gap-1.5">
-        <div className="flex items-start justify-between gap-2">
-          <h4 className="text-sm font-semibold text-slate-100 leading-snug">{p.title}</h4>
-          <span
-            className={`shrink-0 text-[11px] font-medium px-2 py-0.5 rounded border capitalize ${confidenceColor}`}
-          >
-            {p.matchConfidence} Confidence ({Math.round(p.matchScore * 100)}%)
-          </span>
+      {/* Title & Badges & Quick Action */}
+      <div className="flex flex-col gap-2">
+        <div className="flex items-start justify-between gap-3">
+          <div className="flex items-center gap-2 flex-wrap">
+            <h4 className="text-sm font-semibold text-slate-100 leading-snug">{p.title}</h4>
+            {isSelected && (
+              <span className="px-1.5 py-0.2 text-[10px] uppercase font-bold tracking-wider rounded bg-sky-600/30 text-sky-300 border border-sky-500/50">
+                Matched Episode #{selectedEpisodeId}
+              </span>
+            )}
+          </div>
+          <div className="flex items-center gap-2 shrink-0">
+            <span
+              className={`text-[11px] font-medium px-2 py-0.5 rounded border capitalize ${confidenceColor}`}
+            >
+              {p.matchConfidence} Confidence ({Math.round(p.matchScore * 100)}%)
+            </span>
+            {onOpenInInsights && (
+              <button
+                type="button"
+                onClick={onOpenInInsights}
+                title="Open trace in Unreal Insights GUI"
+                className="flex items-center gap-1 px-2 py-0.5 rounded bg-slate-700/70 hover:bg-slate-600 text-slate-200 text-xs border border-slate-600/60 transition-colors"
+              >
+                <svg className="w-3.5 h-3.5 text-sky-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
+                </svg>
+                <span>Insights</span>
+              </button>
+            )}
+          </div>
         </div>
 
         <div className="flex items-center gap-2 text-xs text-slate-400">
@@ -65,7 +106,7 @@ export function FindingCard({ finding, isSelected, onSelectEpisode }: FindingCar
 
       {/* Quantitative Evidence */}
       {p.evidence && p.evidence.length > 0 && (
-        <div className="flex flex-col gap-1 text-xs bg-slate-900/40 rounded p-2.5 border border-slate-700/40">
+        <div className="flex flex-col gap-1 text-xs bg-slate-900/50 rounded p-2.5 border border-slate-700/50">
           <span className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider">What We Observed:</span>
           <ul className="flex flex-col gap-1 list-disc list-inside text-slate-300">
             {p.evidence.map((ev, i) => (
@@ -100,7 +141,7 @@ export function FindingCard({ finding, isSelected, onSelectEpisode }: FindingCar
           <span className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider">What to Try (Ordered):</span>
           <div className="flex flex-col gap-1.5">
             {p.fixes.map((fix, i) => (
-              <div key={`fix-${i}-${fix.text.slice(0, 20)}`} className="flex items-start gap-2 bg-slate-900/30 rounded p-2 border border-slate-700/30">
+              <div key={`fix-${i}-${fix.text.slice(0, 20)}`} className="flex items-start gap-2 bg-slate-900/30 rounded p-2.5 border border-slate-700/40">
                 <span className="text-sky-400 font-bold shrink-0">{i + 1}.</span>
                 <div className="flex flex-col gap-1 flex-1">
                   <div className="flex items-center justify-between gap-2">
@@ -140,21 +181,35 @@ export function FindingCard({ finding, isSelected, onSelectEpisode }: FindingCar
         </div>
       )}
 
-      {/* Affected Episodes */}
+      {/* Affected Episodes with Timestamps and Peak Durations */}
       {p.episodeIds && p.episodeIds.length > 0 && (
-        <div className="flex items-center gap-1.5 pt-1 border-t border-slate-700/50 text-xs text-slate-400">
-          <span>Applies to episodes:</span>
-          <div className="flex flex-wrap gap-1">
-            {p.episodeIds.map((epId) => (
-              <button
-                key={epId}
-                type="button"
-                onClick={() => onSelectEpisode(epId)}
-                className="px-2 py-0.5 rounded bg-slate-700/70 hover:bg-sky-600/60 hover:text-sky-100 text-slate-300 text-xs border border-slate-600/50 transition-colors"
-              >
-                #{epId}
-              </button>
-            ))}
+        <div className="flex items-center gap-2 pt-2 border-t border-slate-700/50 text-xs text-slate-400 flex-wrap">
+          <span className="font-medium">Matching episodes:</span>
+          <div className="flex flex-wrap gap-1.5">
+            {p.episodeIds.map((epId) => {
+              const ep = episodesMap.get(epId);
+              const isEpSelected = selectedEpisodeId === epId;
+              const timeLabel = ep ? formatTime(ep.startS) : null;
+              const peakLabel = ep ? `${ep.peakMs.toFixed(0)} ms` : null;
+
+              return (
+                <button
+                  key={epId}
+                  type="button"
+                  onClick={() => onSelectEpisode(epId)}
+                  title={ep ? `Episode #${epId} (${ep.kind === 'hitch' ? 'Hitch' : 'Slow Region'}) at ${timeLabel}, peak ${ep.peakMs.toFixed(1)} ms` : `Episode #${epId}`}
+                  className={`flex items-center gap-1 px-2.5 py-0.5 rounded text-xs border transition-colors ${
+                    isEpSelected
+                      ? 'bg-sky-600 text-white font-semibold border-sky-400 shadow-sm'
+                      : 'bg-slate-700/60 hover:bg-slate-700 text-slate-300 border-slate-600/50'
+                  }`}
+                >
+                  <span>#{epId}</span>
+                  {timeLabel && <span className="opacity-75 text-[11px]">({timeLabel})</span>}
+                  {peakLabel && <span className="text-amber-300 font-mono text-[11px]">{peakLabel}</span>}
+                </button>
+              );
+            })}
           </div>
         </div>
       )}

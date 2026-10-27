@@ -1,11 +1,11 @@
 [
   {
-    "pattern": "^(FEngineLoop_UpdateTimeAndHandleMaxTickRate|Sleep|WaitForNextFrame|FEngineLoop::UpdateTimeAndHandleMaxTickRate)",
+    "pattern": "^(FEngineLoop_UpdateTimeAndHandleMaxTickRate$|FEngineLoop::UpdateTimeAndHandleMaxTickRate$|WaitForNextFrame$)",
     "bucket": "Idle",
     "kind": "idle"
   },
   {
-    "pattern": "^(WaitForTasks|WaitUntilTasksComplete|ProcessUntilTasksComplete|FRenderCommandFence|GpuWait|WaitForFrame|TaskWorkerIsLookingForWork|FTaskGraphImplementation::WaitUntilTasksComplete|FQueuedThreadPoolWrapper::WaitForWork|FEvent::Wait)",
+    "pattern": "^(ReflexSleep|NvReflexSleep|NvLowLatencySleep|WaitForTasks|WaitUntilTasksComplete|ProcessUntilTasksComplete|FRenderCommandFence|GpuWait|WaitForFrame|TaskWorkerIsLookingForWork|FTaskGraphImplementation::WaitUntilTasksComplete|FQueuedThreadPoolWrapper::WaitForWork|FEvent::Wait)",
     "bucket": "Wait",
     "kind": "wait"
   },
@@ -15,7 +15,7 @@
     "kind": "editor_only"
   },
   {
-    "pattern": "^(Slate::|SViewport|DrawWindow|Prepass|PaintSlowPath|FSlateApplication::|SWidget::Paint|SCompoundWidget|SPanel|SOverlay|SBox|STextBlock|SImage|SButton)",
+    "pattern": "^(Slate::|SViewport|DrawWindow|Prepass|PaintSlowPath|FSlateApplication::|SWidget::Paint|SCompoundWidget|SPanel|SOverlay|SBox|STextBlock|SImage|SButton|WBP_)",
     "bucket": "UI / Slate",
     "kind": "work"
   },
@@ -25,7 +25,7 @@
     "kind": "work"
   },
   {
-    "pattern": "^(FlushAsyncLoading|LoadPackage|StaticLoadObject|LoadObject|LoadSynchronous|PostLoad|Precache|FAsyncLoadingThread|SerializeImports|CreateExport)",
+    "pattern": "^(FlushAsyncLoading|LoadPackage|StaticLoadObject|LoadObject|LoadSynchronous|PostLoad|Precache|FAsyncLoadingThread|SerializeImports|CreateExport|Serialize:|LoadPackage:|/Game/|/Engine/)",
     "bucket": "Loading",
     "kind": "work"
   },
@@ -40,7 +40,7 @@
     "kind": "work"
   },
   {
-    "pattern": "^(ExecuteUbergraph_|ProcessEvent|BlueprintTime|UFunction::Invoke|ProcessLocalScriptFunction)",
+    "pattern": "^(ExecuteUbergraph_|ProcessEvent|BlueprintTime|UFunction::Invoke|ProcessLocalScriptFunction|.*_C::|.*::ReceiveTick|.*::UserConstructionScript|Function /Game/)",
     "bucket": "Blueprint",
     "kind": "work"
   },

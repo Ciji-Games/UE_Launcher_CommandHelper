@@ -243,7 +243,7 @@ export function SummaryHeader({
 
         {summary.missingChannels && summary.missingChannels.length > 0 && (
           <span className="text-[11px] text-slate-400">
-            For deeper diagnosis, capture with: <code className="text-amber-300 bg-slate-900 px-1 py-0.5 rounded border border-slate-700 font-mono">-trace=default,loadtime,counters</code>
+            For deeper diagnosis, capture with: <code className="text-amber-300 bg-slate-900 px-1 py-0.5 rounded border border-slate-700 font-mono">-trace=cpu,gpu,frame,loadtime,counters,bookmark -cpuprofilertrace</code>
           </span>
         )}
       </div>

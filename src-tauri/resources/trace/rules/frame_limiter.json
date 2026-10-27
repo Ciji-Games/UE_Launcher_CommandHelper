@@ -3,7 +3,7 @@
   "title": "Engine frame rate limiter active (headroom available)",
   "applies_to": ["slow_region"],
   "when": {
-    "timers": ["FEngineLoop_UpdateTimeAndHandleMaxTickRate", "Sleep", "WaitForNextFrame", "FEngineLoop::UpdateTimeAndHandleMaxTickRate"],
+    "timers": ["^FEngineLoop_UpdateTimeAndHandleMaxTickRate$", "^WaitForNextFrame$", "^FEngineLoop::UpdateTimeAndHandleMaxTickRate$"],
     "threads": ["game"],
     "min_excess_ms": 1.0,
     "min_share_of_excess": 0.20,

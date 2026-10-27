@@ -70,6 +70,7 @@ Analyze Unreal Engine `.utrace` performance captures locally using headless Unre
 
 | Feature | Description |
 |---|---|
+| **Executable Launch & Profiling** | Select or drop a game `.exe` to launch with standard Unreal trace flags (`-trace=cpu,gpu,frame,loadtime,counters,bookmark -tracefile=<TraceStore>`), monitor the process, and automatically analyze the resulting trace on exit. |
 | **Two-Pass Streaming Loading** | Pass A immediately loads and renders the interactive canvas frame time graph; Pass B exports targeted episode windows for exclusive-time baseline analysis. |
 | **Interactive Canvas Frame Graph** | Multi-LOD downsampled rendering, budget guide thresholds (16.7 / 33.3 / 66.7 ms), hitch indicators, sustained slow-region bands, and pan/zoom/selection controls. |
 | **Root Cause Diagnosis** | Identifies Garbage Collection, shader compile blocking, PSO creation, sync asset loading, Blueprint tick VM overhead, physics/animation costs, editor overhead, and GPU bottlenecks. |

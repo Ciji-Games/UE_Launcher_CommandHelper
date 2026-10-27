@@ -3,7 +3,7 @@
   "title": "Synchronous asset loading on GameThread",
   "applies_to": ["hitch"],
   "when": {
-    "timers": ["FlushAsyncLoading", "LoadPackage", "StaticLoadObject", "LoadObject", "LoadSynchronous", "PostLoad", "Precache", "FAsyncLoadingThread", "SerializeImports"],
+    "timers": ["FlushAsyncLoading", "LoadPackage", "StaticLoadObject", "LoadObject", "LoadSynchronous", "PostLoad", "Precache", "FAsyncLoadingThread", "SerializeImports", "CreateExport", "/Game/", "/Engine/", "Serialize:"],
     "threads": ["game"],
     "min_excess_ms": 6.0,
     "min_share_of_excess": 0.25,
