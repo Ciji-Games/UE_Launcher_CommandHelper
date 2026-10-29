@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 
-pub const SCHEMA_VERSION: i32 = 6;
+pub const SCHEMA_VERSION: i32 = 7;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]

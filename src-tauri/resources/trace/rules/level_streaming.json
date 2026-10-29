@@ -1,0 +1,23 @@
+{
+  "id": "level-streaming",
+  "title": "Level streaming or World Partition cell update",
+  "applies_to": ["hitch"],
+  "when": {
+    "timers": ["^UpdateLevelStreaming$", "^AddToWorld$", "^IncrementalUpdateComponents$", "^RouteActorInitialize$", "^WorldPartition"],
+    "threads": ["game"],
+    "min_excess_ms": 4.0,
+    "min_share_of_excess": 0.20,
+    "expects_periodic": false
+  },
+  "specificity": 0.86,
+  "fix_likelihood": "medium",
+  "fix_rationale": "The trace shows the GameThread stalled during level streaming or World Partition cell activation. Adding streaming level components or initializing large actor groups in a single frame causes spikes.",
+  "evidence_template": "{timer} took {ms} ms on the GameThread ({share}% of excess time) processing level streaming and actor world registration.",
+  "fixes": [
+    { "text": "Tune World Partition streaming cell grid sizes so fewer actors are activated in a single frame.", "effort": "medium" },
+    { "text": "Enable incremental actor registration / component updates during level streaming.", "effort": "low" },
+    { "text": "Reduce the density of initial actors per streaming level by using data layers.", "effort": "medium" }
+  ],
+  "verify": "Traverse the level streaming boundary and confirm that AddToWorld and streaming update times remain smooth.",
+  "caveats": []
+}

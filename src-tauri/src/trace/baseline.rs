@@ -141,12 +141,41 @@ pub fn generate_pass_b_windows(
 }
 
 pub fn compute_and_save_baselines(conn: &mut Connection) -> Result<(), String> {
-    // 1. Gather baseline stats per window_id (< 0)
-    let mut baseline_events: HashMap<(String, i64, i64), Vec<f64>> = HashMap::new();
+    // 1. Gather frames for frame-time binning
+    let mut frames_info = Vec::new();
+    {
+        let mut stmt = conn
+            .prepare("SELECT idx, start_s, interval_ms FROM frames ORDER BY start_s ASC")
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map([], |row| {
+                let idx: i64 = row.get(0)?;
+                let start_s: f64 = row.get(1)?;
+                let interval_ms: f64 = row.get(2)?;
+                Ok((idx, start_s, start_s + (interval_ms / 1000.0)))
+            })
+            .map_err(|e| e.to_string())?;
+        for r in rows {
+            if let Ok(info) = r {
+                frames_info.push(info);
+            }
+        }
+    }
+
+    // 2. Gather raw baseline events (window_id < 0)
+    struct RawEvent {
+        scope: String,
+        thread_id: i64,
+        timer_id: i64,
+        start_s: f64,
+        excl_ms: f64,
+    }
+
+    let mut raw_events = Vec::new();
     {
         let mut stmt = conn
             .prepare(
-                "SELECT window_id, thread_id, timer_id, excl_ms 
+                "SELECT window_id, thread_id, timer_id, start_s, excl_ms 
                  FROM window_events 
                  WHERE window_id < 0",
             )
@@ -157,23 +186,67 @@ pub fn compute_and_save_baselines(conn: &mut Connection) -> Result<(), String> {
                 let win_id: i64 = row.get(0)?;
                 let thread_id: i64 = row.get(1)?;
                 let timer_id: i64 = row.get(2)?;
-                let excl_ms: f64 = row.get(3)?;
-                Ok((win_id, thread_id, timer_id, excl_ms))
+                let start_s: f64 = row.get(3)?;
+                let excl_ms: f64 = row.get(4)?;
+                Ok((win_id, thread_id, timer_id, start_s, excl_ms))
             })
             .map_err(|e| e.to_string())?;
 
         for r in rows {
-            let (win_id, thread_id, timer_id, excl_ms) = r.map_err(|e| e.to_string())?;
+            let (win_id, thread_id, timer_id, start_s, excl_ms) = r.map_err(|e| e.to_string())?;
             let scope = if win_id == -9999 {
                 "global".to_string()
             } else {
                 format!("episode:{}", -win_id)
             };
-            baseline_events
-                .entry((scope, thread_id, timer_id))
-                .or_default()
-                .push(excl_ms);
+            raw_events.push(RawEvent {
+                scope,
+                thread_id,
+                timer_id,
+                start_s,
+                excl_ms,
+            });
         }
+    }
+
+    // 3. Group events into per-frame aggregates: (scope, frame_id, thread_id, timer_id) -> (total_excl_ms, call_count)
+    let mut per_frame_aggregates: HashMap<(String, i64, i64, i64), (f64, usize)> = HashMap::new();
+
+    for ev in raw_events {
+        let frame_id = if !frames_info.is_empty() {
+            // Binary search or linear match
+            match frames_info.binary_search_by(|(_, start, _)| start.partial_cmp(&ev.start_s).unwrap_or(std::cmp::Ordering::Equal)) {
+                Ok(idx) => frames_info[idx].0,
+                Err(idx) => {
+                    if idx > 0 && ev.start_s < frames_info[idx - 1].2 + 0.001 {
+                        frames_info[idx - 1].0
+                    } else if idx < frames_info.len() {
+                        frames_info[idx].0
+                    } else {
+                        (ev.start_s / 0.0166).floor() as i64
+                    }
+                }
+            }
+        } else {
+            // Synthesize ~16.6ms frame slots
+            (ev.start_s / 0.0166).floor() as i64
+        };
+
+        let entry = per_frame_aggregates
+            .entry((ev.scope, frame_id, ev.thread_id, ev.timer_id))
+            .or_insert((0.0, 0));
+        entry.0 += ev.excl_ms;
+        entry.1 += 1;
+    }
+
+    // 4. Group by (scope, thread_id, timer_id) across all frames
+    let mut baseline_data: HashMap<(String, i64, i64), (Vec<f64>, Vec<f64>)> = HashMap::new();
+    for ((scope, _frame_id, thread_id, timer_id), (frame_total_ms, calls)) in per_frame_aggregates {
+        let entry = baseline_data
+            .entry((scope, thread_id, timer_id))
+            .or_insert_with(|| (Vec::new(), Vec::new()));
+        entry.0.push(frame_total_ms);
+        entry.1.push(calls as f64);
     }
 
     let tx = conn.transaction().map_err(|e| e.to_string())?;
@@ -185,12 +258,14 @@ pub fn compute_and_save_baselines(conn: &mut Connection) -> Result<(), String> {
             )
             .map_err(|e| e.to_string())?;
 
-        for ((scope, thread_id, timer_id), mut values) in baseline_events {
-            values.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-            let median_excl_ms = calculate_percentile(&values, 0.5);
-            let p95_excl_ms = calculate_percentile(&values, 0.95);
-            let samples = values.len();
-            let median_calls = 1.0;
+        for ((scope, thread_id, timer_id), (mut values_ms, mut values_calls)) in baseline_data {
+            values_ms.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+            values_calls.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+
+            let median_excl_ms = calculate_percentile(&values_ms, 0.5);
+            let p95_excl_ms = calculate_percentile(&values_ms, 0.95);
+            let median_calls = calculate_percentile(&values_calls, 0.5);
+            let samples = values_ms.len();
 
             stmt.execute(params![
                 scope,

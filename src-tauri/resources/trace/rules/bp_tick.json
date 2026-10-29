@@ -3,7 +3,7 @@
   "title": "Heavy Blueprint tick or VM script execution",
   "applies_to": ["hitch", "slow_region"],
   "when": {
-    "timers": ["ExecuteUbergraph_", "ProcessEvent", "BlueprintTime", "UFunction::Invoke", "ProcessLocalScriptFunction", "_C::", "::ReceiveTick", "::ExecuteUbergraph", "::UserConstructionScript", "Function /Game/"],
+    "timers": ["^ExecuteUbergraph_", "^ProcessEvent$", "^BlueprintTime$", "^UFunction::Invoke$", "^ProcessLocalScriptFunction$", "^BP_", "::ReceiveTick$", "::ExecuteUbergraph$", "::UserConstructionScript$", "^Function "],
     "threads": ["game"],
     "min_excess_ms": 4.0,
     "min_share_of_excess": 0.20,
@@ -11,13 +11,13 @@
   },
   "specificity": 0.8,
   "fix_likelihood": "medium",
-  "fix_rationale": "Blueprint tick costs can be mitigated by disabling unused ticks, reducing tick intervals, or moving tight calculation loops to C++.",
+  "fix_rationale": "The trace shows Blueprint bytecode or event execution taking significant GameThread time. Disabling unnecessary actor ticks, lowering tick rates, or migrating heavy logic to C++ mitigates the cost.",
   "evidence_template": "{timer} spent {ms} ms executing Blueprint bytecode across game actors ({share}% of excess time).",
   "fixes": [
-    { "text": "Disable 'Start with Tick Enabled' on actors/components that do not need continuous updates; switch to event-driven logic or timers.", "effort": "low" },
+    { "text": "Disable 'Start with Tick Enabled' on actors and components that do not need continuous updates; switch to event-driven logic or timers.", "effort": "low" },
     { "text": "Increase Tick Interval (e.g. SetActorTickInterval(0.1)) for non-critical gameplay updates.", "effort": "low" },
-    { "text": "Profile specific Blueprint graphs and nativize or rewrite math-heavy loops in C++.", "effort": "medium" }
+    { "text": "Profile specific Blueprint graphs and rewrite math-heavy calculation loops in C++.", "effort": "medium" }
   ],
-  "verify": "Re-run profile and confirm that ProcessEvent and ExecuteUbergraph times drop significantly.",
+  "verify": "Re-capture the trace and confirm that ProcessEvent and Blueprint function times decrease.",
   "caveats": []
 }

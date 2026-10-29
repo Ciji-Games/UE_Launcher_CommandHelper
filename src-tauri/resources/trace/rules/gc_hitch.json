@@ -3,7 +3,7 @@
   "title": "Garbage collection pass",
   "applies_to": ["hitch"],
   "when": {
-    "timers": ["CollectGarbage", "PerformReachabilityAnalysis", "IncrementalPurgeGarbage", "ConditionalBeginDestroy", "FinishDestroy", "FGCArrayPool", "GarbageCollection"],
+    "timers": ["^CollectGarbage$", "^PerformReachabilityAnalysis$", "^IncrementalPurgeGarbage$", "^ConditionalBeginDestroy$", "^FinishDestroy$", "^FGCArrayPool", "^GarbageCollection$"],
     "threads": ["game"],
     "min_excess_ms": 3.0,
     "min_share_of_excess": 0.20,
@@ -11,14 +11,13 @@
   },
   "specificity": 0.9,
   "fix_likelihood": "high",
-  "fix_rationale": "GC hitches are reliably eliminated or reduced by pooling objects, reducing UObject churn, and spreading destruction across frames.",
+  "fix_rationale": "The trace shows garbage collection took significant frame time. This is commonly caused by high UObject allocation churn, large unpooled actor creation/destruction, or high total object counts.",
   "evidence_template": "{timer} took {ms} ms (normally {baseline_ms} ms), explaining {share}% of the excess frame time{periodic_clause}.",
   "fixes": [
-    { "text": "Pool and reuse actors and components instead of spawning and destroying them dynamically.", "effort": "medium" },
-    { "text": "Avoid mass object destruction in a single frame (e.g. at wave ends or inventory clears); distribute over multiple ticks.", "effort": "low" },
-    { "text": "Tune garbage collection cvars for your engine version.", "effort": "low", "cvarsOrApis": ["gc.TimeBetweenPurgingPendingKillObjects", "gc.IncrementalBeginDestroyEnabled", "gc.MultithreadedDestructionEnabled"] },
-    { "text": "Audit UObject count using 'obj list' to find reference leaks or excessive Blueprint component instances.", "effort": "high" }
+    { "text": "Pool and reuse transient actors and components instead of frequently creating and destroying them.", "effort": "low" },
+    { "text": "Audit total UObject counts using 'obj list' to identify potential reference accumulation or leaks.", "effort": "medium" },
+    { "text": "Distribute bulk object destruction across multiple frames rather than destroying large sets simultaneously.", "effort": "medium" }
   ],
-  "verify": "Re-capture a trace under identical gameplay conditions and verify that CollectGarbage time decreases below 5 ms or no longer spikes.",
-  "caveats": ["Editor sessions keep many extra editor objects alive in memory; GC execution cost is higher in editor than in packaged builds."]
+  "verify": "Re-capture a trace under identical conditions and verify that garbage collection duration decreases.",
+  "caveats": ["Editor sessions keep extra editor objects alive; GC duration is typically higher in editor sessions than in packaged builds."]
 }

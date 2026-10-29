@@ -1,0 +1,22 @@
+{
+  "id": "inconclusive",
+  "title": "Inconclusive performance anomaly",
+  "applies_to": ["hitch", "slow_region"],
+  "when": {
+    "timers": ["^.*$"],
+    "threads": [],
+    "min_excess_ms": 0.0,
+    "min_share_of_excess": 0.0,
+    "expects_periodic": false
+  },
+  "specificity": 0.1,
+  "fix_likelihood": "low",
+  "fix_rationale": "No profiled timer exceeded baseline thresholds sufficiently to establish a root cause. The hitch may be caused by uninstrumented native code, OS scheduling preemption, page faults, or hardware throttling.",
+  "evidence_template": "No profiled timer exceeded baseline thresholds sufficiently to establish a root cause.",
+  "fixes": [
+    { "text": "Re-capture the trace with full engine channels enabled (-trace=cpu,gpu,frame,loadtime -cpuprofilertrace).", "effort": "low" },
+    { "text": "Inspect the thread timeline in Unreal Insights to visually locate uninstrumented timing gaps.", "effort": "low" }
+  ],
+  "verify": "Re-capture with cpuprofilertrace to provide fine-grained timing data.",
+  "caveats": ["Insufficient profiled timer excess to confidently identify a specific engine bottleneck."]
+}

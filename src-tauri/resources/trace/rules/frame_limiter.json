@@ -11,11 +11,12 @@
   },
   "specificity": 0.9,
   "fix_likelihood": "low",
-  "fix_rationale": "Frame limiter sleep indicates the engine intentionally throttled execution to match target framerate; this represents available performance headroom.",
+  "fix_rationale": "The trace shows the engine spent excess time sleeping inside FEngineLoop_UpdateTimeAndHandleMaxTickRate to respect the target frame rate limit (e.g. t.MaxFPS). This indicates performance headroom rather than a bottleneck.",
   "evidence_template": "The engine spent {ms} ms sleeping inside {timer} to adhere to frame rate limits.",
   "fixes": [
-    { "text": "If higher framerates are desired, adjust t.MaxFPS or Project Frame Rate settings.", "effort": "low", "cvarsOrApis": ["t.MaxFPS", "r.VSync"] }
+    { "text": "No optimization required: idle sleep confirms the hardware easily meets the current frame rate target.", "effort": "low" },
+    { "text": "If higher framerates are desired, increase or disable the frame limiter (e.g. t.MaxFPS 0 in console or Project Settings).", "effort": "low", "cvarsOrApis": ["t.MaxFPS"] }
   ],
-  "verify": "Verify that increasing t.MaxFPS increases measured FPS without bottlenecks.",
-  "caveats": ["This is informational and indicates healthy frame rate limiting."]
+  "verify": "Adjust t.MaxFPS and confirm that frame times scale with the new framerate ceiling.",
+  "caveats": ["This is an informational signal indicating performance headroom, not a performance issue."]
 }

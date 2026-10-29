@@ -3,7 +3,7 @@
   "title": "Synchronous asset loading on GameThread",
   "applies_to": ["hitch"],
   "when": {
-    "timers": ["FlushAsyncLoading", "LoadPackage", "StaticLoadObject", "LoadObject", "LoadSynchronous", "PostLoad", "Precache", "FAsyncLoadingThread", "SerializeImports", "CreateExport", "/Game/", "/Engine/", "Serialize:"],
+    "timers": ["^FlushAsyncLoading$", "^LoadPackage", "^StaticLoadObject$", "^LoadObject$", "^LoadSynchronous$"],
     "threads": ["game"],
     "min_excess_ms": 6.0,
     "min_share_of_excess": 0.25,
@@ -11,13 +11,13 @@
   },
   "specificity": 0.88,
   "fix_likelihood": "high",
-  "fix_rationale": "Replacing hard synchronous object loads with soft object references and asynchronous loading completely avoids blocking the game loop.",
+  "fix_rationale": "The trace shows the GameThread blocked waiting for synchronous asset loading. Replacing hard object references with soft references and asynchronous loading prevents blocking the game loop.",
   "evidence_template": "{timer} stalled the GameThread for {ms} ms (normally {baseline_ms} ms), accounting for {share}% of the hitch duration.",
   "fixes": [
-    { "text": "Convert hard asset pointers (TObjectPtr, UTexture2D*, etc.) in Blueprints and C++ to soft references (TSoftObjectPtr, TSoftClassPtr).", "effort": "medium" },
-    { "text": "Preload required assets asynchronously using StreamableManager or Async Loading Screen during transitions.", "effort": "medium", "cvarsOrApis": ["FStreamableManager::RequestAsyncLoad", "UAssetManager"] },
-    { "text": "Inspect reference graph with Size Map / Reference Viewer to prune unexpected transitive asset dependencies.", "effort": "low" }
+    { "text": "Convert hard asset pointers (UTexture2D*, TObjectPtr) to soft object references (TSoftObjectPtr, TSoftClassPtr).", "effort": "medium" },
+    { "text": "Preload assets asynchronously using StreamableManager or Asset Manager during level transitions.", "effort": "medium" },
+    { "text": "Inspect the Reference Viewer to find and prune unintended transitive hard dependencies.", "effort": "low" }
   ],
-  "verify": "Re-trigger the asset spawn or UI opening and verify that StaticLoadObject / LoadPackage times drop to 0 ms.",
-  "caveats": ["Synchronous asset loading in PIE may also include compiling or disk caching costs not present in cooked builds."]
+  "verify": "Re-trigger the gameplay event and verify that synchronous loading scopes drop to 0 ms.",
+  "caveats": ["Synchronous asset loading in PIE may include compiling or disk caching costs not present in cooked builds."]
 }

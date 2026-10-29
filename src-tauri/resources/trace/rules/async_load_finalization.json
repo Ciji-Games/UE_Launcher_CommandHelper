@@ -1,0 +1,23 @@
+{
+  "id": "async-load-finalization",
+  "title": "Asynchronous asset load finalization on GameThread",
+  "applies_to": ["hitch"],
+  "when": {
+    "timers": ["^PostLoad$", "^SerializeImports$", "^CreateExport$", "^PostLoadMap$"],
+    "threads": ["game"],
+    "min_excess_ms": 5.0,
+    "min_share_of_excess": 0.20,
+    "expects_periodic": false
+  },
+  "specificity": 0.88,
+  "fix_likelihood": "medium",
+  "fix_rationale": "The trace shows PostLoad or package import/export finalization occurred on the GameThread as an asynchronous load completed. Heavy UObject initialization in PostLoad blocks the main thread.",
+  "evidence_template": "{timer} took {ms} ms on the GameThread ({share}% of excess time) finalizing asynchronously loaded assets.",
+  "fixes": [
+    { "text": "Audit C++ and Blueprint PostLoad implementations to eliminate synchronous disk reads, complex calculations, or actor registrations.", "effort": "medium" },
+    { "text": "Stagger asset load completions across multiple frames by batching async load requests.", "effort": "low" },
+    { "text": "Move asset finalization and procedural generation to background tasks where possible.", "effort": "high" }
+  ],
+  "verify": "Re-capture the trace and confirm that PostLoad execution time on the GameThread decreases.",
+  "caveats": ["PostLoad executes on the GameThread even when packages are loaded asynchronously by the async loading thread."]
+}

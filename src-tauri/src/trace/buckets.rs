@@ -107,5 +107,21 @@ mod tests {
         let (b5, k5) = classify_timer("StaticLoadObject", &rules);
         assert_eq!(b5, "Loading");
         assert_eq!(k5, "work");
+
+        let (b_bp, k_bp) = classify_timer("Function /Game/Characters/BP_Enemy.BP_Enemy_C:ReceiveTick", &rules);
+        assert_eq!(b_bp, "Blueprint");
+        assert_eq!(k_bp, "work");
+
+        let (b_pso, k_pso) = classify_timer("PSOPrecache", &rules);
+        assert_eq!(b_pso, "ShaderCompile/PSO");
+        assert_eq!(k_pso, "work");
+
+        let (b_lumen, k_lumen) = classify_timer("LumenScreenProbeGather", &rules);
+        assert_eq!(b_lumen, "GPU");
+        assert_eq!(k_lumen, "work");
+
+        let (b_views, k_views) = classify_timer("InitViews", &rules);
+        assert_eq!(b_views, "Render CPU");
+        assert_eq!(k_views, "work");
     }
 }

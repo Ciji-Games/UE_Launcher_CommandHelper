@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { revealItemInDir } from '@tauri-apps/plugin-opener';
 import type { Finding, TraceSummary } from '../../types/traceAnalyzer';
 
 interface SummaryHeaderProps {
@@ -33,6 +34,15 @@ export function SummaryHeader({
   if (!summary) return null;
 
   const medianFps = (summary.medianMs ?? 0) > 0 ? Math.round(1000 / summary.medianMs) : 0;
+
+  const handleOpenInExplorer = async () => {
+    if (!summary.path) return;
+    try {
+      await revealItemInDir(summary.path);
+    } catch (err) {
+      console.error('Failed to open trace in explorer:', err);
+    }
+  };
 
   const handleCopyReport = () => {
     let md = `# Unreal Engine Trace Diagnosis Report\n\n`;
@@ -159,6 +169,20 @@ export function SummaryHeader({
               <option value={120}>120 fps (8.3 ms)</option>
             </select>
           </div>
+
+          {/* Open in Explorer */}
+          <button
+            type="button"
+            onClick={handleOpenInExplorer}
+            disabled={!summary.path}
+            className="flex items-center gap-1.5 px-3 py-1 bg-slate-700/80 hover:bg-slate-700 disabled:opacity-50 text-slate-200 text-xs rounded border border-slate-600/70 transition-colors"
+            title={summary.path ? `Open folder containing ${summary.path}` : 'No trace path available'}
+          >
+            <svg className="w-3.5 h-3.5 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" />
+            </svg>
+            <span>Open in Explorer</span>
+          </button>
 
           {/* Copy Report */}
           <button

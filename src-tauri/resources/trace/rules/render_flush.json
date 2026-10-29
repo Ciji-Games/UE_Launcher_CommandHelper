@@ -1,0 +1,23 @@
+{
+  "id": "render-flush",
+  "title": "Game thread waiting on Render Thread (fence / flush)",
+  "applies_to": ["hitch", "slow_region"],
+  "when": {
+    "timers": ["^FRenderCommandFence", "^FlushRenderingCommands$", "^ENQUEUE_RENDER_COMMAND", "^RHITick$"],
+    "threads": ["game"],
+    "min_excess_ms": 4.0,
+    "min_share_of_excess": 0.20,
+    "expects_periodic": false
+  },
+  "specificity": 0.85,
+  "fix_likelihood": "high",
+  "fix_rationale": "The trace shows the GameThread stalled waiting on a render command fence or rendering flush. The bottleneck lies in the RenderThread or GPU, which caused the GameThread to wait.",
+  "evidence_template": "{timer} blocked the GameThread for {ms} ms ({share}% of excess time) waiting for the RenderThread to flush commands.",
+  "fixes": [
+    { "text": "Avoid explicit FlushRenderingCommands() calls in gameplay C++ code or plugins.", "effort": "low" },
+    { "text": "Optimize RenderThread bottleneck (culling, visible primitives, draw calls) so fences clear faster.", "effort": "medium" },
+    { "text": "Ensure multithreaded rendering is enabled and running without synchronous sync points.", "effort": "low" }
+  ],
+  "verify": "Re-capture the trace and confirm that FRenderCommandFence wait durations drop to normal baseline levels.",
+  "caveats": []
+}

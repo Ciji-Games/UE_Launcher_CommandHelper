@@ -3,11 +3,12 @@
   "title": "UI layout and Slate widget rendering overhead",
   "applies_to": ["hitch", "slow_region"],
   "when": {
-    "timers": ["Slate::Prepass", "Slate_PaintSlowPath", "Slate::DrawWindow", "Slate::TickPlatform", "SViewport_OnPaint", "Slate::AddShapedTextElement", "Slate::AddBoxElements", "Slate::MergeRenderBatches", "SWidget::Paint", "WBP_", "UUserWidget"],
+    "timers": ["^Slate::Prepass$", "^Slate_PaintSlowPath$", "^Slate::DrawWindow", "^Slate::TickPlatform$", "^SViewport_OnPaint$", "^Slate::AddShapedTextElement$", "^Slate::AddBoxElements$", "^Slate::MergeRenderBatches$", "^SWidget::Paint$", "^WBP_", "^UUserWidget"],
     "threads": ["game", "render"],
     "min_excess_ms": 4.0,
     "min_share_of_excess": 0.15,
-    "expects_periodic": false
+    "expects_periodic": false,
+    "requires_bound_by": "cpu"
   },
   "specificity": 0.85,
   "fix_likelihood": "high",

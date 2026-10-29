@@ -27,26 +27,38 @@ export function FindingCard({
   const p = finding.parsedPayload;
   if (!p) return null;
 
-  const confidenceColor =
-    p.matchConfidence === 'high'
-      ? 'text-emerald-400 bg-emerald-950/40 border-emerald-600/40'
-      : p.matchConfidence === 'medium'
-      ? 'text-sky-400 bg-sky-950/40 border-sky-600/40'
-      : 'text-amber-400 bg-amber-950/40 border-amber-600/40';
+  const isInconclusive = finding.ruleId === 'inconclusive';
+  const isFrameLimiter = finding.ruleId === 'frame-limiter';
 
-  const likelihoodText =
-    p.fixLikelihood === 'high'
-      ? 'Usually fixes it'
-      : p.fixLikelihood === 'medium'
-      ? 'Often helps'
-      : 'Worth trying';
+  const confidenceColor = isInconclusive
+    ? 'text-slate-400 bg-slate-800/60 border-slate-600/40'
+    : isFrameLimiter
+    ? 'text-teal-400 bg-teal-950/40 border-teal-600/40'
+    : p.matchConfidence === 'high'
+    ? 'text-emerald-400 bg-emerald-950/40 border-emerald-600/40'
+    : p.matchConfidence === 'medium'
+    ? 'text-sky-400 bg-sky-950/40 border-sky-600/40'
+    : 'text-amber-400 bg-amber-950/40 border-amber-600/40';
 
-  const likelihoodBadge =
-    p.fixLikelihood === 'high'
-      ? 'text-emerald-300 bg-emerald-900/40 border-emerald-600/50'
-      : p.fixLikelihood === 'medium'
-      ? 'text-sky-300 bg-sky-900/40 border-sky-600/50'
-      : 'text-slate-300 bg-slate-700/50 border-slate-600/50';
+  const likelihoodText = isInconclusive
+    ? 'Investigate'
+    : isFrameLimiter
+    ? 'Expected behavior'
+    : p.fixLikelihood === 'high'
+    ? 'Usually fixes it'
+    : p.fixLikelihood === 'medium'
+    ? 'Often helps'
+    : 'Worth trying';
+
+  const likelihoodBadge = isInconclusive
+    ? 'text-slate-300 bg-slate-800/50 border-slate-600/50'
+    : isFrameLimiter
+    ? 'text-teal-300 bg-teal-900/40 border-teal-600/50'
+    : p.fixLikelihood === 'high'
+    ? 'text-emerald-300 bg-emerald-900/40 border-emerald-600/50'
+    : p.fixLikelihood === 'medium'
+    ? 'text-sky-300 bg-sky-900/40 border-sky-600/50'
+    : 'text-slate-300 bg-slate-700/50 border-slate-600/50';
 
   const episodesMap = new Map<number, Episode>(episodes.map((ep) => [ep.id, ep]));
 
@@ -73,7 +85,11 @@ export function FindingCard({
             <span
               className={`text-[11px] font-medium px-2 py-0.5 rounded border capitalize ${confidenceColor}`}
             >
-              {p.matchConfidence} Confidence ({Math.round(p.matchScore * 100)}%)
+              {isInconclusive
+                ? 'Inconclusive'
+                : isFrameLimiter
+                ? 'Informational'
+                : `${p.matchConfidence} Confidence (${Math.round(p.matchScore * 100)}%)`}
             </span>
             {onOpenInInsights && (
               <button
@@ -92,15 +108,21 @@ export function FindingCard({
         </div>
 
         <div className="flex items-center gap-2 text-xs text-slate-400">
-          <span>Fix Likelihood:</span>
+          <span>{isFrameLimiter ? 'Status:' : 'Fix Likelihood:'}</span>
           <span className={`text-[11px] font-medium px-2 py-0.5 rounded border ${likelihoodBadge}`}>
             {likelihoodText}
           </span>
           <span className="text-slate-500">•</span>
-          <span className="text-slate-300">
-            Explains <strong className="text-amber-300">{(p.explainsMs ?? 0).toFixed(1)} ms</strong> of +
-            {(p.ofExcessMs ?? 0).toFixed(1)} ms spike
-          </span>
+          {isInconclusive ? (
+            <span className="text-slate-300">
+              No dominant scope cleared thresholds (<strong className="text-amber-300">+{(p.ofExcessMs ?? 0).toFixed(1)} ms</strong> spike)
+            </span>
+          ) : (
+            <span className="text-slate-300">
+              Explains <strong className="text-amber-300">{(p.explainsMs ?? 0).toFixed(1)} ms</strong> of +
+              {(p.ofExcessMs ?? 0).toFixed(1)} ms spike
+            </span>
+          )}
         </div>
       </div>
 

@@ -15,7 +15,7 @@
     "kind": "editor_only"
   },
   {
-    "pattern": "^(Slate::|SViewport|DrawWindow|Prepass|PaintSlowPath|FSlateApplication::|SWidget::Paint|SCompoundWidget|SPanel|SOverlay|SBox|STextBlock|SImage|SButton|WBP_)",
+    "pattern": "^(Slate::|SViewport|DrawWindow|Prepass|PaintSlowPath|Slate_PaintSlowPath|FSlateApplication::|SWidget::Paint|SCompoundWidget|SPanel|SOverlay|SBox|STextBlock|SImage|SButton|WBP_)",
     "bucket": "UI / Slate",
     "kind": "work"
   },
@@ -25,8 +25,8 @@
     "kind": "work"
   },
   {
-    "pattern": "^(FlushAsyncLoading|LoadPackage|StaticLoadObject|LoadObject|LoadSynchronous|PostLoad|Precache|FAsyncLoadingThread|SerializeImports|CreateExport|Serialize:|LoadPackage:|/Game/|/Engine/)",
-    "bucket": "Loading",
+    "pattern": "^(ExecuteUbergraph_|ProcessEvent|BlueprintTime|UFunction::Invoke|ProcessLocalScriptFunction|BP_|Function |.*_C::|.*::ReceiveTick|.*::UserConstructionScript)",
+    "bucket": "Blueprint",
     "kind": "work"
   },
   {
@@ -40,8 +40,8 @@
     "kind": "work"
   },
   {
-    "pattern": "^(ExecuteUbergraph_|ProcessEvent|BlueprintTime|UFunction::Invoke|ProcessLocalScriptFunction|.*_C::|.*::ReceiveTick|.*::UserConstructionScript|Function /Game/)",
-    "bucket": "Blueprint",
+    "pattern": "^(FlushAsyncLoading|LoadPackage|StaticLoadObject|LoadObject|LoadSynchronous|PostLoad|FAsyncLoadingThread|SerializeImports|CreateExport|Serialize:|LoadPackage:)",
+    "bucket": "Loading",
     "kind": "work"
   },
   {

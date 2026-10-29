@@ -1,9 +1,9 @@
 {
   "id": "unattributed-gap",
-  "title": "Unattributed CPU gap (external thread preemption / OS stall)",
+  "title": "Unattributed CPU gap (uninstrumented code / OS stall)",
   "applies_to": ["hitch", "slow_region"],
   "when": {
-    "timers": [".*"],
+    "timers": ["^.*$"],
     "threads": ["game"],
     "min_excess_ms": 10.0,
     "min_share_of_excess": 0.30,
@@ -11,13 +11,13 @@
   },
   "specificity": 0.5,
   "fix_likelihood": "low",
-  "fix_rationale": "Large unaccounted gaps where no Unreal engine scopes are active typically indicate operating system context switching, antivirus file scanning, disk paging, or background process contention.",
+  "fix_rationale": "The trace shows time elapsed on the GameThread where no active profiled Unreal scopes exist. This occurs when uninstrumented C++ code, third-party libraries, OS thread preemption, or page faults stall execution.",
   "evidence_template": "The GameThread spent {ms} ms with no active profiled Unreal scopes ({share}% of extra frame time).",
   "fixes": [
-    { "text": "Add your project root and Unreal Engine directories to Windows Defender / Antivirus exclusions.", "effort": "low" },
-    { "text": "Set Windows Power Plan to 'High Performance' to prevent CPU core clock throttling or core parking.", "effort": "low" },
-    { "text": "Close resource-heavy background applications, web browsers, and recording software.", "effort": "low" }
+    { "text": "Add TRACE_CPUPROFILER_EVENT_SCOPE macros around suspect C++ functions, tick loops, and third-party libraries.", "effort": "medium" },
+    { "text": "Add your project root and engine folders to Windows Defender / Antivirus exclusions.", "effort": "low" },
+    { "text": "Set Windows Power Plan to 'High Performance' to prevent CPU core clock throttling or parking.", "effort": "low" }
   ],
-  "verify": "Re-capture a trace and check if unaccounted timing gaps on the GameThread disappear.",
-  "caveats": ["This represents time spent outside Unreal Engine code execution (OS scheduling, paging, or hardware interrupts)."]
+  "verify": "Re-capture a trace with added trace scopes to resolve the unprofiled timing gap into concrete functions.",
+  "caveats": ["Represents time spent outside instrumented Unreal Engine timers (e.g. unprofiled native code, OS scheduling, or hardware latency)."]
 }
