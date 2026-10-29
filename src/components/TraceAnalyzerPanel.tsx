@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useMemo } from 'react';
 import { open } from '@tauri-apps/plugin-dialog';
 import { getCurrentWebview } from '@tauri-apps/api/webview';
 import { useTraceAnalyzer } from '../hooks/useTraceAnalyzer';
@@ -6,23 +6,16 @@ import { FrameGraph } from './traceAnalyzer/FrameGraph';
 import { SummaryHeader } from './traceAnalyzer/SummaryHeader';
 import { FindingCard } from './traceAnalyzer/FindingCard';
 import { LoadingStages } from './traceAnalyzer/LoadingStages';
-import type { Episode, Finding, TraceCandidate } from '../types/traceAnalyzer';
+import { RangeStatisticsPanel } from './traceAnalyzer/RangeStatisticsPanel';
+import { CategoryBreakdownChart } from './traceAnalyzer/CategoryBreakdownChart';
+import type { Finding, TraceCandidate } from '../types/traceAnalyzer';
 
 function formatDuration(s: number): string {
-  if (s < 60) return `${s.toFixed(1)}s`;
+  if (s < 60) return `${s.toFixed(2)}s`;
   const m = Math.floor(s / 60);
   const sec = (s % 60).toFixed(1);
   return `${m}m ${sec}s`;
 }
-
-const BOUND_BY_COLORS: Record<string, string> = {
-  game: 'text-emerald-400 bg-emerald-950/40 border-emerald-600/40',
-  render: 'text-purple-400 bg-purple-950/40 border-purple-600/40',
-  rhi: 'text-indigo-400 bg-indigo-950/40 border-indigo-600/40',
-  gpu: 'text-orange-400 bg-orange-950/40 border-orange-600/40',
-  idle_limited: 'text-sky-400 bg-sky-950/40 border-sky-600/40',
-  unattributed: 'text-slate-400 bg-slate-800/40 border-slate-600/40',
-};
 
 export function TraceAnalyzerPanel() {
   const {
@@ -37,6 +30,11 @@ export function TraceAnalyzerPanel() {
     findings,
     selectedEpisodeId,
     setSelectedEpisodeId,
+    bookmarks,
+    selectedRange,
+    setSelectedRange,
+    rangeStats,
+    rangeStatsLoading,
     isAnalyzing,
     progressPayload,
     error,
@@ -110,28 +108,27 @@ export function TraceAnalyzerPanel() {
         .onDragDropEvent((event) => {
           if (event.payload.type === 'over') {
             setIsDragOver(true);
+          } else if (event.payload.type === 'leave') {
+            setIsDragOver(false);
           } else if (event.payload.type === 'drop') {
             setIsDragOver(false);
-            const paths = event.payload.paths;
-            if (paths && paths.length > 0) {
-              const file = paths[0];
-              const lower = file.toLowerCase();
-              if (lower.endsWith('.utrace')) {
-                openTrace(file);
-              } else if (lower.endsWith('.exe')) {
-                setSelectedExePath(file);
+            const droppedPaths = event.payload.paths;
+            if (droppedPaths && droppedPaths.length > 0) {
+              const dropped = droppedPaths[0];
+              if (dropped.toLowerCase().endsWith('.utrace')) {
+                openTrace(dropped);
+              } else if (dropped.toLowerCase().endsWith('.exe')) {
+                setSelectedExePath(dropped);
                 setShowLaunchModal(true);
               }
             }
-          } else {
-            setIsDragOver(false);
           }
         })
         .then((fn) => {
           unlisten = fn;
         });
     } catch (e) {
-      console.error('Failed to register drag-drop listener:', e);
+      console.error('Drag & drop listener error:', e);
     }
 
     return () => {
@@ -142,51 +139,99 @@ export function TraceAnalyzerPanel() {
   // Keyboard navigation for episodes
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) {
-        return;
-      }
+      if (!summary || episodes.length === 0) return;
 
-      if (e.key === 'Escape') {
+      if (e.key === 'ArrowRight') {
+        e.preventDefault();
+        setSelectedEpisodeId((current) => {
+          if (current === null) return episodes[0].id;
+          const idx = episodes.findIndex((ep) => ep.id === current);
+          if (idx !== -1 && idx < episodes.length - 1) {
+            return episodes[idx + 1].id;
+          }
+          return current;
+        });
+      } else if (e.key === 'ArrowLeft') {
+        e.preventDefault();
+        setSelectedEpisodeId((current) => {
+          if (current === null) return episodes[episodes.length - 1].id;
+          const idx = episodes.findIndex((ep) => ep.id === current);
+          if (idx > 0) {
+            return episodes[idx - 1].id;
+          }
+          return current;
+        });
+      } else if (e.key === 'Escape') {
         setSelectedEpisodeId(null);
-      } else if (e.key === 'ArrowRight' && episodes.length > 0) {
-        e.preventDefault();
-        const currIdx = episodes.findIndex((ep: Episode) => ep.id === selectedEpisodeId);
-        const nextIdx = currIdx >= 0 && currIdx < episodes.length - 1 ? currIdx + 1 : 0;
-        setSelectedEpisodeId(episodes[nextIdx].id);
-      } else if (e.key === 'ArrowLeft' && episodes.length > 0) {
-        e.preventDefault();
-        const currIdx = episodes.findIndex((ep: Episode) => ep.id === selectedEpisodeId);
-        const prevIdx = currIdx > 0 ? currIdx - 1 : episodes.length - 1;
-        setSelectedEpisodeId(episodes[prevIdx].id);
       }
     };
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [episodes, selectedEpisodeId, setSelectedEpisodeId]);
+  }, [summary, episodes, setSelectedEpisodeId]);
+
+  // Rank and filter findings based on active selected range
+  const scopedFindings = useMemo(() => {
+    if (!selectedRange) return findings;
+    const [minS, maxS] = [Math.min(...selectedRange), Math.max(...selectedRange)];
+
+    // Check if range is roughly entire trace
+    const isFullTrace = summary && (maxS - minS >= (summary.durationS - 0.1));
+
+    if (isFullTrace) {
+      return findings;
+    }
+
+    // Elevate findings whose episodes overlap the active selection window
+    return [...findings].sort((a, b) => {
+      const aMatches = a.episodeIds.some((id) => {
+        const ep = episodes.find((e) => e.id === id);
+        return ep && ep.startS <= maxS && ep.endS >= minS;
+      });
+      const bMatches = b.episodeIds.some((id) => {
+        const ep = episodes.find((e) => e.id === id);
+        return ep && ep.startS <= maxS && ep.endS >= minS;
+      });
+
+      if (aMatches && !bMatches) return -1;
+      if (!aMatches && bMatches) return 1;
+      return a.rank - b.rank;
+    });
+  }, [findings, selectedRange, episodes, summary]);
 
   return (
-    <div className="flex flex-col h-full w-full min-h-0 text-slate-200 select-none">
-      {/* Top Toolbar */}
-      <div className="flex items-center justify-between gap-3 pb-3 border-b border-slate-700/60 shrink-0">
-        <div className="flex items-center gap-2">
+    <div className="flex flex-col h-full bg-slate-950 text-slate-100 p-4 gap-3 select-none overflow-hidden">
+      {/* Top Header / Action Bar */}
+      <div className="flex flex-wrap items-center justify-between gap-3 pb-3 border-b border-slate-800">
+        <div className="flex items-center gap-3">
+          <div className="flex items-center gap-2">
+            <span className="text-base font-bold bg-gradient-to-r from-sky-400 via-indigo-300 to-purple-400 bg-clip-text text-transparent">
+              Trace Analyzer Studio
+            </span>
+            <span className="text-xs px-2 py-0.5 rounded bg-sky-950/80 text-sky-400 border border-sky-800/60 font-mono">
+              Unified
+            </span>
+          </div>
+
+          {/* Open Trace Button */}
           <button
             type="button"
             onClick={handlePickFile}
             disabled={isAnalyzing}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-sky-600 hover:bg-sky-500 disabled:opacity-50 text-white font-medium text-xs transition-colors shadow-sm"
+            className="flex items-center gap-1.5 px-3 py-1 rounded bg-sky-600 hover:bg-sky-500 disabled:opacity-50 text-white text-xs font-medium transition-colors shadow-sm"
           >
             <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12" />
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 19a2 2 0 01-2-2V7a2 2 0 012-2h4l2 2h4a2 2 0 012 2v1M5 19h14a2 2 0 002-2v-5a2 2 0 00-2-2H9a2 2 0 00-2 2v5a2 2 0 01-2 2z" />
             </svg>
-            <span>Open Trace (.utrace)</span>
+            <span>Open .utrace...</span>
           </button>
 
+          {/* Launch Game Executable Button */}
           <button
             type="button"
             onClick={handlePickExe}
             disabled={isAnalyzing}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white font-medium text-xs transition-colors shadow-sm"
+            className="flex items-center gap-1.5 px-3 py-1 rounded bg-slate-800 hover:bg-slate-700 disabled:opacity-50 text-slate-200 text-xs font-medium border border-slate-700 transition-colors shadow-sm"
           >
             <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z" />
@@ -249,7 +294,7 @@ export function TraceAnalyzerPanel() {
       </div>
 
       {/* Main Content Area */}
-      <div className="flex-1 min-h-0 pt-3 flex flex-col gap-3">
+      <div className="flex-1 min-h-0 pt-1 flex flex-col gap-3">
         {/* Error Banner */}
         {error && (
           <div className="p-3 rounded-lg bg-rose-950/40 border border-rose-600/50 text-rose-200 text-xs flex items-center justify-between">
@@ -273,9 +318,9 @@ export function TraceAnalyzerPanel() {
             <LoadingStages progress={progressPayload} onCancel={cancelAnalysis} />
           </div>
         ) : summary ? (
-          /* Active Trace View */
+          /* Active Trace View: Unified Performance Studio Dashboard */
           <div className="flex flex-col gap-3 flex-1 min-h-0 overflow-y-auto pr-1">
-            {/* Summary Header */}
+            {/* Top Summary Header Bar */}
             <SummaryHeader
               summary={summary}
               findings={findings}
@@ -284,7 +329,7 @@ export function TraceAnalyzerPanel() {
               onOpenInInsights={() => openInInsights()}
             />
 
-            {/* Frame Time Graph */}
+            {/* Frame Time Graph + Bookmarks Track */}
             <div className="h-[250px] shrink-0">
               <FrameGraph
                 durationS={summary.durationS}
@@ -292,78 +337,87 @@ export function TraceAnalyzerPanel() {
                 episodes={episodes}
                 selectedEpisodeId={selectedEpisodeId}
                 onSelectEpisode={setSelectedEpisodeId}
+                bookmarks={bookmarks}
+                selectedRange={selectedRange}
+                onSelectRange={setSelectedRange}
                 fetchFrameSeries={fetchFrameSeries}
               />
             </div>
 
-            {/* Diagnostic Findings Section (Full Width) */}
-            <div className="flex flex-col gap-3 min-h-[350px] pb-6">
-              {/* Active Episode Selection Highlight Bar */}
-              {selectedEpisodeId !== null && (
-                <div className="flex flex-wrap items-center justify-between gap-3 p-3 rounded-lg bg-slate-800/80 border border-sky-500/60 shadow-md">
-                  {(() => {
-                    const ep = episodes.find((e: Episode) => e.id === selectedEpisodeId);
-                    if (!ep) return null;
-                    const boundClass = BOUND_BY_COLORS[ep.boundBy] || BOUND_BY_COLORS.unattributed;
+            {/* Middle Row: Range Statistics & Hardware Balance | Fixed Category Donut */}
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-3 shrink-0">
+              {/* Left Column: Pipeline Balance & Health Metrics */}
+              <RangeStatisticsPanel
+                stats={rangeStats}
+                targetMs={summary.targetMs}
+                isLoading={rangeStatsLoading}
+              />
 
-                    return (
+              {/* Right Column: Fixed Category Donut & Top Timers */}
+              <CategoryBreakdownChart
+                categories={rangeStats?.categories || []}
+                topTimers={rangeStats?.topTimers || []}
+                frameCount={rangeStats?.frameCount || 0}
+              />
+            </div>
+
+            {/* Scoped Diagnostic Findings Section */}
+            <div className="flex flex-col gap-3 min-h-[300px] pb-6 pt-1 border-t border-slate-800/80">
+              {/* Selected Scope Indicator Bar */}
+              {selectedRange && (
+                <div className="flex flex-wrap items-center justify-between gap-3 p-3 rounded-lg bg-slate-900/80 border border-sky-500/50 shadow-md">
+                  <div className="flex items-center gap-2.5 text-xs">
+                    <span className="font-bold text-sky-300 text-sm">
+                      Active Scope:
+                    </span>
+                    <span className="font-mono text-slate-200">
+                      {formatDuration(selectedRange[0])} – {formatDuration(selectedRange[1])}
+                    </span>
+                    <span className="text-slate-500">•</span>
+                    <span className="text-slate-400">
+                      Duration: <strong className="text-amber-300 font-mono">{(selectedRange[1] - selectedRange[0]).toFixed(2)}s</strong>
+                    </span>
+                    {rangeStats && (
                       <>
-                        <div className="flex flex-wrap items-center gap-2.5 text-xs">
-                          <span className="font-bold text-sky-300 text-sm">
-                            Episode #{ep.id} ({ep.kind === 'hitch' ? 'Hitch Spike' : 'Slow Region'})
-                          </span>
-                          <span className={`px-2 py-0.5 rounded border capitalize text-[11px] font-medium ${boundClass}`}>
-                            Bound by: {ep.boundBy}
-                          </span>
-                          <span className="text-slate-400">•</span>
-                          <span className="text-slate-300">
-                            Peak: <strong className="text-amber-300 font-mono">{ep.peakMs.toFixed(1)} ms</strong>
-                          </span>
-                          <span className="text-slate-400">•</span>
-                          <span className="text-slate-400">
-                            Time: {formatDuration(ep.startS)} – {formatDuration(ep.endS)} (Frames #{ep.frameFrom}–#{ep.frameTo})
-                          </span>
-                        </div>
-
-                        <div className="flex items-center gap-2 shrink-0">
-                          <span className="text-[11px] text-slate-400 hidden sm:inline">
-                            Navigate with <kbd className="px-1 py-0.5 rounded bg-slate-700 text-slate-300 text-[10px]">←</kbd>{' '}
-                            <kbd className="px-1 py-0.5 rounded bg-slate-700 text-slate-300 text-[10px]">→</kbd>
-                          </span>
-                          <button
-                            type="button"
-                            onClick={() => openInInsights()}
-                            className="flex items-center gap-1 px-2.5 py-1 rounded bg-sky-600 hover:bg-sky-500 text-white text-xs font-medium transition-colors shadow-sm"
-                          >
-                            <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
-                            </svg>
-                            <span>Inspect in Insights</span>
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => setSelectedEpisodeId(null)}
-                            title="Clear selection (Esc)"
-                            className="px-2 py-1 rounded bg-slate-700/80 hover:bg-slate-700 text-slate-300 hover:text-white text-xs transition-colors"
-                          >
-                            Clear (Esc)
-                          </button>
-                        </div>
+                        <span className="text-slate-500">•</span>
+                        <span className="text-slate-400">
+                          Frames: <strong className="text-sky-300 font-mono">{rangeStats.frameCount}</strong>
+                        </span>
                       </>
-                    );
-                  })()}
+                    )}
+                  </div>
+
+                  <div className="flex items-center gap-2 shrink-0">
+                    <button
+                      type="button"
+                      onClick={() => openInInsights()}
+                      className="flex items-center gap-1 px-2.5 py-1 rounded bg-sky-600 hover:bg-sky-500 text-white text-xs font-medium transition-colors shadow-sm"
+                    >
+                      <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
+                      </svg>
+                      <span>Inspect in Unreal Insights</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setSelectedRange([0, summary.durationS])}
+                      className="px-2 py-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white text-xs transition-colors border border-slate-700"
+                    >
+                      Entire Trace
+                    </button>
+                  </div>
                 </div>
               )}
 
-              {/* Header */}
+              {/* Findings Section Header */}
               <div className="flex items-center justify-between">
                 <div className="flex items-center gap-2">
                   <h3 className="text-xs font-semibold text-slate-300 uppercase tracking-wider">
-                    Diagnostic Findings ({findings.length})
+                    Actionable Diagnostic Findings ({scopedFindings.length})
                   </h3>
-                  {selectedEpisodeId !== null && (
+                  {selectedRange && (
                     <span className="text-[11px] text-sky-400">
-                      (Filtered to explain Episode #{selectedEpisodeId})
+                      (Scoped to active selection)
                     </span>
                   )}
                 </div>
@@ -372,16 +426,18 @@ export function TraceAnalyzerPanel() {
 
               {/* Cards List */}
               <div className="flex flex-col gap-3.5">
-                {findings.length === 0 ? (
-                  <div className="p-8 rounded-lg bg-slate-800/30 border border-slate-700/40 text-center text-xs text-slate-400">
-                    No severe performance anomalies detected against the frame budget.
+                {scopedFindings.length === 0 ? (
+                  <div className="p-8 rounded-lg bg-slate-900/40 border border-slate-800 text-center text-xs text-slate-400">
+                    No severe performance bottlenecks detected against the target frame budget in this scope.
                   </div>
                 ) : (
-                  findings.map((f: Finding) => (
+                  scopedFindings.map((f: Finding) => (
                     <FindingCard
                       key={f.id}
                       finding={f}
-                      isSelected={selectedEpisodeId !== null && f.episodeIds.includes(selectedEpisodeId)}
+                      isSelected={
+                        selectedEpisodeId !== null && f.episodeIds.includes(selectedEpisodeId)
+                      }
                       selectedEpisodeId={selectedEpisodeId}
                       episodes={episodes}
                       onSelectEpisode={setSelectedEpisodeId}
@@ -408,71 +464,48 @@ export function TraceAnalyzerPanel() {
                 </svg>
               </div>
 
-              <div className="flex flex-col gap-1">
-                <h3 className="text-base font-semibold text-slate-100">
-                  Import a Trace or Launch a Game Executable
+              <div>
+                <h3 className="text-sm font-semibold text-slate-200">
+                  Open an Unreal Trace (.utrace) or Launch Executable
                 </h3>
-                <p className="text-xs text-slate-400">
-                  Drop a <code className="text-sky-300">.utrace</code> file to analyze, or drop / select a game <code className="text-indigo-300">.exe</code> to launch with trace flags and analyze upon exit.
+                <p className="text-xs text-slate-400 mt-1">
+                  Drag and drop a trace file or game .exe here, or click one of the buttons below to begin analysis.
                 </p>
               </div>
 
-              {/* Action Buttons */}
-              <div className="flex items-center gap-3 mt-1">
+              <div className="flex items-center gap-3 mt-2">
                 <button
                   type="button"
                   onClick={handlePickFile}
-                  disabled={isAnalyzing}
-                  className="flex items-center gap-1.5 px-3.5 py-2 rounded-lg bg-sky-600 hover:bg-sky-500 disabled:opacity-50 text-white font-medium text-xs transition-colors shadow-sm"
+                  className="px-4 py-2 rounded bg-sky-600 hover:bg-sky-500 text-white text-xs font-medium transition-colors shadow-sm"
                 >
-                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12" />
-                  </svg>
-                  <span>Select .utrace File</span>
+                  Choose .utrace File...
                 </button>
-
                 <button
                   type="button"
                   onClick={handlePickExe}
-                  disabled={isAnalyzing}
-                  className="flex items-center gap-1.5 px-3.5 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white font-medium text-xs transition-colors shadow-sm"
+                  className="px-4 py-2 rounded bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-medium border border-slate-600 transition-colors shadow-sm"
                 >
-                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z" />
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-                  </svg>
-                  <span>Launch & Trace .exe</span>
+                  Launch .exe Game...
                 </button>
               </div>
 
-              {/* Recommended Trace Channels */}
-              <div className="mt-4 p-3 bg-slate-900/60 border border-slate-700/60 rounded-lg text-left text-xs text-slate-300 w-full">
-                <span className="font-semibold text-sky-300 block mb-1">Automated Capture Setup:</span>
-                <p className="text-[11px] text-slate-400 leading-relaxed">
-                  When launching an executable, the launcher applies <code className="text-amber-300 bg-slate-800 px-1 py-0.5 rounded">-trace=cpu,gpu,frame,loadtime,counters,bookmark -cpuprofilertrace</code> and writes the trace directly to the UE Trace Store directory.
-                </p>
-              </div>
-
-              {/* Candidate Quick List */}
               {candidates.length > 0 && (
-                <div className="mt-2 flex flex-col gap-1.5 w-full text-left">
-                  <span className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider">
-                    Detected Local Captures:
+                <div className="mt-4 pt-4 border-t border-slate-800 w-full text-left">
+                  <span className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider block mb-2">
+                    Recent Traces ({candidates.length}):
                   </span>
-                  <div className="flex flex-col gap-1 max-h-48 overflow-y-auto pr-1">
+                  <div className="flex flex-col gap-1.5 max-h-[160px] overflow-y-auto pr-1">
                     {candidates.slice(0, 5).map((c: TraceCandidate) => (
                       <button
                         key={c.path}
                         type="button"
                         onClick={() => openTrace(c.path)}
-                        className="flex items-center justify-between p-2 rounded bg-slate-800/60 hover:bg-slate-700/60 border border-slate-700/50 text-xs text-left transition-colors"
+                        className="flex items-center justify-between p-2 rounded bg-slate-800/60 hover:bg-slate-800 border border-slate-700/60 text-xs transition-colors text-left"
                       >
-                        <div className="flex flex-col truncate pr-2">
-                          <span className="font-medium text-slate-200 truncate">{c.fileName}</span>
-                          <span className="text-[10px] text-slate-400 truncate">{c.path}</span>
-                        </div>
-                        <span className="text-[10px] text-slate-400 shrink-0">
-                          {(c.sizeBytes / (1024 * 1024)).toFixed(1)} MB
+                        <span className="text-slate-200 truncate font-mono text-[11px]">{c.fileName}</span>
+                        <span className="text-[10px] text-slate-400 px-1.5 py-0.5 rounded bg-slate-700/60 ml-2 shrink-0">
+                          {c.source}
                         </span>
                       </button>
                     ))}
@@ -484,62 +517,47 @@ export function TraceAnalyzerPanel() {
         )}
       </div>
 
-      {/* Launch Executable Configuration Modal */}
+      {/* Launch Game Modal */}
       {showLaunchModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/70 backdrop-blur-sm p-4">
-          <div className="bg-slate-900 border border-slate-700 rounded-xl max-w-lg w-full p-5 shadow-2xl flex flex-col gap-4 text-xs">
-            <div className="flex items-center justify-between pb-2 border-b border-slate-800">
-              <div className="flex items-center gap-2">
-                <div className="p-1.5 rounded-lg bg-indigo-950 border border-indigo-700/50 text-indigo-400">
-                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z" />
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-                  </svg>
-                </div>
-                <h3 className="text-sm font-semibold text-slate-100">Launch & Profile Game</h3>
-              </div>
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm p-4">
+          <div className="bg-slate-900 border border-slate-700 rounded-xl p-5 max-w-md w-full shadow-2xl flex flex-col gap-4">
+            <div className="flex items-center justify-between">
+              <h3 className="text-sm font-bold text-slate-100 flex items-center gap-2">
+                <span>🎮</span> Launch Game with Trace Recording
+              </h3>
               <button
                 type="button"
                 onClick={() => setShowLaunchModal(false)}
-                className="text-slate-400 hover:text-slate-200 text-base font-bold"
+                className="text-slate-400 hover:text-slate-200 text-sm"
               >
                 ✕
               </button>
             </div>
 
-            <div className="flex flex-col gap-3">
+            <div className="flex flex-col gap-2.5 text-xs text-slate-300">
               <div>
-                <span className="text-slate-400 block mb-1 font-medium">Selected Executable:</span>
-                <div className="p-2 rounded bg-slate-800/80 border border-slate-700 text-slate-200 font-mono text-[11px] break-all select-text">
+                <label className="block text-slate-400 mb-1">Executable Path:</label>
+                <div className="p-2 rounded bg-slate-800 border border-slate-700 text-slate-200 font-mono text-[11px] truncate">
                   {selectedExePath}
                 </div>
               </div>
 
               <div>
-                <span className="text-slate-400 block mb-1 font-medium">Automatic Trace Flags:</span>
-                <div className="p-2 rounded bg-slate-950/60 border border-slate-800 text-amber-300 font-mono text-[11px] select-text">
-                  -trace=cpu,gpu,frame,loadtime,counters,bookmark -cpuprofilertrace -tracefile=&lt;UE_Trace_Store&gt;
-                </div>
-                <p className="text-[10px] text-slate-500 mt-1">
-                  Traces will be stored in the default Unreal Engine trace store and automatically analyzed once the game exits.
-                </p>
-              </div>
-
-              <div>
-                <label htmlFor="custom-game-args" className="text-slate-400 block mb-1 font-medium">
-                  Additional Arguments (Optional):
-                </label>
+                <label className="block text-slate-400 mb-1">Additional Command Line Arguments:</label>
                 <input
-                  id="custom-game-args"
                   type="text"
                   value={customArgs}
                   onChange={(e) => setCustomArgs(e.target.value)}
-                  placeholder="e.g. -windowed -ResX=1920 -ResY=1080 -log"
-                  className="w-full bg-slate-800 border border-slate-600 rounded px-3 py-1.5 text-xs text-slate-200 placeholder-slate-500 focus:ring-1 focus:ring-indigo-500 focus:outline-none"
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter') handleConfirmLaunch();
-                  }}
+                  placeholder="-WINDOWED -ResX=1920 -ResY=1080 -novsync"
+                  className="w-full bg-slate-800 border border-slate-700 rounded p-2 text-slate-200 focus:outline-none focus:ring-1 focus:ring-sky-500 font-mono text-xs"
                 />
+              </div>
+
+              <div className="p-2.5 rounded bg-slate-800/60 border border-slate-700/60 text-[11px] text-slate-400">
+                Automatically appends Unreal Trace flags:
+                <code className="text-sky-300 block mt-1 font-mono text-[10px]">
+                  -trace=default,frame,cpu,gpu,bookmark -statnamedevents
+                </code>
               </div>
             </div>
 
@@ -547,19 +565,16 @@ export function TraceAnalyzerPanel() {
               <button
                 type="button"
                 onClick={() => setShowLaunchModal(false)}
-                className="px-3 py-1.5 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-medium transition-colors"
+                className="px-3 py-1.5 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs transition-colors"
               >
                 Cancel
               </button>
               <button
                 type="button"
                 onClick={handleConfirmLaunch}
-                className="flex items-center gap-1.5 px-4 py-1.5 rounded bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-medium transition-colors shadow-sm"
+                className="px-4 py-1.5 rounded bg-emerald-600 hover:bg-emerald-500 text-white font-medium text-xs transition-colors shadow-sm"
               >
-                <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z" />
-                </svg>
-                <span>Launch & Monitor</span>
+                Launch & Monitor
               </button>
             </div>
           </div>

@@ -90,6 +90,8 @@ pub fn run() {
             commands::trace_analyzer::trace_cancel,
             commands::trace_analyzer::trace_get_summary,
             commands::trace_analyzer::trace_get_frame_series,
+            commands::trace_analyzer::trace_get_bookmarks,
+            commands::trace_analyzer::trace_get_range_statistics,
             commands::trace_analyzer::trace_get_episodes,
             commands::trace_analyzer::trace_get_findings,
             commands::trace_analyzer::trace_get_episode_detail,

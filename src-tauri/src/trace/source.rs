@@ -15,6 +15,7 @@ pub struct PassAOutputs {
     pub threads_csv: PathBuf,
     pub timers_csv: PathBuf,
     pub frames_csv: PathBuf,
+    pub bookmarks_csv: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone)]

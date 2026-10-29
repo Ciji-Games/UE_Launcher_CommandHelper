@@ -1,91 +1,91 @@
 [
   {
-    "pattern": "^(FEngineLoop_UpdateTimeAndHandleMaxTickRate$|FEngineLoop::UpdateTimeAndHandleMaxTickRate$|WaitForNextFrame$)",
+    "pattern": "^(?i)(FEngineLoop_UpdateTimeAndHandleMaxTickRate$|FEngineLoop::UpdateTimeAndHandleMaxTickRate$|WaitForNextFrame$|FrameLimiter|Engine_FrameLimiter)",
     "bucket": "Idle",
     "kind": "idle"
   },
   {
-    "pattern": "^(ReflexSleep|NvReflexSleep|NvLowLatencySleep|WaitForTasks|WaitUntilTasksComplete|ProcessUntilTasksComplete|FRenderCommandFence|GpuWait|WaitForFrame|TaskWorkerIsLookingForWork|FTaskGraphImplementation::WaitUntilTasksComplete|FQueuedThreadPoolWrapper::WaitForWork|FEvent::Wait)",
+    "pattern": "^(?i)(ReflexSleep|NvReflexSleep|NvLowLatencySleep|WaitForTasks|WaitUntilTasksComplete|ProcessUntilTasksComplete|FRenderCommandFence|GpuWait|WaitForFrame|TaskWorkerIsLookingForWork|FTaskGraphImplementation::WaitUntilTasksComplete|FQueuedThreadPoolWrapper::WaitForWork|FEvent::Wait|FRHICommandListExecutor::Wait|WaitUntilIdle)",
     "bucket": "Wait",
     "kind": "wait"
   },
   {
-    "pattern": "^(UEditorEngine::Tick|FEditorViewportClient|FUnrealEdEngine|EditorInit|MainFrame|FEditorPerformance|LevelEditor|ContentBrowser|AssetEditor)",
+    "pattern": "^(?i)(UEditorEngine::Tick|FEditorViewportClient|FUnrealEdEngine|EditorInit|MainFrame|FEditorPerformance|LevelEditor|ContentBrowser|AssetEditor|EditorTick|EditorUpdate)",
     "bucket": "Editor",
     "kind": "editor_only"
   },
   {
-    "pattern": "^(Slate::|SViewport|DrawWindow|Prepass|PaintSlowPath|Slate_PaintSlowPath|FSlateApplication::|SWidget::Paint|SCompoundWidget|SPanel|SOverlay|SBox|STextBlock|SImage|SButton|WBP_)",
+    "pattern": "^(?i)(Slate::|Slate|SViewport|DrawWindow|DrawWindows|Prepass|PaintSlowPath|Slate_PaintSlowPath|FSlateApplication|SWidget|SCompoundWidget|SPanel|SOverlay|SBox|STextBlock|SImage|SButton|WBP_|UMG|UUserWidget|WidgetRenderer|CanvasRender)",
     "bucket": "UI / Slate",
     "kind": "work"
   },
   {
-    "pattern": "^(CollectGarbage|PerformReachabilityAnalysis|IncrementalPurgeGarbage|ConditionalBeginDestroy|FinishDestroy|FGCArrayPool|GarbageCollection)",
+    "pattern": "^(?i)(CollectGarbage|PerformReachabilityAnalysis|IncrementalPurgeGarbage|ConditionalBeginDestroy|FinishDestroy|FGCArrayPool|GarbageCollection|GarbageCollect|UnhashUnreachableObjects|ProcessUnhashedObjects|DeleteObjects|PurgeGarbage|GCObject|UObjectAllocator)",
     "bucket": "GC",
     "kind": "work"
   },
   {
-    "pattern": "^(ExecuteUbergraph_|ProcessEvent|BlueprintTime|UFunction::Invoke|ProcessLocalScriptFunction|BP_|Function |.*_C::|.*::ReceiveTick|.*::UserConstructionScript)",
+    "pattern": "^(?i)(ExecuteUbergraph_|ProcessEvent|BlueprintTime|UFunction::Invoke|ProcessLocalScriptFunction|BP_|Function |.*_C::|.*::ReceiveTick|.*::UserConstructionScript|.*::ReceiveBeginPlay|.*::ReceiveAnyDamage|K2_|Blueprint|CallFunction|ScriptContext)",
     "bucket": "Blueprint",
     "kind": "work"
   },
   {
-    "pattern": "^(ShaderCompilingManager|ProcessAsyncResults|CompileGlobalShaderMap|FinishAllCompilation|FShaderCompilingManager::|CompileShaders)",
+    "pattern": "^(?i)(ShaderCompilingManager|ProcessAsyncResults|CompileGlobalShaderMap|FinishAllCompilation|FShaderCompilingManager|CompileShaders|ShaderCompile|ShaderCompilation)",
     "bucket": "ShaderCompile/PSO",
     "kind": "work"
   },
   {
-    "pattern": "^(PipelineStateCache|CreateGraphicsPipelineState|CreateComputePipelineState|FPipelineFileCache|PSOPrecache|RHICreateGraphicsPipelineState)",
+    "pattern": "^(?i)(PipelineStateCache|CreateGraphicsPipelineState|CreateComputePipelineState|FPipelineFileCache|PSOPrecache|RHICreateGraphicsPipelineState|PSO|PipelineCache)",
     "bucket": "ShaderCompile/PSO",
     "kind": "work"
   },
   {
-    "pattern": "^(FlushAsyncLoading|LoadPackage|StaticLoadObject|LoadObject|LoadSynchronous|PostLoad|FAsyncLoadingThread|SerializeImports|CreateExport|Serialize:|LoadPackage:)",
+    "pattern": "^(?i)(FlushAsyncLoading|LoadPackage|StaticLoadObject|LoadObject|LoadSynchronous|PostLoad|FAsyncLoadingThread|SerializeImports|CreateExport|Serialize:|LoadPackage:|AsyncLoading|IoStore|Zen|PackageLocalization|PackageStore)",
     "bucket": "Loading",
     "kind": "work"
   },
   {
-    "pattern": "^(SpawnActor|FinishSpawning|PostSpawnInitialize|RegisterAllComponents|OnRegister|UserConstructionScript|BeginPlay|UWorld::SpawnActor)",
+    "pattern": "^(?i)(SpawnActor|FinishSpawning|PostSpawnInitialize|RegisterAllComponents|OnRegister|UserConstructionScript|BeginPlay|UWorld::SpawnActor|DuplicateObject|NewObject)",
     "bucket": "Spawning",
     "kind": "work"
   },
   {
-    "pattern": "^(Chaos|PhysScene|StartPhysics|EndPhysics|SolverAdvance|LineTrace|SweepMulti|OverlapMulti|Chaos_PhysicsParallelFor)",
+    "pattern": "^(?i)(Chaos|PhysScene|StartPhysics|EndPhysics|SolverAdvance|LineTrace|SweepMulti|OverlapMulti|Chaos_PhysicsParallelFor|Physics|PhysX|RigidBody|Collision|AsyncPhysics)",
     "bucket": "Physics",
     "kind": "work"
   },
   {
-    "pattern": "^(SkeletalMeshComponent|TickPose|RefreshBoneTransforms|EvaluateAnimation|AnimGraph|UpdateAnimation|AnimInstance)",
+    "pattern": "^(?i)(SkeletalMeshComponent|TickPose|RefreshBoneTransforms|EvaluateAnimation|AnimGraph|UpdateAnimation|AnimInstance|SkeletalMesh|MorphTarget|BlendStack|ControlRig|PoseSearch|IKRig|AnimationBudgetAllocator|ParallelAnimation)",
     "bucket": "Animation",
     "kind": "work"
   },
   {
-    "pattern": "^(Niagara|FNiagaraSystemInstance|NiagaraSimulation|UNiagaraComponent)",
+    "pattern": "^(?i)(Niagara|FNiagaraSystemInstance|NiagaraSimulation|UNiagaraComponent|ParticleSystem|Cascade|FXSystem|Emitter)",
     "bucket": "Niagara/FX",
     "kind": "work"
   },
   {
-    "pattern": "^(InitViews|ComputeVisibility|GatherDynamicMeshElements|FRelevancePacket|ShadowSetup|Render_BeginFrame|Render_EndFrame|FrameRenderFinish)",
+    "pattern": "^(?i)(InitViews|ComputeVisibility|GatherDynamicMeshElements|FRelevancePacket|ShadowSetup|Render_BeginFrame|Render_EndFrame|FrameRenderFinish|RenderScene|BeginRenderingSceneColor|FinishRenderingSceneColor|Present|ViewExtension|SceneCapture|SceneCaptureComponent|RenderViewFamily|RenderViewFamilies|FSceneRenderer|FDeferredShadingSceneRenderer|DrawDynamicMeshElements|ParallelDraw|ParallelMeshDraw|ParallelTranslate|Parallel\\s*Draw|Parallel\\s*Mesh|FParallelMeshDrawCommandPass|MeshDraw|MeshPass|FMeshDrawCommand|SubmitMeshDrawCommands|DispatchMeshDrawCommands|DrawMeshCommands|MeshDrawCommandPass)",
     "bucket": "Render CPU",
     "kind": "work"
   },
   {
-    "pattern": "^(RHI_|SubmissionQueue_Process|RHIBeginFrame|RHIEndFrame|FD3D12CommandListHandle)",
+    "pattern": "^(?i)(RHI_|RHICmdList|FRHICommandList|FRHICommandListExecutor|ExecuteCommandList|SubmitCommands|SubmissionQueue|SubmissionQueue_Process|RHIBeginFrame|RHIEndFrame|FD3D12|D3D12|Vulkan|Metal|OpenGL|RHITick|RHIEndDrawingViewFamily|RHIAdvanceFrameForRendering)",
     "bucket": "RHI",
     "kind": "work"
   },
   {
-    "pattern": "^(Lumen|Nanite|ShadowDepths|BasePass|Translucency|PostProcess|TemporalSuperResolution|TSR|DLSS|XeSS|FSR)",
+    "pattern": "^(?i)(Scene$|SceneRender|Scene\\s*Render|SceneRendering|Scene\\s*Rendering|Scene_Render|Lumen|Nanite|Shadow|Shadows|ShadowDepths|ShadowProjection|VirtualShadowMap|VirtualShadowMaps|VSM|LightGrid|DirectLighting|IndirectLighting|InjectLight|TiledDeferred|ClusteredDeferred|BasePass|BasePassParallel|PrePass|PrePassParallel|EarlyZ|DepthPrepass|Translucency|Translucent|Decals|CustomDepth|CustomStencil|Velocity|RenderVelocities|PostProcess|PostProcessing|PostProcessTonemap|Tonemap|ContrastAdaptive|ContrastAdaptiveShading|ContrastAdaptiveSharpening|Contrast\\s*Adaptive|CAS$|CAS\\s*|Bloom|MotionBlur|AutoExposure|EyeAdaptation|ColorGrading|DOF|DepthOfField|Vignette|SSR|ScreenSpace|SubsurfaceScattering|SSSS|GTAO|HBAO|SSAO|AmbientOcclusion|TemporalSuperResolution|TSR|TAA|TemporalAA|DLSS|XeSS|FSR|AntiAliasing|RayTracing|Substrate|Strata|VolumetricFog|VolumetricCloud|SkyAtmosphere|Atmosphere|HairRendering|HairStrands)",
     "bucket": "GPU",
     "kind": "work"
   },
   {
-    "pattern": "^(UpdateLevelStreaming|AddToWorld|IncrementalUpdateComponents|RouteActorInitialize|WorldPartition)",
+    "pattern": "^(?i)(UpdateLevelStreaming|AddToWorld|IncrementalUpdateComponents|RouteActorInitialize|WorldPartition|WP_|WorldPartitionStreaming|LevelStreaming)",
     "bucket": "Streaming",
     "kind": "work"
   },
   {
-    "pattern": "^(RenderAssetStreaming|UpdateStreamingRenderAssets|FStreamingManagerTexture)",
+    "pattern": "^(?i)(RenderAssetStreaming|UpdateStreamingRenderAssets|FStreamingManagerTexture|StreamingManager|TextureStreaming|MeshStreaming|NaniteStreaming|VirtualTexture)",
     "bucket": "Streaming",
     "kind": "work"
   },

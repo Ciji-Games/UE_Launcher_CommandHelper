@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import type { Episode, FrameSeriesResponse } from '../../types/traceAnalyzer';
+import type { Episode, FrameSeriesResponse, TraceBookmark } from '../../types/traceAnalyzer';
 
 interface FrameGraphProps {
   durationS: number;
@@ -7,6 +7,9 @@ interface FrameGraphProps {
   episodes: Episode[];
   selectedEpisodeId: number | null;
   onSelectEpisode: (id: number | null) => void;
+  bookmarks?: TraceBookmark[];
+  selectedRange?: [number, number] | null;
+  onSelectRange?: (range: [number, number] | null) => void;
   fetchFrameSeries: (startS: number, endS: number, maxItems?: number) => Promise<FrameSeriesResponse | null>;
 }
 
@@ -29,6 +32,9 @@ export function FrameGraph({
   episodes,
   selectedEpisodeId,
   onSelectEpisode,
+  bookmarks = [],
+  selectedRange = null,
+  onSelectRange,
   fetchFrameSeries,
 }: FrameGraphProps) {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -65,17 +71,14 @@ export function FrameGraph({
     gameMs?: number;
     renderMs?: number;
     gpuMs?: number;
+    bookmarkName?: string;
   } | null>(null);
 
-  // Drag / pan state
-  const isDraggingRef = useRef(false);
+  // Drag / pan / selection interaction mode state
+  const dragModeRef = useRef<'none' | 'pan' | 'brush' | 'handle_left' | 'handle_right'>('none');
   const dragStartXRef = useRef(0);
   const dragStartRangeRef = useRef<[number, number]>([0, 1]);
-
-  // Selection range (shift + drag)
-  const [selectionRange, setSelectionRange] = useState<[number, number] | null>(null);
-  const isSelectingRef = useRef(false);
-  const selectStartXRef = useRef(0);
+  const dragStartSelectedRef = useRef<[number, number] | null>(null);
 
   // Fetch frame series data whenever view range changes
   useEffect(() => {
@@ -95,6 +98,24 @@ export function FrameGraph({
       clearTimeout(timer);
     };
   }, [viewRange, fetchFrameSeries]);
+
+  const pixelToTime = useCallback((px: number, totalW: number) => {
+    const padL = 45;
+    const padR = 20;
+    const graphW = Math.max(totalW - padL - padR, 1);
+    const ratio = Math.max(0, Math.min(1, (px - padL) / graphW));
+    const [vStart, vEnd] = viewRange;
+    return vStart + ratio * (vEnd - vStart);
+  }, [viewRange]);
+
+  const timeToPixel = useCallback((t: number, totalW: number) => {
+    const padL = 45;
+    const padR = 20;
+    const graphW = Math.max(totalW - padL - padR, 1);
+    const [vStart, vEnd] = viewRange;
+    const vDuration = Math.max(vEnd - vStart, 0.001);
+    return padL + ((t - vStart) / vDuration) * graphW;
+  }, [viewRange]);
 
   // Canvas drawing
   const renderCanvas = useCallback(() => {
@@ -117,14 +138,13 @@ export function FrameGraph({
     // Padding
     const padL = 45;
     const padR = 20;
-    const padT = 20;
+    const padT = 24; // Extra space for bookmark pins
     const padB = 25;
 
     const graphW = width - padL - padR;
     const graphH = height - padT - padB;
 
     // Determine max Y scale (ms)
-    // We use p99.5 auto-scaling by default so rare multi-second hitches do not crush 99% of normal frames.
     let maxY = Math.max(targetMs * 4.2, 45.0);
     let absoluteMaxMs = maxY;
 
@@ -136,7 +156,6 @@ export function FrameGraph({
         if (scaleMode === 'fit') {
           maxY = Math.max(maxY, absoluteMaxMs * 1.12);
         } else {
-          // p99.5 auto-scaling gives high vertical resolution to normal frames
           const sortedAvgs = seriesData.buckets.map((b) => b.avgMs).sort((a, b) => a - b);
           const p99_5 = sortedAvgs[Math.floor(sortedAvgs.length * 0.995)] ?? sortedAvgs[sortedAvgs.length - 1];
           maxY = Math.max(maxY, p99_5 * 1.35);
@@ -188,13 +207,13 @@ export function FrameGraph({
     }
     ctx.setLineDash([]);
 
-    // Draw Slow Region shaded bands
+    // Draw Slow Region shaded bands (episodes)
     for (const ep of episodes) {
       if (ep.kind === 'slow_region') {
         const x1 = Math.max(timeToX(ep.startS), padL);
         const x2 = Math.min(timeToX(ep.endS), padL + graphW);
         if (x2 > x1) {
-          ctx.fillStyle = ep.id === selectedEpisodeId ? 'rgba(245, 158, 11, 0.25)' : 'rgba(245, 158, 11, 0.12)';
+          ctx.fillStyle = ep.id === selectedEpisodeId ? 'rgba(245, 158, 11, 0.25)' : 'rgba(245, 158, 11, 0.10)';
           ctx.fillRect(x1, padT, x2 - x1, graphH);
         }
       }
@@ -203,7 +222,6 @@ export function FrameGraph({
     // Draw Frame Series (Buckets or Individual Points)
     if (seriesData) {
       if (seriesData.isBucketed && seriesData.buckets.length > 0) {
-        // Draw min-max bars and average line
         for (const b of seriesData.buckets) {
           const x1 = timeToX(b.t0);
           const x2 = timeToX(b.t1);
@@ -214,7 +232,6 @@ export function FrameGraph({
           const yMax = msToY(b.maxMs);
           const yAvg = msToY(b.avgMs);
 
-          // Color based on avgMs vs target
           let barColor = 'rgba(56, 189, 248, 0.75)'; // sky
           let maxRangeColor = 'rgba(56, 189, 248, 0.25)';
           if (b.avgMs >= targetMs * 2) {
@@ -225,17 +242,17 @@ export function FrameGraph({
             maxRangeColor = 'rgba(245, 158, 11, 0.3)';
           }
 
-          // 1. Min-max range bar (lighter background)
+          // 1. Min-max range bar
           ctx.fillStyle = maxRangeColor;
           ctx.fillRect(x1, yMax, barW, Math.max(baseBottomY - yMax, 1));
 
-          // 2. Average body bar from bottom up to yAvg
+          // 2. Average body bar
           ctx.fillStyle = barColor;
           ctx.fillRect(x1, yAvg, barW, Math.max(baseBottomY - yAvg, 1));
 
-          // 3. Top peak indicator or off-scale chevron cap
+          // 3. Top peak indicator
           if (isOffScale) {
-            ctx.fillStyle = '#ef4444'; // Red cap for off-scale hitch
+            ctx.fillStyle = '#ef4444';
             ctx.fillRect(x1, padT, barW, 2.5);
             if (barW >= 6) {
               ctx.fillStyle = '#fca5a5';
@@ -249,7 +266,6 @@ export function FrameGraph({
           }
         }
       } else if (!seriesData.isBucketed && seriesData.points.length > 0) {
-        // Individual frame bars
         const points = seriesData.points;
         const ptWidth = Math.max(graphW / Math.max(points.length, 1), 1.5);
 
@@ -278,7 +294,6 @@ export function FrameGraph({
             ctx.fillText('▲', x, padT - 2);
           }
 
-          // Optional sub-stages
           if (showGame && p.gameMs) {
             const gy = msToY(p.gameMs);
             ctx.fillStyle = '#34d399'; // emerald
@@ -326,16 +341,82 @@ export function FrameGraph({
       }
     }
 
-    // Draw selection overlay
-    if (selectionRange) {
-      const [s0, s1] = selectionRange;
-      const sx1 = Math.max(timeToX(Math.min(s0, s1)), padL);
-      const sx2 = Math.min(timeToX(Math.max(s0, s1)), padL + graphW);
+    // Draw Engine Bookmarks (Triangle Pins & Vertical Guide Lines)
+    for (const bm of bookmarks) {
+      const bx = timeToX(bm.startS);
+      if (bx >= padL - 10 && bx <= padL + graphW + 10) {
+        // Vertical dashed pin guideline
+        ctx.strokeStyle = 'rgba(168, 85, 247, 0.45)'; // Purple accent
+        ctx.lineWidth = 1;
+        ctx.setLineDash([2, 3]);
+        ctx.beginPath();
+        ctx.moveTo(bx, padT);
+        ctx.lineTo(bx, padT + graphH);
+        ctx.stroke();
+        ctx.setLineDash([]);
+
+        // Top Triangle Pin (pointing down into the graph)
+        ctx.fillStyle = '#c084fc';
+        ctx.beginPath();
+        ctx.moveTo(bx, padT);
+        ctx.lineTo(bx - 5, padT - 8);
+        ctx.lineTo(bx + 5, padT - 8);
+        ctx.closePath();
+        ctx.fill();
+
+        // Pin badge circle
+        ctx.fillStyle = '#7e22ce';
+        ctx.beginPath();
+        ctx.arc(bx, padT - 11, 4, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.strokeStyle = '#e9d5ff';
+        ctx.lineWidth = 1;
+        ctx.stroke();
+      }
+    }
+
+    // Draw Selected Range (Brushing Box & Drag Handles)
+    if (selectedRange) {
+      const [s0, s1] = selectedRange;
+      const minS = Math.min(s0, s1);
+      const maxS = Math.max(s0, s1);
+
+      const sx1 = Math.max(timeToX(minS), padL);
+      const sx2 = Math.min(timeToX(maxS), padL + graphW);
+
       if (sx2 > sx1) {
-        ctx.fillStyle = 'rgba(56, 189, 248, 0.2)';
+        // Selection shaded background
+        ctx.fillStyle = 'rgba(56, 189, 248, 0.16)';
         ctx.fillRect(sx1, padT, sx2 - sx1, graphH);
+
+        // Selection boundary borders
         ctx.strokeStyle = '#38bdf8';
+        ctx.lineWidth = 1.5;
         ctx.strokeRect(sx1, padT, sx2 - sx1, graphH);
+
+        // Left Handle Bar & Grip
+        ctx.fillStyle = '#38bdf8';
+        ctx.fillRect(sx1 - 2, padT + graphH / 2 - 12, 4, 24);
+
+        // Right Handle Bar & Grip
+        ctx.fillRect(sx2 - 2, padT + graphH / 2 - 12, 4, 24);
+
+        // Top range pill label inside graph
+        const rangeDur = maxS - minS;
+        const pillText = `${formatTime(minS)} – ${formatTime(maxS)} (${rangeDur.toFixed(2)}s)`;
+        ctx.font = '10px monospace';
+        const textW = ctx.measureText(pillText).width;
+        const pillX = Math.max(padL + 4, Math.min(padL + graphW - textW - 12, (sx1 + sx2) / 2 - textW / 2 - 4));
+
+        ctx.fillStyle = 'rgba(15, 23, 42, 0.85)';
+        ctx.fillRect(pillX, padT + 4, textW + 8, 16);
+        ctx.strokeStyle = 'rgba(56, 189, 248, 0.6)';
+        ctx.lineWidth = 1;
+        ctx.strokeRect(pillX, padT + 4, textW + 8, 16);
+
+        ctx.fillStyle = '#38bdf8';
+        ctx.textAlign = 'left';
+        ctx.fillText(pillText, pillX + 4, padT + 16);
       }
     }
 
@@ -359,7 +440,19 @@ export function FrameGraph({
     ctx.stroke();
 
     ctx.restore();
-  }, [viewRange, seriesData, targetMs, episodes, selectedEpisodeId, selectionRange, showGame, showRender, showGpu, scaleMode]);
+  }, [
+    viewRange,
+    seriesData,
+    targetMs,
+    episodes,
+    selectedEpisodeId,
+    bookmarks,
+    selectedRange,
+    showGame,
+    showRender,
+    showGpu,
+    scaleMode,
+  ]);
 
   // Handle ResizeObserver & Canvas resolution
   useEffect(() => {
@@ -396,7 +489,7 @@ export function FrameGraph({
     renderCanvas();
   }, [renderCanvas]);
 
-  // Mouse wheel zoom (native non-passive event listener)
+  // Mouse wheel zoom
   useEffect(() => {
     const container = containerRef.current;
     if (!container) return;
@@ -441,7 +534,7 @@ export function FrameGraph({
     };
   }, [viewRange, durationS, setViewRange]);
 
-  // Mouse down: drag pan or shift selection
+  // Mouse down interaction
   const handleMouseDown = (e: React.MouseEvent) => {
     const canvas = canvasRef.current;
     if (!canvas) return;
@@ -449,25 +542,50 @@ export function FrameGraph({
     const rect = canvas.getBoundingClientRect();
     const x = e.clientX - rect.left;
 
-    if (e.shiftKey) {
-      isSelectingRef.current = true;
-      selectStartXRef.current = x;
-      const t = pixelToTime(x, rect.width);
-      setSelectionRange([t, t]);
-    } else {
-      isDraggingRef.current = true;
+    // Check if middle click or Alt/Space key: Pan mode
+    if (e.button === 1 || e.altKey) {
+      dragModeRef.current = 'pan';
       dragStartXRef.current = e.clientX;
       dragStartRangeRef.current = [...viewRange];
+      return;
     }
-  };
 
-  const pixelToTime = (px: number, totalW: number) => {
-    const padL = 45;
-    const padR = 20;
-    const graphW = totalW - padL - padR;
-    const ratio = Math.max(0, Math.min(1, (px - padL) / graphW));
-    const [vStart, vEnd] = viewRange;
-    return vStart + ratio * (vEnd - vStart);
+    // Check if clicking near bookmarks (within 10px)
+    const hitBookmark = bookmarks.find((bm) => {
+      const bx = timeToPixel(bm.startS, rect.width);
+      return Math.abs(x - bx) < 10;
+    });
+
+    if (hitBookmark) {
+      const bStart = Math.max(0, hitBookmark.startS - 2.5);
+      const bEnd = Math.min(durationS, hitBookmark.startS + Math.max(hitBookmark.durationS, 2.5));
+      onSelectRange?.([bStart, bEnd]);
+      return;
+    }
+
+    // Check if clicking near selection handles
+    if (selectedRange) {
+      const [s0, s1] = selectedRange;
+      const minS = Math.min(s0, s1);
+      const maxS = Math.max(s0, s1);
+      const pxLeft = timeToPixel(minS, rect.width);
+      const pxRight = timeToPixel(maxS, rect.width);
+
+      if (Math.abs(x - pxLeft) < 8) {
+        dragModeRef.current = 'handle_left';
+        dragStartSelectedRef.current = [minS, maxS];
+        return;
+      }
+      if (Math.abs(x - pxRight) < 8) {
+        dragModeRef.current = 'handle_right';
+        dragStartSelectedRef.current = [minS, maxS];
+        return;
+      }
+    }
+
+    // Otherwise: Start Primary Range Brushing (do not fire onSelectRange yet until drag or click completion)
+    dragModeRef.current = 'brush';
+    dragStartXRef.current = x;
   };
 
   const handleMouseMove = (e: React.MouseEvent) => {
@@ -475,12 +593,20 @@ export function FrameGraph({
     if (!canvas) return;
     const rect = canvas.getBoundingClientRect();
     const x = e.clientX - rect.left;
+    const currentT = pixelToTime(x, rect.width);
 
-    if (isSelectingRef.current) {
-      const t0 = pixelToTime(selectStartXRef.current, rect.width);
-      const t1 = pixelToTime(x, rect.width);
-      setSelectionRange([t0, t1]);
-    } else if (isDraggingRef.current) {
+    if (dragModeRef.current === 'brush') {
+      if (Math.abs(x - dragStartXRef.current) >= 3) {
+        const t0 = pixelToTime(dragStartXRef.current, rect.width);
+        onSelectRange?.([Math.min(t0, currentT), Math.max(t0, currentT)]);
+      }
+    } else if (dragModeRef.current === 'handle_left' && dragStartSelectedRef.current) {
+      const [, rightS] = dragStartSelectedRef.current;
+      onSelectRange?.([Math.min(currentT, rightS - 0.01), rightS]);
+    } else if (dragModeRef.current === 'handle_right' && dragStartSelectedRef.current) {
+      const [leftS] = dragStartSelectedRef.current;
+      onSelectRange?.([leftS, Math.max(currentT, leftS + 0.01)]);
+    } else if (dragModeRef.current === 'pan') {
       const deltaPx = e.clientX - dragStartXRef.current;
       const graphW = rect.width - 65;
       const [startRange0, startRange1] = dragStartRangeRef.current;
@@ -501,10 +627,27 @@ export function FrameGraph({
 
       setViewRange([newStart, newEnd]);
     } else {
-      // Hover tooltip info
-      const t = pixelToTime(x, rect.width);
+      // Hover Tooltip Info
+      // 1. Check bookmark hover
+      const hitBm = bookmarks.find((bm) => {
+        const bx = timeToPixel(bm.startS, rect.width);
+        return Math.abs(x - bx) < 8;
+      });
+
+      if (hitBm) {
+        setHoverInfo({
+          x: e.clientX - rect.left,
+          y: e.clientY - rect.top,
+          timeS: hitBm.startS,
+          frameMs: 0,
+          bookmarkName: hitBm.name,
+        });
+        return;
+      }
+
+      // 2. Check frame data hover
       if (seriesData && !seriesData.isBucketed) {
-        const hoveredPoint = seriesData.points.find((p) => Math.abs(p.t - t) < 0.05);
+        const hoveredPoint = seriesData.points.find((p) => Math.abs(p.t - currentT) < 0.05);
         if (hoveredPoint) {
           setHoverInfo({
             x: e.clientX - rect.left,
@@ -519,7 +662,7 @@ export function FrameGraph({
           setHoverInfo(null);
         }
       } else if (seriesData && seriesData.isBucketed) {
-        const bucket = seriesData.buckets.find((b) => t >= b.t0 && t <= b.t1);
+        const bucket = seriesData.buckets.find((b) => currentT >= b.t0 && currentT <= b.t1);
         if (bucket) {
           setHoverInfo({
             x: e.clientX - rect.left,
@@ -539,38 +682,135 @@ export function FrameGraph({
   };
 
   const handleMouseUp = (e: React.MouseEvent) => {
-    if (isSelectingRef.current) {
-      isSelectingRef.current = false;
-    }
-    if (isDraggingRef.current) {
-      isDraggingRef.current = false;
-    }
+    const wasBrushing = dragModeRef.current === 'brush';
+    const isDrag = dragModeRef.current !== 'none';
+    dragModeRef.current = 'none';
 
-    // Click to select episode
+    if (!isDrag) return;
+
     const canvas = canvasRef.current;
     if (!canvas) return;
     const rect = canvas.getBoundingClientRect();
     const x = e.clientX - rect.left;
     const t = pixelToTime(x, rect.width);
 
-    const hitEpisode = episodes.find((ep) => t >= ep.startS - 0.05 && t <= ep.endS + 0.05);
-    if (hitEpisode) {
-      onSelectEpisode(hitEpisode.id);
+    if (wasBrushing) {
+      if (Math.abs(x - dragStartXRef.current) < 4) {
+        // Single tap / click:
+        // 1. Check if clicking on an episode marker/region
+        const hitEpisode = episodes.find((ep) => t >= ep.startS - 0.1 && t <= ep.endS + 0.1);
+        if (hitEpisode) {
+          onSelectEpisode(hitEpisode.id);
+          onSelectRange?.([hitEpisode.startS, hitEpisode.endS]);
+        } else {
+          // Scope a comfortable 3-second context window around the clicked timestamp
+          const halfWin = 1.5;
+          const wStart = Math.max(0, t - halfWin);
+          const wEnd = Math.min(durationS, t + halfWin);
+          onSelectRange?.([wStart, wEnd]);
+        }
+      } else {
+        const t0 = pixelToTime(dragStartXRef.current, rect.width);
+        onSelectRange?.([Math.min(t0, t), Math.max(t0, t)]);
+      }
     }
+  };
+
+  // Quick range preset actions
+  const handleSelectEntireTrace = () => {
+    onSelectRange?.([0, durationS]);
+  };
+
+  const handleExcludeStartupLoading = () => {
+    const startupCutoff = Math.min(15.0, durationS * 0.3);
+    onSelectRange?.([startupCutoff, durationS]);
+  };
+
+  const handleSelectWorst10s = () => {
+    if (!seriesData) {
+      onSelectRange?.([0, Math.min(10.0, durationS)]);
+      return;
+    }
+
+    const windowLen = 10.0;
+    if (durationS <= windowLen) {
+      onSelectRange?.([0, durationS]);
+      return;
+    }
+
+    // Find 10s sliding window with highest average ms
+    let bestStart = 0;
+    let maxAvg = -1;
+
+    if (seriesData.isBucketed && seriesData.buckets.length > 0) {
+      for (let s = 0; s <= durationS - windowLen; s += 1.0) {
+        const matching = seriesData.buckets.filter((b) => b.t1 >= s && b.t0 <= s + windowLen);
+        if (matching.length > 0) {
+          const avg = matching.reduce((sum, b) => sum + b.avgMs, 0) / matching.length;
+          if (avg > maxAvg) {
+            maxAvg = avg;
+            bestStart = s;
+          }
+        }
+      }
+    } else if (!seriesData.isBucketed && seriesData.points.length > 0) {
+      for (let s = 0; s <= durationS - windowLen; s += 1.0) {
+        const matching = seriesData.points.filter((p) => p.t >= s && p.t <= s + windowLen);
+        if (matching.length > 0) {
+          const avg = matching.reduce((sum, p) => sum + p.frameMs, 0) / matching.length;
+          if (avg > maxAvg) {
+            maxAvg = avg;
+            bestStart = s;
+          }
+        }
+      }
+    }
+
+    onSelectRange?.([bestStart, bestStart + windowLen]);
   };
 
   const handleResetZoom = () => {
     setViewRange([0, Math.max(durationS, 1)]);
-    setSelectionRange(null);
   };
 
   return (
     <div className="flex flex-col gap-2 w-full h-full min-h-[220px]">
-      {/* Graph Toolbar */}
-      <div className="flex items-center justify-between px-2 text-xs text-slate-400">
+      {/* Graph Toolbar with Presets */}
+      <div className="flex flex-wrap items-center justify-between gap-2 px-2 text-xs text-slate-400">
         <div className="flex items-center gap-3">
-          <span className="font-medium text-slate-300">Frame Time Graph</span>
-          <label className="flex items-center gap-1.5 cursor-pointer hover:text-slate-200">
+          <span className="font-medium text-slate-300">Timeline & Frame Graph</span>
+
+          {/* Quick Range Presets */}
+          <div className="flex items-center gap-1 bg-slate-800/90 rounded border border-slate-700/80 p-0.5 text-[11px]">
+            <span className="text-[10px] text-slate-400 font-semibold uppercase px-1">Presets:</span>
+            <button
+              type="button"
+              onClick={handleSelectEntireTrace}
+              title="Select the entire trace from start to finish"
+              className="px-2 py-0.5 rounded bg-slate-700/70 hover:bg-slate-700 text-slate-200 transition-colors"
+            >
+              Entire Trace
+            </button>
+            <button
+              type="button"
+              onClick={handleExcludeStartupLoading}
+              title="Select active gameplay excluding the initial startup loading phase"
+              className="px-2 py-0.5 rounded bg-slate-700/70 hover:bg-slate-700 text-slate-200 transition-colors"
+            >
+              Exclude Startup
+            </button>
+            <button
+              type="button"
+              onClick={handleSelectWorst10s}
+              title="Select the worst 10-second window by frame time"
+              className="px-2 py-0.5 rounded bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 border border-amber-500/30 transition-colors"
+            >
+              Worst 10s
+            </button>
+          </div>
+
+          {/* Thread Overlays */}
+          <label className="flex items-center gap-1.5 cursor-pointer hover:text-slate-200 ml-1">
             <input
               type="checkbox"
               checked={showGame}
@@ -629,7 +869,7 @@ export function FrameGraph({
           </div>
 
           <span className="text-slate-500">
-            Range: {formatTime(viewRange[0])} – {formatTime(viewRange[1])}
+            View: {formatTime(viewRange[0])} – {formatTime(viewRange[1])}
           </span>
           <button
             type="button"
@@ -644,13 +884,12 @@ export function FrameGraph({
       {/* Canvas Viewport */}
       <div
         ref={containerRef}
-        className="relative flex-1 w-full min-h-[170px] bg-slate-900/60 rounded border border-slate-700/60 overflow-hidden cursor-crosshair"
+        className="relative flex-1 w-full min-h-[170px] bg-slate-900/60 rounded border border-slate-700/60 overflow-hidden cursor-crosshair select-none"
         onMouseDown={handleMouseDown}
         onMouseMove={handleMouseMove}
         onMouseUp={handleMouseUp}
         onMouseLeave={() => {
-          isDraggingRef.current = false;
-          isSelectingRef.current = false;
+          dragModeRef.current = 'none';
           setHoverInfo(null);
         }}
       >
@@ -665,23 +904,60 @@ export function FrameGraph({
               top: `${Math.max(10, hoverInfo.y - 45)}px`,
             }}
           >
-            <div className="font-semibold text-sky-300">{formatTime(hoverInfo.timeS)}</div>
-            <div>
-              {hoverInfo.minMs !== undefined && hoverInfo.maxMs !== undefined ? (
-                <span>
-                  Avg: <span className="font-mono text-amber-300">{hoverInfo.frameMs.toFixed(1)} ms</span>{' '}
-                  <span className="text-slate-400">({hoverInfo.minMs.toFixed(1)}–{hoverInfo.maxMs.toFixed(1)} ms)</span>
-                </span>
-              ) : (
-                <span>Frame: <span className="font-mono text-amber-300">{hoverInfo.frameMs.toFixed(1)} ms</span></span>
-              )}
-            </div>
-            {hoverInfo.gameMs !== undefined && <div className="text-emerald-400">Game: {hoverInfo.gameMs.toFixed(1)} ms</div>}
-            {hoverInfo.renderMs !== undefined && <div className="text-purple-400">Render: {hoverInfo.renderMs.toFixed(1)} ms</div>}
-            {hoverInfo.gpuMs !== undefined && <div className="text-orange-400">GPU: {hoverInfo.gpuMs.toFixed(1)} ms</div>}
+            {hoverInfo.bookmarkName ? (
+              <div>
+                <span className="text-purple-300 font-semibold">📌 Bookmark:</span>{' '}
+                <span className="font-mono text-purple-100">{hoverInfo.bookmarkName}</span>
+                <div className="text-[11px] text-slate-400">At {formatTime(hoverInfo.timeS)} (Click to select)</div>
+              </div>
+            ) : (
+              <>
+                <div className="font-semibold text-sky-300">{formatTime(hoverInfo.timeS)}</div>
+                <div>
+                  {hoverInfo.minMs !== undefined && hoverInfo.maxMs !== undefined ? (
+                    <span>
+                      Avg: <span className="font-mono text-amber-300">{hoverInfo.frameMs.toFixed(1)} ms</span>{' '}
+                      <span className="text-slate-400">({hoverInfo.minMs.toFixed(1)}–{hoverInfo.maxMs.toFixed(1)} ms)</span>
+                    </span>
+                  ) : (
+                    <span>Frame: <span className="font-mono text-amber-300">{hoverInfo.frameMs.toFixed(1)} ms</span></span>
+                  )}
+                </div>
+                {hoverInfo.gameMs !== undefined && <div className="text-emerald-400">Game: {hoverInfo.gameMs.toFixed(1)} ms</div>}
+                {hoverInfo.renderMs !== undefined && <div className="text-purple-400">Render: {hoverInfo.renderMs.toFixed(1)} ms</div>}
+                {hoverInfo.gpuMs !== undefined && <div className="text-orange-400">GPU: {hoverInfo.gpuMs.toFixed(1)} ms</div>}
+              </>
+            )}
           </div>
         )}
       </div>
+
+      {/* Bookmarks Track Bar (if bookmarks present) */}
+      {bookmarks.length > 0 && (
+        <div className="flex items-center gap-1.5 px-2 py-1 bg-slate-800/40 rounded border border-slate-700/40 text-xs overflow-x-auto">
+          <span className="text-purple-400 font-medium text-[11px] flex items-center gap-1 shrink-0">
+            <span>📌</span> Bookmarks ({bookmarks.length}):
+          </span>
+          <div className="flex items-center gap-1.5 flex-nowrap">
+            {bookmarks.map((bm) => (
+              <button
+                key={bm.id}
+                type="button"
+                onClick={() => {
+                  const bStart = Math.max(0, bm.startS - 2.5);
+                  const bEnd = Math.min(durationS, bm.startS + Math.max(bm.durationS, 2.5));
+                  onSelectRange?.([bStart, bEnd]);
+                }}
+                className="px-2 py-0.5 rounded bg-purple-950/60 border border-purple-700/50 hover:bg-purple-900/80 text-purple-200 text-[11px] flex items-center gap-1 shrink-0 transition-colors"
+                title={`${bm.name} at ${formatTime(bm.startS)}`}
+              >
+                <span className="font-medium">{bm.name}</span>
+                <span className="text-purple-400 font-mono text-[10px]">({formatTime(bm.startS)})</span>
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
     </div>
   );
 }

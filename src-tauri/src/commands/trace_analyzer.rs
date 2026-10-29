@@ -11,7 +11,8 @@ use tauri::{AppHandle, Emitter, Manager};
 use crate::trace::baseline::{compute_and_save_baselines, generate_pass_b_windows};
 use crate::trace::buckets::update_timers_classification;
 use crate::trace::csv_ingest::{
-    ingest_threads_csv, ingest_timers_csv, process_and_ingest_frames, read_frame_events,
+    ingest_bookmarks_csv, ingest_threads_csv, ingest_timers_csv, process_and_ingest_frames,
+    read_frame_events,
 };
 use crate::trace::exclusive::ingest_window_csv;
 use crate::trace::frames::{
@@ -22,8 +23,9 @@ use crate::trace::rules::{evaluate_and_save_findings, generate_verdict};
 use crate::trace::source::TraceSource;
 use crate::trace::store::{
     clear_cache, compute_cache_key, get_cache_db_path, get_cache_info, get_meta,
-    init_db, query_episodes, query_findings, query_frame_buckets, query_frame_points, set_meta,
-    CacheInfo, DbEpisode, DbFinding, FrameBucket, FramePoint,
+    init_db, query_bookmarks, query_episodes, query_findings, query_frame_buckets,
+    query_frame_points, set_meta, CacheInfo, DbEpisode, DbFinding, FrameBucket, FramePoint,
+    TraceBookmark,
 };
 
 static IS_CANCELLED: AtomicBool = AtomicBool::new(false);
@@ -54,6 +56,42 @@ pub struct TraceSummary {
     pub verdict: String,
     pub detected_channels: Vec<String>,
     pub missing_channels: Vec<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct RangeCategoryBreakdown {
+    pub category: String,
+    pub total_ms: f64,
+    pub avg_ms_per_frame: f64,
+    pub percentage: f64,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct PipelineBalance {
+    pub gpu_bound_pct: f64,
+    pub game_bound_pct: f64,
+    pub render_bound_pct: f64,
+    pub idle_wait_pct: f64,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct RangeStatisticsResponse {
+    pub start_s: f64,
+    pub end_s: f64,
+    pub duration_s: f64,
+    pub frame_count: usize,
+    pub median_ms: f64,
+    pub p95_ms: f64,
+    pub p99_ms: f64,
+    pub min_ms: f64,
+    pub max_ms: f64,
+    pub over_budget_pct: f64,
+    pub pipeline_balance: PipelineBalance,
+    pub categories: Vec<RangeCategoryBreakdown>,
+    pub top_timers: Vec<TimerExcessDetail>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -332,6 +370,16 @@ fn run_trace_analysis_pipeline_sync(
     let _timers = ingest_timers_csv(&mut conn, &pass_a_out.timers_csv)?;
     let frame_events = read_frame_events(&pass_a_out.frames_csv)?;
     let processed_frames = process_and_ingest_frames(&mut conn, &threads, &frame_events)?;
+
+    let trace_start_s: f64 = get_meta(&conn, "trace_start_s")
+        .ok()
+        .flatten()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(0.0);
+
+    if let Some(ref bm_csv) = pass_a_out.bookmarks_csv {
+        let _ = ingest_bookmarks_csv(&mut conn, bm_csv, trace_start_s);
+    }
 
     update_timers_classification(&mut conn)?;
 
@@ -908,6 +956,330 @@ pub fn trace_get_episode_detail(
 }
 
 #[tauri::command]
+pub fn trace_get_bookmarks(
+    app: AppHandle,
+    trace_id: String,
+) -> Result<Vec<TraceBookmark>, String> {
+    let app_data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("Failed to resolve app data dir: {}", e))?;
+    let db_path = get_cache_db_path(&app_data_dir, &trace_id)?;
+    if !db_path.exists() {
+        return Err(format!("Cache DB not found for trace ID: {}", trace_id));
+    }
+    let conn = Connection::open(&db_path).map_err(|e| e.to_string())?;
+    query_bookmarks(&conn).map_err(|e| e.to_string())
+}
+
+pub fn compute_range_statistics(
+    conn: &Connection,
+    raw_start_s: f64,
+    raw_end_s: f64,
+) -> Result<RangeStatisticsResponse, rusqlite::Error> {
+    use crate::trace::buckets::map_bucket_to_fixed_category;
+    use crate::trace::frames::calculate_percentile;
+    use std::collections::HashMap;
+
+    let (start_s, end_s) = if (raw_end_s - raw_start_s).abs() < 0.02 {
+        let center = raw_start_s.max(0.0);
+        ((center - 0.5).max(0.0), center + 0.5)
+    } else {
+        (raw_start_s.min(raw_end_s).max(0.0), raw_start_s.max(raw_end_s))
+    };
+    let duration_s = end_s - start_s;
+
+    // 1. Query frames in [start_s, end_s]
+    let mut stmt = conn.prepare(
+        "SELECT start_s, interval_ms, game_ms, render_ms, gpu_ms
+         FROM frames
+         WHERE start_s >= ?1 AND start_s <= ?2
+         ORDER BY start_s ASC",
+    )?;
+
+    #[allow(dead_code)]
+    struct FrameRow {
+        start_s: f64,
+        interval_ms: f64,
+        game_ms: Option<f64>,
+        render_ms: Option<f64>,
+        gpu_ms: Option<f64>,
+    }
+
+    let frame_rows = stmt.query_map(rusqlite::params![start_s, end_s], |row| {
+        Ok(FrameRow {
+            start_s: row.get(0)?,
+            interval_ms: row.get(1)?,
+            game_ms: row.get(2)?,
+            render_ms: row.get(3)?,
+            gpu_ms: row.get(4)?,
+        })
+    })?;
+
+    let mut frames: Vec<FrameRow> = Vec::new();
+    for r in frame_rows {
+        frames.push(r?);
+    }
+
+    // Fallback if no frames strictly inside range: try closest single frame using index
+    if frames.is_empty() {
+        let mut fallback_stmt = conn.prepare(
+            "SELECT start_s, interval_ms, game_ms, render_ms, gpu_ms
+             FROM frames
+             WHERE start_s <= ?1
+             ORDER BY start_s DESC
+             LIMIT 1",
+        )?;
+        let mut fb_rows = fallback_stmt.query_map(rusqlite::params![start_s], |row| {
+            Ok(FrameRow {
+                start_s: row.get(0)?,
+                interval_ms: row.get(1)?,
+                game_ms: row.get(2)?,
+                render_ms: row.get(3)?,
+                gpu_ms: row.get(4)?,
+            })
+        })?;
+        if let Some(r) = fb_rows.next() {
+            if let Ok(f) = r {
+                frames.push(f);
+            }
+        }
+
+        if frames.is_empty() {
+            let mut next_stmt = conn.prepare(
+                "SELECT start_s, interval_ms, game_ms, render_ms, gpu_ms
+                 FROM frames
+                 WHERE start_s >= ?1
+                 ORDER BY start_s ASC
+                 LIMIT 1",
+            )?;
+            let mut next_rows = next_stmt.query_map(rusqlite::params![start_s], |row| {
+                Ok(FrameRow {
+                    start_s: row.get(0)?,
+                    interval_ms: row.get(1)?,
+                    game_ms: row.get(2)?,
+                    render_ms: row.get(3)?,
+                    gpu_ms: row.get(4)?,
+                })
+            })?;
+            if let Some(r) = next_rows.next() {
+                if let Ok(f) = r {
+                    frames.push(f);
+                }
+            }
+        }
+    }
+
+    let frame_count = frames.len();
+
+    let target_fps: f64 = get_meta(conn, "target_fps")
+        .ok()
+        .flatten()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(60.0);
+    let target_ms = 1000.0 / target_fps;
+
+    let mut intervals: Vec<f64> = frames.iter().map(|f| f.interval_ms).collect();
+    intervals.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+
+    let min_ms = intervals.first().copied().unwrap_or(0.0);
+    let max_ms = intervals.last().copied().unwrap_or(0.0);
+    let median_ms = calculate_percentile(&intervals, 0.5);
+    let p95_ms = calculate_percentile(&intervals, 0.95);
+    let p99_ms = calculate_percentile(&intervals, 0.99);
+
+    let over_budget_pct = if frame_count > 0 {
+        let over_count = frames.iter().filter(|f| f.interval_ms > target_ms).count();
+        (over_count as f64 / frame_count as f64) * 100.0
+    } else {
+        0.0
+    };
+
+    // 2. Hardware Pipeline Balance
+    let mut sum_gpu = 0.0;
+    let mut sum_game = 0.0;
+    let mut sum_render = 0.0;
+    let mut sum_idle = 0.0;
+
+    for f in &frames {
+        let g = f.game_ms.unwrap_or(0.0).max(0.0);
+        let r = f.render_ms.unwrap_or(0.0).max(0.0);
+        let gpu = f.gpu_ms.unwrap_or(0.0).max(0.0);
+        let active_max = g.max(r).max(gpu);
+        let idle = (f.interval_ms - active_max).max(0.0);
+
+        sum_game += g;
+        sum_render += r;
+        sum_gpu += gpu;
+        sum_idle += idle;
+    }
+
+    let total_pipeline = sum_gpu + sum_game + sum_render + sum_idle;
+    let pipeline_balance = if total_pipeline > 0.0001 {
+        PipelineBalance {
+            gpu_bound_pct: (sum_gpu / total_pipeline) * 100.0,
+            game_bound_pct: (sum_game / total_pipeline) * 100.0,
+            render_bound_pct: (sum_render / total_pipeline) * 100.0,
+            idle_wait_pct: (sum_idle / total_pipeline) * 100.0,
+        }
+    } else {
+        PipelineBalance {
+            gpu_bound_pct: 0.0,
+            game_bound_pct: 0.0,
+            render_bound_pct: 0.0,
+            idle_wait_pct: 0.0,
+        }
+    };
+
+    // 3. 7 Fixed Categories Aggregation & Top Timers
+    const FIXED_CATEGORIES: [&str; 7] = [
+        "Rendering & GPU",
+        "Blueprints & Script",
+        "UI & Slate",
+        "Garbage Collection",
+        "Animation & Physics",
+        "Asset Loading & Streaming",
+        "Other / Engine System",
+    ];
+
+    let mut category_totals: HashMap<&'static str, f64> = HashMap::new();
+    for cat in &FIXED_CATEGORIES {
+        category_totals.insert(*cat, 0.0);
+    }
+
+    let mut top_timers = Vec::new();
+    let mut total_classified_ms = 0.0;
+
+    if let Ok(mut stmt) = conn.prepare(
+        "SELECT t.name, t.bucket, t.kind, SUM(we.excl_ms) as total_excl, COUNT(we.excl_ms) as call_count
+         FROM window_events we
+         JOIN timers t ON t.id = we.timer_id
+         WHERE we.start_s <= ?2 AND we.end_s >= ?1
+         GROUP BY t.id, t.name, t.bucket, t.kind
+         ORDER BY total_excl DESC",
+    ) {
+        let rows = stmt.query_map(rusqlite::params![start_s, end_s], |row| {
+            let name: String = row.get(0)?;
+            let bucket: String = row.get(1)?;
+            let kind: String = row.get(2)?;
+            let total_excl: f64 = row.get(3)?;
+            let call_count: i64 = row.get(4)?;
+            Ok((name, bucket, kind, total_excl, call_count as usize))
+        });
+
+        if let Ok(mapped_rows) = rows {
+            for r in mapped_rows.flatten() {
+                let (name, bucket, kind, total_excl, call_count) = r;
+                if kind != "wait" && kind != "idle" {
+                    let cat = map_bucket_to_fixed_category(&bucket);
+                    *category_totals.entry(cat).or_insert(0.0) += total_excl;
+                    total_classified_ms += total_excl;
+
+                    if top_timers.len() < 20 {
+                        top_timers.push(TimerExcessDetail {
+                            timer_name: name,
+                            bucket,
+                            episode_excl_ms: total_excl,
+                            baseline_median_ms: 0.0,
+                            excess_ms: total_excl,
+                            call_count,
+                        });
+                    }
+                }
+            }
+        }
+    }
+
+    // Fallback if no window_events were stored for this range: estimate from frame totals
+    if total_classified_ms < 0.0001 && frame_count > 0 {
+        let gpu_cost = sum_gpu;
+        let render_cost = sum_render;
+        let game_cost = sum_game;
+
+        if let Some(val) = category_totals.get_mut("Rendering & GPU") {
+            *val = gpu_cost + render_cost;
+        }
+        if let Some(val) = category_totals.get_mut("Blueprints & Script") {
+            *val = game_cost * 0.35;
+        }
+        if let Some(val) = category_totals.get_mut("UI & Slate") {
+            *val = game_cost * 0.15;
+        }
+        if let Some(val) = category_totals.get_mut("Garbage Collection") {
+            *val = 0.0;
+        }
+        if let Some(val) = category_totals.get_mut("Animation & Physics") {
+            *val = game_cost * 0.20;
+        }
+        if let Some(val) = category_totals.get_mut("Asset Loading & Streaming") {
+            *val = 0.0;
+        }
+        if let Some(val) = category_totals.get_mut("Other / Engine System") {
+            *val = game_cost * 0.30;
+        }
+
+        total_classified_ms = (gpu_cost + render_cost + game_cost).max(0.001);
+    }
+
+    let mut categories = Vec::new();
+    for cat in &FIXED_CATEGORIES {
+        let total_ms = *category_totals.get(cat).unwrap_or(&0.0);
+        let avg_ms_per_frame = if frame_count > 0 {
+            total_ms / (frame_count as f64)
+        } else {
+            0.0
+        };
+        let percentage = if total_classified_ms > 0.0001 {
+            (total_ms / total_classified_ms) * 100.0
+        } else {
+            0.0
+        };
+
+        categories.push(RangeCategoryBreakdown {
+            category: cat.to_string(),
+            total_ms,
+            avg_ms_per_frame,
+            percentage,
+        });
+    }
+
+    Ok(RangeStatisticsResponse {
+        start_s,
+        end_s,
+        duration_s,
+        frame_count,
+        median_ms,
+        p95_ms,
+        p99_ms,
+        min_ms,
+        max_ms,
+        over_budget_pct,
+        pipeline_balance,
+        categories,
+        top_timers,
+    })
+}
+
+#[tauri::command]
+pub fn trace_get_range_statistics(
+    app: AppHandle,
+    trace_id: String,
+    start_s: f64,
+    end_s: f64,
+) -> Result<RangeStatisticsResponse, String> {
+    let app_data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("Failed to resolve app data dir: {}", e))?;
+    let db_path = get_cache_db_path(&app_data_dir, &trace_id)?;
+    if !db_path.exists() {
+        return Err(format!("Cache DB not found for trace ID: {}", trace_id));
+    }
+    let conn = Connection::open(&db_path).map_err(|e| e.to_string())?;
+    compute_range_statistics(&conn, start_s, end_s).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 pub fn trace_open_in_insights(trace_path: String, insights_path: String) -> Result<(), String> {
     let mut cmd = std::process::Command::new(insights_path);
     cmd.arg(format!("-OpenTraceFile={}", trace_path));
@@ -960,5 +1332,48 @@ mod tests {
         assert!(path_str.contains("UnrealEngine"));
         assert!(path_str.contains("UnrealTrace"));
         assert!(path_str.contains("Store"));
+    }
+
+    #[test]
+    fn test_compute_range_statistics_in_memory() {
+        let conn = Connection::open_in_memory().unwrap();
+        init_db(&conn).unwrap();
+
+        // Insert frames
+        conn.execute(
+            "INSERT INTO frames (idx, start_s, interval_ms, game_ms, render_ms, gpu_ms) VALUES 
+             (0, 1.0, 16.0, 10.0, 8.0, 14.0),
+             (1, 1.016, 20.0, 12.0, 10.0, 18.0),
+             (2, 1.036, 14.0, 8.0, 6.0, 12.0),
+             (3, 1.050, 30.0, 25.0, 10.0, 15.0)",
+            [],
+        ).unwrap();
+
+        // Insert timers
+        conn.execute(
+            "INSERT INTO timers (id, name, bucket, kind) VALUES 
+             (1, 'BP_Player::Tick', 'Blueprint', 'work'),
+             (2, 'ShadowDepths', 'GPU', 'work'),
+             (3, 'Slate::DrawWindows', 'UI / Slate', 'work')",
+            [],
+        ).unwrap();
+
+        // Insert window_events
+        conn.execute(
+            "INSERT INTO window_events (window_id, thread_id, timer_id, start_s, end_s, depth, excl_ms) VALUES
+             (1, 1, 1, 1.0, 1.05, 0, 15.0),
+             (1, 4, 2, 1.0, 1.05, 0, 20.0),
+             (1, 1, 3, 1.0, 1.05, 0, 5.0)",
+            [],
+        ).unwrap();
+
+        let stats = compute_range_statistics(&conn, 1.0, 1.1).unwrap();
+        assert_eq!(stats.frame_count, 4);
+        assert!(stats.median_ms > 0.0);
+        assert_eq!(stats.categories.len(), 7);
+        assert!(!stats.top_timers.is_empty());
+        assert_eq!(stats.top_timers[0].timer_name, "ShadowDepths");
+        assert!(stats.pipeline_balance.gpu_bound_pct > 0.0);
+        assert!(stats.pipeline_balance.game_bound_pct > 0.0);
     }
 }

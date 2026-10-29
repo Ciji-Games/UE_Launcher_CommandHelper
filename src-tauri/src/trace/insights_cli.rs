@@ -247,16 +247,18 @@ impl TraceSource for InsightsCliSource {
         let threads_csv = output_dir.join("threads.csv");
         let timers_csv = output_dir.join("timers.csv");
         let frames_csv = output_dir.join("frames_game.csv");
+        let bookmarks_csv = output_dir.join("bookmarks.csv");
         let rsp_path = output_dir.join("pass_a.rsp");
         let log_path = output_dir.join("pass_a.log");
 
         let threads_str = threads_csv.to_string_lossy().replace('\\', "/");
         let timers_str = timers_csv.to_string_lossy().replace('\\', "/");
         let frames_str = frames_csv.to_string_lossy().replace('\\', "/");
+        let bookmarks_str = bookmarks_csv.to_string_lossy().replace('\\', "/");
 
         let rsp_content = format!(
-            "TimingInsights.ExportThreads {}\nTimingInsights.ExportTimers {}\nTimingInsights.ExportTimingEvents {} -threads=GameThread,RenderThread*,RHIThread,GPU* -timers=Frame\n",
-            threads_str, timers_str, frames_str
+            "TimingInsights.ExportThreads {}\nTimingInsights.ExportTimers {}\nTimingInsights.ExportTimingEvents {} -threads=GameThread,RenderThread*,RHIThread,GPU* -timers=Frame\nTimingInsights.ExportTimingEvents {} -threads=* -timers=*Bookmark*,TRACE_BOOKMARK*,NamedRegion*\n",
+            threads_str, timers_str, frames_str, bookmarks_str
         );
 
         self.run_insights_rsp(trace_path, &rsp_content, &rsp_path, &log_path, cancel_flag)?;
@@ -265,10 +267,17 @@ impl TraceSource for InsightsCliSource {
             return Err("UnrealInsights did not generate all required Pass A output CSV files".to_string());
         }
 
+        let bookmarks_out = if bookmarks_csv.is_file() {
+            Some(bookmarks_csv)
+        } else {
+            None
+        };
+
         Ok(PassAOutputs {
             threads_csv,
             timers_csv,
             frames_csv,
+            bookmarks_csv: bookmarks_out,
         })
     }
 

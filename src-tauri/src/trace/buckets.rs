@@ -41,6 +41,18 @@ pub fn classify_timer(name: &str, rules: &[CompiledBucketRule]) -> (String, Stri
     ("Other".to_string(), "work".to_string())
 }
 
+pub fn map_bucket_to_fixed_category(bucket: &str) -> &'static str {
+    match bucket {
+        "GPU" | "Render CPU" | "RHI" | "ShaderCompile/PSO" | "Niagara/FX" => "Rendering & GPU",
+        "Blueprint" | "Spawning" => "Blueprints & Script",
+        "UI / Slate" => "UI & Slate",
+        "GC" => "Garbage Collection",
+        "Animation" | "Physics" => "Animation & Physics",
+        "Loading" | "Streaming" => "Asset Loading & Streaming",
+        _ => "Other / Engine System",
+    }
+}
+
 pub fn update_timers_classification(conn: &mut Connection) -> Result<(), String> {
     let rules = get_compiled_bucket_rules();
 
@@ -123,5 +135,63 @@ mod tests {
         let (b_views, k_views) = classify_timer("InitViews", &rules);
         assert_eq!(b_views, "Render CPU");
         assert_eq!(k_views, "work");
+
+        // Specific UE rendering timers requested by user
+        let (b_scene, _) = classify_timer("Scene Render", &rules);
+        assert_eq!(b_scene, "GPU");
+        assert_eq!(map_bucket_to_fixed_category(&b_scene), "Rendering & GPU");
+
+        let (b_scenerender, _) = classify_timer("SceneRender", &rules);
+        assert_eq!(b_scenerender, "GPU");
+        assert_eq!(map_bucket_to_fixed_category(&b_scenerender), "Rendering & GPU");
+
+        let (b_cas, _) = classify_timer("Contrast Adaptive Shading", &rules);
+        assert_eq!(b_cas, "GPU");
+        assert_eq!(map_bucket_to_fixed_category(&b_cas), "Rendering & GPU");
+
+        let (b_cas2, _) = classify_timer("ContrastAdaptiveSharpening", &rules);
+        assert_eq!(b_cas2, "GPU");
+        assert_eq!(map_bucket_to_fixed_category(&b_cas2), "Rendering & GPU");
+
+        let (b_cas3, _) = classify_timer("CAS", &rules);
+        assert_eq!(b_cas3, "GPU");
+        assert_eq!(map_bucket_to_fixed_category(&b_cas3), "Rendering & GPU");
+
+        let (b_pdraw, _) = classify_timer("Parallel Draw", &rules);
+        assert_eq!(b_pdraw, "Render CPU");
+        assert_eq!(map_bucket_to_fixed_category(&b_pdraw), "Rendering & GPU");
+
+        let (b_pdraw2, _) = classify_timer("ParallelDraw", &rules);
+        assert_eq!(b_pdraw2, "Render CPU");
+        assert_eq!(map_bucket_to_fixed_category(&b_pdraw2), "Rendering & GPU");
+
+        let (b_vsm, _) = classify_timer("VirtualShadowMap", &rules);
+        assert_eq!(b_vsm, "GPU");
+        assert_eq!(map_bucket_to_fixed_category(&b_vsm), "Rendering & GPU");
+
+        let (b_tsr, _) = classify_timer("TemporalSuperResolution", &rules);
+        assert_eq!(b_tsr, "GPU");
+        assert_eq!(map_bucket_to_fixed_category(&b_tsr), "Rendering & GPU");
+
+        let (b_tonemap, _) = classify_timer("Tonemap", &rules);
+        assert_eq!(b_tonemap, "GPU");
+        assert_eq!(map_bucket_to_fixed_category(&b_tonemap), "Rendering & GPU");
+
+        let (b_rhi, _) = classify_timer("FRHICommandListExecutor::ExecuteList", &rules);
+        assert_eq!(b_rhi, "RHI");
+        assert_eq!(map_bucket_to_fixed_category(&b_rhi), "Rendering & GPU");
+
+        let (b_wp, _) = classify_timer("WorldPartitionStreaming", &rules);
+        assert_eq!(b_wp, "Streaming");
+        assert_eq!(map_bucket_to_fixed_category(&b_wp), "Asset Loading & Streaming");
+
+        assert_eq!(map_bucket_to_fixed_category("GPU"), "Rendering & GPU");
+        assert_eq!(map_bucket_to_fixed_category("Render CPU"), "Rendering & GPU");
+        assert_eq!(map_bucket_to_fixed_category("Blueprint"), "Blueprints & Script");
+        assert_eq!(map_bucket_to_fixed_category("UI / Slate"), "UI & Slate");
+        assert_eq!(map_bucket_to_fixed_category("GC"), "Garbage Collection");
+        assert_eq!(map_bucket_to_fixed_category("Animation"), "Animation & Physics");
+        assert_eq!(map_bucket_to_fixed_category("Loading"), "Asset Loading & Streaming");
+        assert_eq!(map_bucket_to_fixed_category("Other"), "Other / Engine System");
     }
 }

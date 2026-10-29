@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import { useEngines } from './useEngines';
@@ -11,6 +11,8 @@ import type {
   FindingPayload,
   FrameSeriesResponse,
   InsightsExeInfo,
+  RangeStatisticsResponse,
+  TraceBookmark,
   TraceCandidate,
   TraceProgressPayload,
   TraceSummary,
@@ -39,6 +41,11 @@ export function useTraceAnalyzer() {
   const [episodes, setEpisodes] = useState<Episode[]>([]);
   const [findings, setFindings] = useState<Finding[]>([]);
   const [selectedEpisodeId, setSelectedEpisodeId] = useState<number | null>(null);
+
+  const [bookmarks, setBookmarks] = useState<TraceBookmark[]>([]);
+  const [selectedRange, setSelectedRange] = useState<[number, number] | null>(null);
+  const [rangeStats, setRangeStats] = useState<RangeStatisticsResponse | null>(null);
+  const [rangeStatsLoading, setRangeStatsLoading] = useState(false);
 
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [progressPayload, setProgressPayload] = useState<TraceProgressPayload | null>(null);
@@ -162,10 +169,11 @@ export function useTraceAnalyzer() {
 
         setSummary(res);
 
-        // Fetch episodes & findings
-        const [eps, fnds] = await Promise.all([
+        // Fetch episodes, findings, bookmarks & initial range statistics
+        const [eps, fnds, bms] = await Promise.all([
           invoke<Episode[]>('trace_get_episodes', { traceId: res.traceId }),
           invoke<Finding[]>('trace_get_findings', { traceId: res.traceId }),
+          invoke<TraceBookmark[]>('trace_get_bookmarks', { traceId: res.traceId }).catch(() => []),
         ]);
 
         const parsedFindings: Finding[] = fnds.map((f) => {
@@ -183,6 +191,20 @@ export function useTraceAnalyzer() {
 
         setEpisodes(eps);
         setFindings(parsedFindings);
+        setBookmarks(bms);
+
+        const initialRange: [number, number] = [0, res.durationS];
+        setSelectedRange(initialRange);
+        if (res.durationS > 0) {
+          invoke<RangeStatisticsResponse>('trace_get_range_statistics', {
+            traceId: res.traceId,
+            startS: 0,
+            endS: res.durationS,
+          })
+            .then((stats) => setRangeStats(stats))
+            .catch((e) => console.error('Failed to fetch initial range stats:', e));
+        }
+
         if (eps.length > 0) {
           setSelectedEpisodeId(eps[0].id);
         }
@@ -244,9 +266,10 @@ export function useTraceAnalyzer() {
         setSummary(res);
         setCurrentTracePath(res.path);
 
-        const [eps, fnds] = await Promise.all([
+        const [eps, fnds, bms] = await Promise.all([
           invoke<Episode[]>('trace_get_episodes', { traceId: res.traceId }),
           invoke<Finding[]>('trace_get_findings', { traceId: res.traceId }),
+          invoke<TraceBookmark[]>('trace_get_bookmarks', { traceId: res.traceId }).catch(() => []),
         ]);
 
         const parsedFindings: Finding[] = fnds.map((f) => {
@@ -260,6 +283,19 @@ export function useTraceAnalyzer() {
 
         setEpisodes(eps);
         setFindings(parsedFindings);
+        setBookmarks(bms);
+
+        const initialRange: [number, number] = [0, res.durationS];
+        setSelectedRange(initialRange);
+        if (res.durationS > 0) {
+          invoke<RangeStatisticsResponse>('trace_get_range_statistics', {
+            traceId: res.traceId,
+            startS: 0,
+            endS: res.durationS,
+          })
+            .then((stats) => setRangeStats(stats))
+            .catch((e) => console.error('Failed to fetch initial range stats:', e));
+        }
 
         if (eps.length > 0) {
           setSelectedEpisodeId(eps[0].id);
@@ -274,6 +310,48 @@ export function useTraceAnalyzer() {
       }
     },
     [insightsInfo, availableEngines, selectedEngineRoot, options, startProgress, finishProgress, refreshCandidates]
+  );
+
+  // Fetch range statistics for selected time range
+  const fetchRangeStatistics = useCallback(
+    async (startS: number, endS: number): Promise<RangeStatisticsResponse | null> => {
+      if (!summary?.traceId) return null;
+      setRangeStatsLoading(true);
+      try {
+        const stats = await invoke<RangeStatisticsResponse>('trace_get_range_statistics', {
+          traceId: summary.traceId,
+          startS,
+          endS,
+        });
+        setRangeStats(stats);
+        return stats;
+      } catch (e) {
+        console.error('Failed to fetch range statistics:', e);
+        return null;
+      } finally {
+        setRangeStatsLoading(false);
+      }
+    },
+    [summary?.traceId]
+  );
+
+  const rangeStatsTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Set selected range and automatically refresh range statistics (debounced)
+  const handleSetSelectedRange = useCallback(
+    (range: [number, number] | null) => {
+      setSelectedRange(range);
+      if (rangeStatsTimerRef.current) {
+        clearTimeout(rangeStatsTimerRef.current);
+      }
+      if (range && summary?.traceId) {
+        const [s0, s1] = range;
+        rangeStatsTimerRef.current = setTimeout(() => {
+          fetchRangeStatistics(s0, s1);
+        }, 50);
+      }
+    },
+    [summary?.traceId, fetchRangeStatistics]
   );
 
   // Cancel running analysis
@@ -360,6 +438,12 @@ export function useTraceAnalyzer() {
     findings,
     selectedEpisodeId,
     setSelectedEpisodeId,
+    bookmarks,
+    selectedRange,
+    setSelectedRange: handleSetSelectedRange,
+    rangeStats,
+    rangeStatsLoading,
+    fetchRangeStatistics,
     isAnalyzing,
     progressPayload,
     error,

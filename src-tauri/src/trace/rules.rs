@@ -320,7 +320,7 @@ pub fn detect_trace_channels(conn: &Connection) -> (Vec<String>, Vec<String>) {
     // 7. bookmark
     let bookmark_timers: i64 = conn
         .query_row(
-            "SELECT COUNT(*) FROM timers WHERE name LIKE '%Bookmark%' OR name LIKE '%Marker%' OR name LIKE '%NamedRegion%'",
+            "SELECT (SELECT COUNT(*) FROM bookmarks) + (SELECT COUNT(*) FROM timers WHERE name LIKE '%Bookmark%' OR name LIKE '%NamedRegion%')",
             [],
             |r| r.get(0),
         )

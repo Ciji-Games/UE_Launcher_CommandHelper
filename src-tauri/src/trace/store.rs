@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 
-pub const SCHEMA_VERSION: i32 = 7;
+pub const SCHEMA_VERSION: i32 = 11;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
@@ -51,6 +51,16 @@ pub struct DbFinding {
     pub fix_likelihood: String,
     pub episode_ids: Vec<i64>,
     pub payload: String, // JSON payload containing evidence, fixes, etc.
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct TraceBookmark {
+    pub id: i64,
+    pub name: String,
+    pub start_s: f64,
+    pub duration_s: f64,
+    pub thread_name: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -148,6 +158,7 @@ pub fn init_db(conn: &Connection) -> Result<(), rusqlite::Error> {
             excl_ms REAL NOT NULL
         );
         CREATE INDEX IF NOT EXISTS idx_we ON window_events(window_id, thread_id, timer_id);
+        CREATE INDEX IF NOT EXISTS idx_we_time ON window_events(start_s, end_s);
 
         CREATE TABLE IF NOT EXISTS baseline_stats (
             scope TEXT NOT NULL,
@@ -168,6 +179,15 @@ pub fn init_db(conn: &Connection) -> Result<(), rusqlite::Error> {
             episode_ids TEXT NOT NULL,
             payload TEXT NOT NULL
         );
+
+        CREATE TABLE IF NOT EXISTS bookmarks (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL,
+            start_s REAL NOT NULL,
+            duration_s REAL NOT NULL,
+            thread_id INTEGER
+        );
+        CREATE INDEX IF NOT EXISTS idx_bookmarks_start ON bookmarks(start_s);
         ",
     )?;
     Ok(())
@@ -367,4 +387,56 @@ pub fn query_findings(conn: &Connection) -> Result<Vec<DbFinding>, rusqlite::Err
         findings.push(r?);
     }
     Ok(findings)
+}
+
+pub fn query_bookmarks(conn: &Connection) -> Result<Vec<TraceBookmark>, rusqlite::Error> {
+    let mut stmt = conn.prepare(
+        "SELECT b.id, b.name, b.start_s, b.duration_s, t.name as thread_name
+         FROM bookmarks b
+         LEFT JOIN threads t ON b.thread_id = t.id
+         ORDER BY b.start_s ASC",
+    )?;
+
+    let rows = stmt.query_map([], |row| {
+        Ok(TraceBookmark {
+            id: row.get(0)?,
+            name: row.get(1)?,
+            start_s: row.get(2)?,
+            duration_s: row.get(3)?,
+            thread_name: row.get(4)?,
+        })
+    })?;
+
+    let mut raw_bookmarks = Vec::new();
+    for r in rows {
+        let bm: TraceBookmark = r?;
+        if !crate::trace::csv_ingest::is_valid_bookmark(&bm.name, bm.start_s) {
+            continue;
+        }
+        raw_bookmarks.push(bm);
+    }
+
+    let mut bookmarks: Vec<TraceBookmark> = Vec::new();
+    for bm in raw_bookmarks {
+        let bm_lower = bm.name.to_ascii_lowercase();
+        let mut merged = false;
+        for existing in bookmarks.iter_mut().rev() {
+            if (bm.start_s - existing.start_s).abs() > 0.1 {
+                break;
+            }
+            if existing.name.to_ascii_lowercase() == bm_lower {
+                existing.duration_s = existing.duration_s.max(bm.duration_s);
+                if existing.thread_name.is_none() && bm.thread_name.is_some() {
+                    existing.thread_name = bm.thread_name.clone();
+                }
+                merged = true;
+                break;
+            }
+        }
+        if !merged {
+            bookmarks.push(bm);
+        }
+    }
+
+    Ok(bookmarks)
 }

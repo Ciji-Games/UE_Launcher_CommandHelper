@@ -58,6 +58,14 @@ export interface FrameSeriesResponse {
   points: FramePoint[];
 }
 
+export interface TraceBookmark {
+  id: number;
+  name: string;
+  startS: number;
+  durationS: number;
+  threadName?: string;
+}
+
 export interface Episode {
   id: number;
   kind: EpisodeKind;
@@ -124,6 +132,36 @@ export interface BucketBreakdown {
   bucket: string;
   episodeMs: number;
   baselineMs: number;
+}
+
+export interface RangeCategoryBreakdown {
+  category: string;
+  totalMs: number;
+  avgMsPerFrame: number;
+  percentage: number;
+}
+
+export interface PipelineBalance {
+  gpuBoundPct: number;
+  gameBoundPct: number;
+  renderBoundPct: number;
+  idleWaitPct: number;
+}
+
+export interface RangeStatisticsResponse {
+  startS: number;
+  endS: number;
+  durationS: number;
+  frameCount: number;
+  medianMs: number;
+  p95Ms: number;
+  p99Ms: number;
+  minMs: number;
+  maxMs: number;
+  overBudgetPct: number;
+  pipelineBalance: PipelineBalance;
+  categories: RangeCategoryBreakdown[];
+  topTimers: TimerExcessDetail[];
 }
 
 export interface TimerExcessDetail {
