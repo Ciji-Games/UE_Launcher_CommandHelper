@@ -41,6 +41,7 @@ pub fn classify_timer(name: &str, rules: &[CompiledBucketRule]) -> (String, Stri
     ("Other".to_string(), "work".to_string())
 }
 
+#[allow(dead_code)]
 pub fn map_bucket_to_fixed_category(bucket: &str) -> &'static str {
     match bucket {
         "GPU" | "Render CPU" | "RHI" | "ShaderCompile/PSO" | "Niagara/FX" => "Rendering & GPU",

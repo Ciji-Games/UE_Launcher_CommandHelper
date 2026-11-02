@@ -24,6 +24,13 @@ function formatTime(seconds: number | null | undefined): string {
   return `${mins}m ${secs}s`;
 }
 
+function formatBookmarkName(name: string | undefined, timeS: number): string {
+  if (!name || name.trim().toLowerCase() === 'bookmark') {
+    return `Marker ${timeS.toFixed(2)}s`;
+  }
+  return name;
+}
+
 export function FrameGraph({
   durationS,
   targetMs,
@@ -95,8 +102,20 @@ export function FrameGraph({
     };
   }, [viewRange, fetchFrameSeries]);
 
+  const sortedEpisodes = useMemo(() => {
+    return [...episodes].sort((a, b) => a.startS - b.startS);
+  }, [episodes]);
+
+  const episodeIndexMap = useMemo(() => {
+    const map = new Map<number, number>();
+    sortedEpisodes.forEach((ep, idx) => {
+      map.set(ep.id, idx + 1);
+    });
+    return map;
+  }, [sortedEpisodes]);
+
   const pixelToTime = useCallback((px: number, totalW: number) => {
-    const padL = 45;
+    const padL = 58;
     const padR = 20;
     const graphW = Math.max(totalW - padL - padR, 1);
     const ratio = Math.max(0, Math.min(1, (px - padL) / graphW));
@@ -105,7 +124,7 @@ export function FrameGraph({
   }, [viewRange]);
 
   const timeToPixel = useCallback((t: number, totalW: number) => {
-    const padL = 45;
+    const padL = 58;
     const padR = 20;
     const graphW = Math.max(totalW - padL - padR, 1);
     const [vStart, vEnd] = viewRange;
@@ -132,7 +151,7 @@ export function FrameGraph({
     const vDuration = Math.max(vEnd - vStart, 0.001);
 
     // Padding
-    const padL = 45;
+    const padL = 58;
     const padR = 20;
     const padT = 24; // Extra space for bookmark pins
     const padB = 25;
@@ -315,6 +334,7 @@ export function FrameGraph({
         const x = timeToX(ep.startS);
         if (x >= padL && x <= padL + graphW) {
           const y = msToY(ep.peakMs) - 6;
+          const markerNum = episodeIndexMap.get(ep.id) || 1;
 
           ctx.fillStyle = '#ef4444';
           ctx.beginPath();
@@ -323,6 +343,11 @@ export function FrameGraph({
           ctx.lineTo(x + 4, y - 7);
           ctx.closePath();
           ctx.fill();
+
+          ctx.fillStyle = '#fca5a5';
+          ctx.font = 'bold 9px monospace';
+          ctx.textAlign = 'center';
+          ctx.fillText(`#${markerNum}`, x, y - 8);
         }
       }
     }
@@ -431,6 +456,7 @@ export function FrameGraph({
     seriesData,
     targetMs,
     episodes,
+    episodeIndexMap,
     bookmarks,
     selectedRange,
     showGame,
@@ -625,7 +651,7 @@ export function FrameGraph({
           y: e.clientY - rect.top,
           timeS: hitBm.startS,
           frameMs: 0,
-          bookmarkName: hitBm.name,
+          bookmarkName: formatBookmarkName(hitBm.name, hitBm.startS),
         });
         return;
       }
@@ -852,6 +878,51 @@ export function FrameGraph({
           >
             Reset View
           </button>
+        </div>
+      </div>
+
+      {/* Legend & Navigation Hint Bar */}
+      <div className="flex flex-wrap items-center justify-between gap-2 px-2 py-1 bg-slate-900/60 rounded border border-slate-800 text-[11px] text-slate-400">
+        <div className="flex flex-wrap items-center gap-3">
+          <div className="flex items-center gap-1.5">
+            <span className="w-2.5 h-2.5 rounded-sm bg-sky-400/80" />
+            <span>Frame Time</span>
+          </div>
+          <div className="flex items-center gap-1.5">
+            <span className="w-2.5 h-0.5 border-b-2 border-sky-400 border-dashed" />
+            <span>Target Budget ({targetMs.toFixed(1)} ms)</span>
+          </div>
+          <div className="flex items-center gap-1.5">
+            <span className="w-2.5 h-2.5 rounded-sm bg-rose-500" />
+            <span>Hitch Spike (#N)</span>
+          </div>
+          <div className="flex items-center gap-1.5">
+            <span className="w-2.5 h-2.5 rounded-full bg-purple-500" />
+            <span>Bookmark Pin</span>
+          </div>
+          {showGame && (
+            <div className="flex items-center gap-1.5 text-emerald-400">
+              <span className="w-2.5 h-0.5 bg-emerald-400" />
+              <span>Game Thread</span>
+            </div>
+          )}
+          {showRender && (
+            <div className="flex items-center gap-1.5 text-purple-400">
+              <span className="w-2.5 h-0.5 bg-purple-400" />
+              <span>Render Thread</span>
+            </div>
+          )}
+          {showGpu && (
+            <div className="flex items-center gap-1.5 text-orange-400">
+              <span className="w-2.5 h-0.5 bg-orange-400" />
+              <span>GPU Thread</span>
+            </div>
+          )}
+        </div>
+
+        {/* One-line Navigation Hint */}
+        <div className="text-[11px] text-slate-400 font-mono">
+          <strong className="text-slate-300">Drag</strong> = select | <strong className="text-slate-300">Wheel</strong> = zoom | <strong className="text-slate-300">Alt+Drag</strong> = pan
         </div>
       </div>
 

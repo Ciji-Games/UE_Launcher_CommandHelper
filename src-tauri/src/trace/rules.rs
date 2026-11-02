@@ -201,6 +201,8 @@ pub fn load_compiled_rules() -> Vec<CompiledRule> {
 struct EpisodeRuleMatch {
     rule_id: String,
     episode_id: i64,
+    episode_kind: String,
+    num_frames: f64,
     matched_excess_ms: f64,
     explainable_excess_ms: f64,
     is_periodic: bool,
@@ -535,8 +537,10 @@ pub fn evaluate_and_save_findings(
         let idle_ms = episode_idle_ms.get(&ep.id).copied().unwrap_or(0.0);
         let ep_timers = episode_timer_aggregates.get(&ep.id);
 
-        let frame_interval_s = capture_median_ms / 1000.0;
-        let num_frames = if let Some(&(min_s, max_s)) = episode_window_spans.get(&ep.id) {
+        let num_frames = if ep.kind == "slow_region" && ep.frame_to > ep.frame_from {
+            (ep.frame_to - ep.frame_from) as f64
+        } else if let Some(&(min_s, max_s)) = episode_window_spans.get(&ep.id) {
+            let frame_interval_s = (capture_median_ms / 1000.0).max(0.001);
             let dur = (max_s - min_s + frame_interval_s * 0.8).max(0.001);
             (dur / frame_interval_s).round().max(1.0)
         } else {
@@ -636,15 +640,14 @@ pub fn evaluate_and_save_findings(
             }
 
             if rule.def.id == "unattributed-gap" {
-                // Calculate unaccounted gap on GameThread (ignoring Frame root container)
+                // Calculate unaccounted gap across all non-wait, non-idle profiled timers (ignoring Frame root container)
                 let ep_scope = format!("episode:{}", ep.id);
                 let mut sum_profiled_ms = 0.0;
                 for (&(tid, th_id), &(sum_ms, _)) in ep_timers {
-                    let role = thread_roles.get(&th_id).map(|s| s.as_str()).unwrap_or("other");
                     let tname = timer_names.get(&tid).map(|s| s.as_str()).unwrap_or("");
-                    if role == "game" && tname != "Frame" {
+                    if tname != "Frame" {
                         let kind = timer_kinds.get(&tid).map(|s| s.as_str()).unwrap_or("work");
-                        if kind == "work" {
+                        if kind != "wait" && kind != "idle" {
                             let (base_ms, _) = baseline_stats
                                 .get(&(ep_scope.clone(), th_id, tid))
                                 .or_else(|| global_baselines.get(&(th_id, tid)))
@@ -656,7 +659,11 @@ pub fn evaluate_and_save_findings(
                     }
                 }
                 let gap_ms = (explainable_excess_ms - sum_profiled_ms).max(0.0);
-                let share = (gap_ms / explainable_excess_ms).clamp(0.0, 1.0);
+                let share = if explainable_excess_ms > 0.0 {
+                    (gap_ms / explainable_excess_ms).clamp(0.0, 1.0)
+                } else {
+                    0.0
+                };
 
                 if gap_ms >= rule.def.when.min_excess_ms && share >= rule.def.when.min_share_of_excess {
                     matches_by_rule
@@ -665,6 +672,8 @@ pub fn evaluate_and_save_findings(
                         .push(EpisodeRuleMatch {
                             rule_id: rule.def.id.clone(),
                             episode_id: ep.id,
+                            episode_kind: ep.kind.clone(),
+                            num_frames,
                             matched_excess_ms: gap_ms,
                             explainable_excess_ms,
                             is_periodic: ep.periodic_group.is_some(),
@@ -704,14 +713,18 @@ pub fn evaluate_and_save_findings(
 
                     let excess = (sum_ms - base_ms * num_frames).max(0.0);
                     // High-signal noise filter: ignore negligible sub-millisecond timer excess (< 2.0 ms)
-                    if excess >= 2.0 && (excess / explainable_excess_ms) >= 0.05 {
+                    if excess >= 2.0 && explainable_excess_ms > 0.0 && (excess / explainable_excess_ms) >= 0.05 {
                         matched_excess_ms += excess;
                         matched_timer_details.push((timer_name, sum_ms, base_ms * num_frames, count));
                     }
                 }
             }
 
-            let share = (matched_excess_ms / explainable_excess_ms).clamp(0.0, 1.0);
+            let share = if explainable_excess_ms > 0.0 {
+                (matched_excess_ms / explainable_excess_ms).clamp(0.0, 1.0)
+            } else {
+                0.0
+            };
             if matched_excess_ms >= rule.def.when.min_excess_ms && share >= rule.def.when.min_share_of_excess {
                 matches_by_rule
                     .entry(rule.def.id.clone())
@@ -719,6 +732,8 @@ pub fn evaluate_and_save_findings(
                     .push(EpisodeRuleMatch {
                         rule_id: rule.def.id.clone(),
                         episode_id: ep.id,
+                        episode_kind: ep.kind.clone(),
+                        num_frames,
                         matched_excess_ms,
                         explainable_excess_ms,
                         is_periodic: ep.periodic_group.is_some(),
@@ -728,7 +743,7 @@ pub fn evaluate_and_save_findings(
         }
     }
 
-    // If specific non-gap rules matched, suppress unattributed-gap when specific rules explain enough excess
+    // If specific non-gap rules matched, suppress unattributed-gap
     let has_specific_matches = matches_by_rule
         .iter()
         .any(|(id, m)| id != "unattributed-gap" && id != "frame-limiter" && !m.is_empty());
@@ -747,12 +762,23 @@ pub fn evaluate_and_save_findings(
             episode_ids.sort_unstable();
             episode_ids.dedup();
 
-            let total_explains_ms: f64 = rule_matches.iter().map(|m| m.matched_excess_ms).sum();
+            let raw_explains_ms: f64 = rule_matches.iter().map(|m| m.matched_excess_ms).sum();
             let total_of_excess_ms: f64 = rule_matches.iter().map(|m| m.explainable_excess_ms).sum();
-            let avg_explains_ms = total_explains_ms / (rule_matches.len() as f64);
-            let avg_of_excess_ms = total_of_excess_ms / (rule_matches.len() as f64);
+            let total_explains_ms = raw_explains_ms.min(total_of_excess_ms).max(0.0);
+            let avg_explains_ms = if !rule_matches.is_empty() {
+                total_explains_ms / (rule_matches.len() as f64)
+            } else {
+                0.0
+            };
+            let avg_of_excess_ms = if !rule_matches.is_empty() {
+                total_of_excess_ms / (rule_matches.len() as f64)
+            } else {
+                0.0
+            };
 
             let has_periodic = rule_matches.iter().any(|m| m.is_periodic);
+            let is_slow_region = rule_matches.iter().any(|m| m.episode_kind == "slow_region");
+            let avg_num_frames = rule_matches.iter().map(|m| m.num_frames).sum::<f64>() / (rule_matches.len() as f64);
 
             // Aggregate timer statistics across episodes to find the top culprit scopes
             let mut aggregated_timers: std::collections::HashMap<String, (f64, f64, usize, usize)> = std::collections::HashMap::new();
@@ -793,7 +819,7 @@ pub fn evaluate_and_save_findings(
             };
 
             let mut evidence = Vec::new();
-            for (tname, tms, bms, calls, _excess) in top_evidence_timers {
+            for (tname, tms, bms, calls, excess) in top_evidence_timers {
                 let periodic_clause = if has_periodic && rule.def.when.expects_periodic {
                     " (recurs periodically across trace)"
                 } else {
@@ -801,33 +827,85 @@ pub fn evaluate_and_save_findings(
                 };
 
                 let share_pct = if avg_of_excess_ms > 0.0 {
-                    ((tms - bms).max(0.0) / avg_of_excess_ms * 100.0).clamp(0.0, 100.0)
+                    (excess / avg_of_excess_ms * 100.0).clamp(0.0, 100.0)
                 } else {
                     0.0
                 };
 
                 let display_timer_name = format_timer_display_name(&tname, &rule.def.id);
 
-                let label = if rule.def.id == "unattributed-gap" {
-                    format!(
-                        "The GameThread spent {:.1} ms with no active profiled Unreal scopes ({:.0}% of extra frame time).",
-                        tms, share_pct
-                    )
-                } else {
-                    rule.def
-                        .evidence_template
+                let (label, value_ms, baseline_ms) = if rule.def.id == "unattributed-gap" {
+                    if is_slow_region {
+                        let per_frame_gap = tms / avg_num_frames.max(1.0);
+                        (
+                            format!(
+                                "Time exists that no timer explains: about {:.1} ms per frame with no active profiled Unreal scopes ({:.0}% of extra frame time).",
+                                per_frame_gap, share_pct
+                            ),
+                            Some(per_frame_gap),
+                            Some(0.0),
+                        )
+                    } else {
+                        (
+                            format!(
+                                "Time exists that no timer explains: +{:.1} ms over normal with no active profiled Unreal scopes ({:.0}% of extra frame time).",
+                                tms, share_pct
+                            ),
+                            Some(tms),
+                            Some(0.0),
+                        )
+                    }
+                } else if is_slow_region {
+                    let per_frame_tms = tms / avg_num_frames.max(1.0);
+                    let per_frame_bms = bms / avg_num_frames.max(1.0);
+                    let formatted_ms_clause = format!(
+                        "about {:.1} ms per frame vs {:.1} ms normally",
+                        per_frame_tms, per_frame_bms
+                    );
+
+                    let mut l = rule.def.evidence_template.clone();
+                    if l.contains("{ms} ms (normally {baseline_ms} ms)") {
+                        l = l.replace("{ms} ms (normally {baseline_ms} ms)", &formatted_ms_clause);
+                    } else if l.contains("{ms} ms") {
+                        l = l.replace("{ms} ms", &formatted_ms_clause);
+                    } else if l.contains("{ms}") {
+                        l = l.replace("{ms}", &formatted_ms_clause);
+                    }
+                    l = l
+                        .replace("{baseline_ms} ms", &format!("{:.1} ms", per_frame_bms))
+                        .replace("{baseline_ms}", &format!("{:.1}", per_frame_bms))
                         .replace("{timer}", &display_timer_name)
-                        .replace("{ms}", &format!("{:.1}", tms))
-                        .replace("{baseline_ms}", &format!("{:.1}", bms))
                         .replace("{share}", &format!("{:.0}", share_pct))
                         .replace("{thread}", default_thread_name)
-                        .replace("{periodic_clause}", periodic_clause)
+                        .replace("{periodic_clause}", periodic_clause);
+
+                    (l, Some(per_frame_tms), Some(per_frame_bms))
+                } else {
+                    let formatted_ms_clause = format!("+{:.1} ms over normal ({:.1} ms total)", excess, tms);
+
+                    let mut l = rule.def.evidence_template.clone();
+                    if l.contains("{ms} ms (normally {baseline_ms} ms)") {
+                        l = l.replace("{ms} ms", &formatted_ms_clause);
+                    } else if l.contains("{ms} ms") {
+                        l = l.replace("{ms} ms", &formatted_ms_clause);
+                    } else if l.contains("{ms}") {
+                        l = l.replace("{ms}", &formatted_ms_clause);
+                    }
+                    l = l
+                        .replace("{baseline_ms} ms", &format!("{:.1} ms", bms))
+                        .replace("{baseline_ms}", &format!("{:.1}", bms))
+                        .replace("{timer}", &display_timer_name)
+                        .replace("{share}", &format!("{:.0}", share_pct))
+                        .replace("{thread}", default_thread_name)
+                        .replace("{periodic_clause}", periodic_clause);
+
+                    (l, Some(excess), Some(bms))
                 };
 
                 evidence.push(Evidence {
                     label,
-                    value_ms: Some(tms),
-                    baseline_ms: Some(bms),
+                    value_ms,
+                    baseline_ms,
                     calls: Some(calls),
                     thread: Some(default_thread_name.to_string()),
                     note: None,
@@ -849,7 +927,11 @@ pub fn evaluate_and_save_findings(
                 0.5
             };
 
-            let match_score = (0.45 * coverage + 0.25 * specificity + 0.15 * significance + 0.15 * recurrence).clamp(0.0, 1.0);
+            let match_score = if rule.def.id == "unattributed-gap" {
+                coverage.clamp(0.5, 1.0)
+            } else {
+                (0.45 * coverage + 0.25 * specificity + 0.15 * significance + 0.15 * recurrence).clamp(0.0, 1.0)
+            };
             if match_score < 0.25 || evidence.is_empty() {
                 continue;
             }
@@ -1218,7 +1300,8 @@ mod tests {
 
         let payload: FindingPayload = serde_json::from_str(&gc_finding.payload).unwrap();
         assert_eq!(payload.evidence.len(), 1);
-        assert!(payload.evidence[0].label.contains("CollectGarbage took 70.0 ms"));
+        assert!(payload.evidence[0].label.contains("CollectGarbage took"));
+        assert!(payload.evidence[0].label.contains("70.0 ms"));
         assert_eq!(payload.match_confidence, "high");
     }
 
@@ -1487,6 +1570,11 @@ mod tests {
         assert!(bound_by == "game" || bound_by == "unattributed", "bound_by was {}", bound_by);
         let rule_ids: Vec<&str> = findings.iter().map(|f| f.rule_id.as_str()).collect();
         assert_eq!(rule_ids, vec!["unattributed-gap"]);
+
+        let payload: FindingPayload = serde_json::from_str(&findings[0].payload).unwrap();
+        assert!(!payload.evidence.is_empty());
+        assert!(payload.evidence[0].label.contains("Time exists that no timer explains"), "Evidence was: {}", payload.evidence[0].label);
+        assert!(payload.fixes.iter().any(|f| f.text.contains("TRACE_CPUPROFILER_EVENT_SCOPE")));
     }
 
     #[test]
@@ -1563,6 +1651,23 @@ mod tests {
         assert_eq!(bound_by, "gpu");
         let rule_ids: Vec<&str> = findings.iter().map(|f| f.rule_id.as_str()).collect();
         assert_eq!(rule_ids, vec!["gpu-bound"]);
+
+        let payload: FindingPayload = serde_json::from_str(&findings[0].payload).unwrap();
+        assert!(!payload.evidence.is_empty());
+        let gpu_frame_ev = payload
+            .evidence
+            .iter()
+            .find(|e| e.label.contains("GPU total frame duration") || e.label.contains("Frame"))
+            .expect("Should contain GPU frame evidence");
+        assert!(
+            gpu_frame_ev.label.contains("about 14.0 ms per frame vs 6.3 ms normally"),
+            "Evidence was: {}",
+            gpu_frame_ev.label
+        );
+        for ev in &payload.evidence {
+            assert!(!ev.label.contains("280"), "Evidence should not contain 280 ms: {}", ev.label);
+            assert!(ev.label.contains("per frame"), "Evidence should contain per frame: {}", ev.label);
+        }
     }
 
     #[test]
@@ -1705,6 +1810,17 @@ mod tests {
         assert_eq!(bound_by, "render");
         let rule_ids: Vec<&str> = findings.iter().map(|f| f.rule_id.as_str()).collect();
         assert_eq!(rule_ids, vec!["render-cpu"]);
+
+        let payload: FindingPayload = serde_json::from_str(&findings[0].payload).unwrap();
+        assert!(!payload.evidence.is_empty());
+        let ev = &payload.evidence[0];
+        let val = ev.value_ms.unwrap_or(0.0);
+        assert!(
+            (val - 60.0).abs() <= 6.0,
+            "Evidence value_ms was {}, expected within 10% of 60.0 ms",
+            val
+        );
+        assert!(ev.label.contains("+60.0 ms over normal") || ev.label.contains("60.0 ms"), "Evidence label was: {}", ev.label);
     }
 
     #[test]
@@ -1730,5 +1846,50 @@ mod tests {
         assert_eq!(bound_by, "unattributed");
         let rule_ids: Vec<&str> = findings.iter().map(|f| f.rule_id.as_str()).collect();
         assert_eq!(rule_ids, vec!["inconclusive"]);
+    }
+
+    #[test]
+    fn test_explains_ms_capped_to_excess_and_evidence_clamped() {
+        let mut ctx = ScenarioContext::new();
+        ctx.seed_baseline_window_frames(1, 6);
+
+        // Inject large timers that together exceed peak_ms - median_ms
+        ctx.add_event(1, 1, "CollectGarbage", 100.0);
+        ctx.add_event(1, 1, "PerformReachabilityAnalysis", 50.0);
+
+        let ep = DbEpisode {
+            id: 1,
+            kind: "hitch".to_string(),
+            start_s: 2.0,
+            end_s: 2.1,
+            frame_from: 120,
+            frame_to: 121,
+            peak_ms: 60.0,
+            median_ms: 16.6, // excess = 43.4 ms
+            bound_by: "unattributed".to_string(),
+            periodic_group: None,
+        };
+
+        let (findings, _) = ctx.evaluate(ep);
+        assert!(!findings.is_empty());
+        for f in &findings {
+            let payload: FindingPayload = serde_json::from_str(&f.payload).unwrap();
+            assert!(
+                payload.explains_ms <= payload.of_excess_ms + 0.001,
+                "explains_ms ({}) should not exceed of_excess_ms ({})",
+                payload.explains_ms,
+                payload.of_excess_ms
+            );
+            for ev in &payload.evidence {
+                // Ensure no label contains a percentage > 100%
+                if let Some(pct_idx) = ev.label.find('%') {
+                    let text_before = &ev.label[..pct_idx];
+                    let digits: String = text_before.chars().rev().take_while(|c| c.is_ascii_digit() || *c == '.').collect::<String>().chars().rev().collect();
+                    if let Ok(pct_val) = digits.parse::<f64>() {
+                        assert!(pct_val <= 100.0, "Evidence percentage was {}% > 100%", pct_val);
+                    }
+                }
+            }
+        }
     }
 }

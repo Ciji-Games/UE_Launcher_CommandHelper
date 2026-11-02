@@ -134,6 +134,23 @@ export interface BucketBreakdown {
   baselineMs: number;
 }
 
+export interface ThreadMedians {
+  gameMs: number;
+  renderMs: number;
+  gpuMs: number;
+  limitingThread: 'gpu' | 'game' | 'render' | 'idle' | string;
+}
+
+export interface RangeTopTimer {
+  name: string;
+  bucket: string;
+  threadRole: string;
+  avgMsPerFrame: number;
+  totalMs: number;
+  callCount: number;
+  shareOfBudgetGapPct?: number | null;
+}
+
 export interface RangeCategoryBreakdown {
   category: string;
   totalMs: number;
@@ -159,9 +176,11 @@ export interface RangeStatisticsResponse {
   minMs: number;
   maxMs: number;
   overBudgetPct: number;
-  pipelineBalance: PipelineBalance;
-  categories: RangeCategoryBreakdown[];
-  topTimers: TimerExcessDetail[];
+  budgetGapMs: number;
+  threadMedians: ThreadMedians;
+  topTimers: RangeTopTimer[];
+  pipelineBalance?: PipelineBalance;
+  categories?: RangeCategoryBreakdown[];
 }
 
 export interface TimerExcessDetail {

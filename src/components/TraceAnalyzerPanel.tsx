@@ -4,11 +4,12 @@ import { getCurrentWebview } from '@tauri-apps/api/webview';
 import { useTraceAnalyzer } from '../hooks/useTraceAnalyzer';
 import { FrameGraph } from './traceAnalyzer/FrameGraph';
 import { SummaryHeader } from './traceAnalyzer/SummaryHeader';
+import { StartHereBanner } from './traceAnalyzer/StartHereBanner';
 import { FindingCard } from './traceAnalyzer/FindingCard';
 import { LoadingStages } from './traceAnalyzer/LoadingStages';
-import { RangeStatisticsPanel } from './traceAnalyzer/RangeStatisticsPanel';
-import { CategoryBreakdownChart } from './traceAnalyzer/CategoryBreakdownChart';
-import type { Finding, TraceCandidate } from '../types/traceAnalyzer';
+import { RangeAnalysisPanel } from './traceAnalyzer/RangeAnalysisPanel';
+import { DetailsDrawer } from './traceAnalyzer/DetailsDrawer';
+import type { Episode, Finding, TraceCandidate } from '../types/traceAnalyzer';
 
 function formatDuration(s: number): string {
   if (s < 60) return `${s.toFixed(2)}s`;
@@ -49,6 +50,7 @@ export function TraceAnalyzerPanel() {
   const [showLaunchModal, setShowLaunchModal] = useState(false);
   const [selectedExePath, setSelectedExePath] = useState<string>('');
   const [customArgs, setCustomArgs] = useState<string>('');
+  const [selectedTimerName, setSelectedTimerName] = useState<string | null>(null);
 
   // File picker handler for .utrace
   const handlePickFile = async () => {
@@ -134,122 +136,119 @@ export function TraceAnalyzerPanel() {
     };
   }, [openTrace]);
 
-  // Filter and rank findings strictly based on active selected range
+  // Filter and rank findings strictly based on active selected range & selected timer
   const scopedFindings = useMemo(() => {
     if (!summary) return [];
-    if (!selectedRange) return findings;
-    const [minS, maxS] = [Math.min(...selectedRange), Math.max(...selectedRange)];
+    let list = findings;
 
-    // Check if range is roughly entire trace
-    const isFullTrace = maxS - minS >= summary.durationS - 0.05;
+    if (selectedRange) {
+      const [minS, maxS] = [Math.min(...selectedRange), Math.max(...selectedRange)];
 
-    if (isFullTrace) {
-      return findings;
+      // Check if range is roughly entire trace
+      const isFullTrace = maxS - minS >= summary.durationS - 0.05;
+
+      if (!isFullTrace) {
+        // Filter to only findings whose occurrences/episodes overlap the active selection window
+        list = list.filter((f) => {
+          if (!f.episodeIds || f.episodeIds.length === 0) return true;
+          return f.episodeIds.some((id) => {
+            const ep = episodes.find((e) => e.id === id);
+            return ep && ep.startS <= maxS && ep.endS >= minS;
+          });
+        });
+      }
     }
 
-    // Filter to only findings whose occurrences/episodes overlap the active selection window
-    return findings.filter((f) => {
-      if (!f.episodeIds || f.episodeIds.length === 0) return true;
-      return f.episodeIds.some((id) => {
-        const ep = episodes.find((e) => e.id === id);
-        return ep && ep.startS <= maxS && ep.endS >= minS;
+    if (selectedTimerName) {
+      const lower = selectedTimerName.toLowerCase();
+      const filteredByTimer = list.filter((f) => {
+        const payloadStr = f.payload.toLowerCase();
+        return payloadStr.includes(lower) || f.ruleId.toLowerCase().includes(lower);
       });
+      if (filteredByTimer.length > 0) {
+        list = filteredByTimer;
+      }
+    }
+
+    return list;
+  }, [findings, selectedRange, selectedTimerName, episodes, summary]);
+
+  // Categorize findings into Every Frame (sustained) and Spikes (hitches), with startup hitches (< 1s) ranked last
+  const { everyFrameFindings, spikeFindings } = useMemo(() => {
+    const everyFrame: Finding[] = [];
+    const normalSpikes: Finding[] = [];
+    const startupSpikes: Finding[] = [];
+
+    const episodesMap = new Map<number, Episode>(episodes.map((e) => [e.id, e]));
+
+    scopedFindings.forEach((f) => {
+      const p = f.parsedPayload;
+      const fEpisodes = (p?.episodeIds || [])
+        .map((id) => episodesMap.get(id))
+        .filter(Boolean) as Episode[];
+
+      const hasSlowRegion = fEpisodes.some((e) => e.kind === 'slow_region');
+      const isSustainedRule =
+        f.ruleId.includes('region') ||
+        f.ruleId.includes('overhead') ||
+        f.ruleId.includes('gpu-heavy') ||
+        f.ruleId.includes('limiter') ||
+        f.ruleId.includes('editor') ||
+        f.ruleId.includes('slate') ||
+        f.ruleId.includes('lumen') ||
+        f.ruleId.includes('nanite') ||
+        f.ruleId.includes('shadows');
+
+      if (hasSlowRegion || isSustainedRule) {
+        everyFrame.push(f);
+      } else {
+        const allStartup =
+          fEpisodes.length > 0 && fEpisodes.every((e) => e.startS < 1.0);
+        if (allStartup) {
+          startupSpikes.push(f);
+        } else {
+          normalSpikes.push(f);
+        }
+      }
     });
-  }, [findings, selectedRange, episodes, summary]);
+
+    const getEarliestStart = (f: Finding) => {
+      const p = f.parsedPayload;
+      const times = (p?.episodeIds || [])
+        .map((id) => episodesMap.get(id)?.startS)
+        .filter((t): t is number => t !== undefined);
+      return times.length > 0 ? Math.min(...times) : 0;
+    };
+
+    normalSpikes.sort((a, b) => getEarliestStart(a) - getEarliestStart(b));
+    startupSpikes.sort((a, b) => getEarliestStart(a) - getEarliestStart(b));
+
+    return {
+      everyFrameFindings: everyFrame,
+      spikeFindings: [...normalSpikes, ...startupSpikes],
+    };
+  }, [scopedFindings, episodes]);
 
   return (
     <div className="flex flex-col h-full bg-slate-950 text-slate-100 p-4 gap-3 select-none overflow-hidden">
-      {/* Top Header / Action Bar */}
-      <div className="flex flex-wrap items-center justify-between gap-3 pb-3 border-b border-slate-800">
-        <div className="flex items-center gap-3">
-          <div className="flex items-center gap-2">
-            <span className="text-base font-bold bg-gradient-to-r from-sky-400 via-indigo-300 to-purple-400 bg-clip-text text-transparent">
-              Trace Analyzer Studio
-            </span>
-            <span className="text-xs px-2 py-0.5 rounded bg-sky-950/80 text-sky-400 border border-sky-800/60 font-mono">
-              Unified
-            </span>
-          </div>
-
-          {/* Open Trace Button */}
-          <button
-            type="button"
-            onClick={handlePickFile}
-            disabled={isAnalyzing}
-            className="flex items-center gap-1.5 px-3 py-1 rounded bg-sky-600 hover:bg-sky-500 disabled:opacity-50 text-white text-xs font-medium transition-colors shadow-sm"
-          >
-            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 19a2 2 0 01-2-2V7a2 2 0 012-2h4l2 2h4a2 2 0 012 2v1M5 19h14a2 2 0 002-2v-5a2 2 0 00-2-2H9a2 2 0 00-2 2v5a2 2 0 01-2 2z" />
-            </svg>
-            <span>Open .utrace...</span>
-          </button>
-
-          {/* Launch Game Executable Button */}
-          <button
-            type="button"
-            onClick={handlePickExe}
-            disabled={isAnalyzing}
-            className="flex items-center gap-1.5 px-3 py-1 rounded bg-slate-800 hover:bg-slate-700 disabled:opacity-50 text-slate-200 text-xs font-medium border border-slate-700 transition-colors shadow-sm"
-          >
-            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z" />
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-            </svg>
-            <span>Launch Game (.exe)...</span>
-          </button>
-
-          {/* Candidate Traces Dropdown */}
-          {candidates.length > 0 && (
-            <select
-              onChange={(e) => {
-                if (e.target.value) openTrace(e.target.value);
-              }}
-              value=""
-              disabled={isAnalyzing}
-              className="bg-slate-800 border border-slate-600 text-slate-300 rounded px-2.5 py-1 text-xs focus:ring-1 focus:ring-sky-500 focus:outline-none max-w-[200px] truncate"
-            >
-              <option value="" disabled>
-                Recent Traces ({candidates.length})...
-              </option>
-              {candidates.map((c: TraceCandidate) => (
-                <option key={c.path} value={c.path}>
-                  {c.fileName} ({c.source === 'store' ? 'Store' : 'Project'})
-                </option>
-              ))}
-            </select>
-          )}
-        </div>
-
-        {/* Engine Selection & Insights Status */}
-        <div className="flex items-center gap-3 text-xs">
-          <div className="flex items-center gap-1.5">
-            <span className="text-slate-400">Engine:</span>
-            <select
-              value={selectedEngineRoot}
-              onChange={(e) => setSelectedEngineRoot(e.target.value)}
-              disabled={isAnalyzing}
-              className="bg-slate-800 border border-slate-600 text-slate-300 rounded px-2.5 py-1 text-xs focus:ring-1 focus:ring-sky-500 focus:outline-none max-w-[180px] truncate"
-            >
-              {availableEngines.map((e: { root: string; version: string }) => (
-                <option key={e.root} value={e.root}>
-                  UE {e.version}
-                </option>
-              ))}
-            </select>
-          </div>
-
-          <div className="flex items-center gap-1.5">
-            <span
-              className={`w-2 h-2 rounded-full ${
-                insightsInfo?.exists ? 'bg-emerald-400 shadow-[0_0_6px_#34d399]' : 'bg-rose-400'
-              }`}
-            />
-            <span className="text-slate-400">
-              {insightsInfo?.exists ? 'Insights Ready' : 'Insights Missing'}
-            </span>
-          </div>
-        </div>
-      </div>
+      {/* Top Compact Action & Metadata Bar */}
+      <SummaryHeader
+        summary={summary}
+        findings={scopedFindings}
+        targetFps={options.targetFps}
+        onTargetFpsChange={setTargetFps}
+        onOpenInInsights={() => openInInsights()}
+        onPickFile={handlePickFile}
+        onPickExe={handlePickExe}
+        candidates={candidates}
+        onOpenTrace={openTrace}
+        availableEngines={availableEngines}
+        selectedEngineRoot={selectedEngineRoot}
+        onEngineChange={setSelectedEngineRoot}
+        insightsExists={!!insightsInfo?.exists}
+        isAnalyzing={isAnalyzing}
+        selectedRange={selectedRange}
+      />
 
       {/* Main Content Area */}
       <div className="flex-1 min-h-0 pt-1 flex flex-col gap-3">
@@ -278,13 +277,13 @@ export function TraceAnalyzerPanel() {
         ) : summary ? (
           /* Active Trace View: Unified Performance Studio Dashboard */
           <div className="flex flex-col gap-3 flex-1 min-h-0 overflow-y-auto pr-1">
-            {/* Top Summary Header Bar */}
-            <SummaryHeader
+            {/* "Start Here" Dynamic Diagnostic Banner */}
+            <StartHereBanner
+              stats={rangeStats}
               summary={summary}
-              findings={findings}
-              targetFps={options.targetFps}
-              onTargetFpsChange={setTargetFps}
-              onOpenInInsights={() => openInInsights()}
+              findings={scopedFindings}
+              episodes={episodes}
+              onShowOnGraph={(range) => setSelectedRange(range)}
             />
 
             {/* Frame Time Graph + Bookmarks Track */}
@@ -300,104 +299,142 @@ export function TraceAnalyzerPanel() {
               />
             </div>
 
-            {/* Middle Row: Range Statistics & Hardware Balance | Fixed Category Donut */}
-            <div className="grid grid-cols-1 lg:grid-cols-2 gap-3 shrink-0">
-              {/* Left Column: Pipeline Balance & Health Metrics */}
-              <RangeStatisticsPanel
+            {/* Middle Row: Range Analysis Panel */}
+            <div className="shrink-0">
+              <RangeAnalysisPanel
                 stats={rangeStats}
                 targetMs={summary.targetMs}
+                hitchCount={summary.hitchCount}
+                maxHitchMs={episodes.find((e) => e.kind === 'hitch')?.peakMs}
                 isLoading={rangeStatsLoading}
-              />
-
-              {/* Right Column: Fixed Category Donut & Top Timers */}
-              <CategoryBreakdownChart
-                categories={rangeStats?.categories || []}
-                topTimers={rangeStats?.topTimers || []}
-                frameCount={rangeStats?.frameCount || 0}
+                selectedTimerName={selectedTimerName}
+                onSelectTimer={setSelectedTimerName}
               />
             </div>
 
             {/* Scoped Diagnostic Findings Section */}
-            <div className="flex flex-col gap-3 min-h-[300px] pb-6 pt-1 border-t border-slate-800/80">
-              {/* Selected Scope Indicator Bar */}
-              {selectedRange && (
-                <div className="flex flex-wrap items-center justify-between gap-3 p-3 rounded-lg bg-slate-900/80 border border-sky-500/50 shadow-md">
-                  <div className="flex items-center gap-2.5 text-xs">
-                    <span className="font-bold text-sky-300 text-sm">
-                      Active Scope:
-                    </span>
-                    <span className="font-mono text-slate-200">
-                      {formatDuration(selectedRange[0])} – {formatDuration(selectedRange[1])}
-                    </span>
-                    <span className="text-slate-500">•</span>
-                    <span className="text-slate-400">
-                      Duration: <strong className="text-amber-300 font-mono">{(selectedRange[1] - selectedRange[0]).toFixed(2)}s</strong>
-                    </span>
-                    {rangeStats && (
-                      <>
-                        <span className="text-slate-500">•</span>
-                        <span className="text-slate-400">
-                          Frames: <strong className="text-sky-300 font-mono">{rangeStats.frameCount}</strong>
-                        </span>
-                      </>
-                    )}
-                  </div>
+            <div className="flex flex-col gap-4 min-h-[300px] pb-6 pt-1 border-t border-slate-800/80">
+              {/* Selected Scope Indicator Bar (Hidden when entire trace is active) */}
+              {selectedRange &&
+                Math.max(...selectedRange) - Math.min(...selectedRange) < summary.durationS - 0.05 && (
+                  <div className="flex flex-wrap items-center justify-between gap-3 p-3 rounded-lg bg-slate-900/80 border border-sky-500/50 shadow-md">
+                    <div className="flex items-center gap-2.5 text-xs">
+                      <span className="font-bold text-sky-300 text-sm">
+                        Active Scope:
+                      </span>
+                      <span className="font-mono text-slate-200">
+                        {formatDuration(selectedRange[0])} – {formatDuration(selectedRange[1])}
+                      </span>
+                      <span className="text-slate-500">•</span>
+                      <span className="text-slate-400">
+                        Duration: <strong className="text-amber-300 font-mono">{(selectedRange[1] - selectedRange[0]).toFixed(2)}s</strong>
+                      </span>
+                      {rangeStats && (
+                        <>
+                          <span className="text-slate-500">•</span>
+                          <span className="text-slate-400">
+                            Frames: <strong className="text-sky-300 font-mono">{rangeStats.frameCount}</strong>
+                          </span>
+                        </>
+                      )}
+                    </div>
 
-                  <div className="flex items-center gap-2 shrink-0">
-                    <button
-                      type="button"
-                      onClick={() => openInInsights()}
-                      className="flex items-center gap-1 px-2.5 py-1 rounded bg-sky-600 hover:bg-sky-500 text-white text-xs font-medium transition-colors shadow-sm"
-                    >
-                      <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
-                      </svg>
-                      <span>Inspect in Unreal Insights</span>
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setSelectedRange([0, summary.durationS])}
-                      className="px-2 py-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white text-xs transition-colors border border-slate-700"
-                    >
-                      Entire Trace
-                    </button>
+                    <div className="flex items-center gap-2 shrink-0">
+                      <button
+                        type="button"
+                        onClick={() => openInInsights()}
+                        className="flex items-center gap-1 px-2.5 py-1 rounded bg-sky-600 hover:bg-sky-500 text-white text-xs font-medium transition-colors shadow-sm"
+                      >
+                        <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
+                        </svg>
+                        <span>Inspect in Unreal Insights</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setSelectedRange([0, summary.durationS])}
+                        className="px-2 py-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white text-xs transition-colors border border-slate-700"
+                      >
+                        Entire Trace
+                      </button>
+                    </div>
                   </div>
+                )}
+
+              {/* No Findings State */}
+              {everyFrameFindings.length === 0 && spikeFindings.length === 0 ? (
+                <div className="p-8 rounded-lg bg-slate-900/40 border border-slate-800 text-center text-xs text-slate-400">
+                  No severe performance bottlenecks detected against the target frame budget in this scope.
                 </div>
+              ) : (
+                <>
+                  {/* Section 1: Every Frame (Sustained Bottlenecks) */}
+                  {everyFrameFindings.length > 0 && (
+                    <div className="flex flex-col gap-2.5">
+                      <div className="flex items-center justify-between">
+                        <div className="flex items-center gap-2">
+                          <span className="text-xs font-bold text-slate-200 uppercase tracking-wider">
+                            Every Frame ({everyFrameFindings.length})
+                          </span>
+                          <span className="text-[11px] text-slate-400 font-normal">
+                            — Continuous budget bottlenecks and sustained overheads
+                          </span>
+                        </div>
+                      </div>
+
+                      <div className="flex flex-col gap-3">
+                        {everyFrameFindings.map((f: Finding, idx: number) => (
+                          <FindingCard
+                            key={f.id}
+                            finding={f}
+                            episodes={episodes}
+                            targetFps={options.targetFps}
+                            budgetGapMs={rangeStats?.budgetGapMs || 0}
+                            defaultExpanded={idx < 3}
+                            onSelectRange={(range) => setSelectedRange(range)}
+                            onOpenInInsights={() => openInInsights()}
+                          />
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Section 2: Spikes (Hitches) */}
+                  {spikeFindings.length > 0 && (
+                    <div className="flex flex-col gap-2.5">
+                      <div className="flex items-center justify-between">
+                        <div className="flex items-center gap-2">
+                          <span className="text-xs font-bold text-slate-200 uppercase tracking-wider">
+                            Spikes ({spikeFindings.length})
+                          </span>
+                          <span className="text-[11px] text-slate-400 font-normal">
+                            — Discrete frame hitches and anomalous pauses
+                          </span>
+                        </div>
+                        <span className="text-[11px] text-slate-500 font-mono">Sorted chronologically (startup last)</span>
+                      </div>
+
+                      <div className="flex flex-col gap-3">
+                        {spikeFindings.map((f: Finding, idx: number) => (
+                          <FindingCard
+                            key={f.id}
+                            finding={f}
+                            episodes={episodes}
+                            targetFps={options.targetFps}
+                            budgetGapMs={rangeStats?.budgetGapMs || 0}
+                            defaultExpanded={everyFrameFindings.length + idx < 3}
+                            onSelectRange={(range) => setSelectedRange(range)}
+                            onOpenInInsights={() => openInInsights()}
+                          />
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </>
               )}
 
-              {/* Findings Section Header */}
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-2">
-                  <h3 className="text-xs font-semibold text-slate-300 uppercase tracking-wider">
-                    Actionable Diagnostic Findings ({scopedFindings.length})
-                  </h3>
-                  {selectedRange && (
-                    <span className="text-[11px] text-sky-400">
-                      (Scoped to active selection)
-                    </span>
-                  )}
-                </div>
-                <span className="text-[11px] text-slate-500">Ranked by excess time explained</span>
-              </div>
-
-              {/* Cards List */}
-              <div className="flex flex-col gap-3.5">
-                {scopedFindings.length === 0 ? (
-                  <div className="p-8 rounded-lg bg-slate-900/40 border border-slate-800 text-center text-xs text-slate-400">
-                    No severe performance bottlenecks detected against the target frame budget in this scope.
-                  </div>
-                ) : (
-                  scopedFindings.map((f: Finding) => (
-                    <FindingCard
-                      key={f.id}
-                      finding={f}
-                      episodes={episodes}
-                      onSelectRange={(range) => setSelectedRange(range)}
-                      onOpenInInsights={() => openInInsights()}
-                    />
-                  ))
-                )}
-              </div>
+              {/* Bottom Collapsible Details Drawer */}
+              <DetailsDrawer summary={summary} />
             </div>
           </div>
         ) : (

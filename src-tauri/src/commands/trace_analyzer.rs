@@ -60,20 +60,23 @@ pub struct TraceSummary {
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
-pub struct RangeCategoryBreakdown {
-    pub category: String,
-    pub total_ms: f64,
-    pub avg_ms_per_frame: f64,
-    pub percentage: f64,
+pub struct ThreadMedians {
+    pub game_ms: f64,
+    pub render_ms: f64,
+    pub gpu_ms: f64,
+    pub limiting_thread: String, // "gpu" | "game" | "render" | "idle"
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
-pub struct PipelineBalance {
-    pub gpu_bound_pct: f64,
-    pub game_bound_pct: f64,
-    pub render_bound_pct: f64,
-    pub idle_wait_pct: f64,
+pub struct RangeTopTimer {
+    pub name: String,
+    pub bucket: String,
+    pub thread_role: String,
+    pub avg_ms_per_frame: f64,
+    pub total_ms: f64,
+    pub call_count: usize,
+    pub share_of_budget_gap_pct: Option<f64>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -89,9 +92,9 @@ pub struct RangeStatisticsResponse {
     pub min_ms: f64,
     pub max_ms: f64,
     pub over_budget_pct: f64,
-    pub pipeline_balance: PipelineBalance,
-    pub categories: Vec<RangeCategoryBreakdown>,
-    pub top_timers: Vec<TimerExcessDetail>,
+    pub budget_gap_ms: f64,
+    pub thread_medians: ThreadMedians,
+    pub top_timers: Vec<RangeTopTimer>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -977,9 +980,7 @@ pub fn compute_range_statistics(
     raw_start_s: f64,
     raw_end_s: f64,
 ) -> Result<RangeStatisticsResponse, rusqlite::Error> {
-    use crate::trace::buckets::map_bucket_to_fixed_category;
     use crate::trace::frames::calculate_percentile;
-    use std::collections::HashMap;
 
     let (start_s, end_s) = if (raw_end_s - raw_start_s).abs() < 0.02 {
         let center = raw_start_s.max(0.0);
@@ -1095,152 +1096,92 @@ pub fn compute_range_statistics(
         0.0
     };
 
-    // 2. Hardware Pipeline Balance
-    let mut sum_gpu = 0.0;
-    let mut sum_game = 0.0;
-    let mut sum_render = 0.0;
-    let mut sum_idle = 0.0;
+    let budget_gap_ms = (median_ms - target_ms).max(0.0);
 
-    for f in &frames {
-        let g = f.game_ms.unwrap_or(0.0).max(0.0);
-        let r = f.render_ms.unwrap_or(0.0).max(0.0);
-        let gpu = f.gpu_ms.unwrap_or(0.0).max(0.0);
-        let active_max = g.max(r).max(gpu);
-        let idle = (f.interval_ms - active_max).max(0.0);
+    // 2. Thread Medians
+    let mut game_times: Vec<f64> = frames.iter().filter_map(|f| f.game_ms).collect();
+    game_times.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let median_game_ms = if game_times.is_empty() { 0.0 } else { calculate_percentile(&game_times, 0.5) };
 
-        sum_game += g;
-        sum_render += r;
-        sum_gpu += gpu;
-        sum_idle += idle;
-    }
+    let mut render_times: Vec<f64> = frames.iter().filter_map(|f| f.render_ms).collect();
+    render_times.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let median_render_ms = if render_times.is_empty() { 0.0 } else { calculate_percentile(&render_times, 0.5) };
 
-    let total_pipeline = sum_gpu + sum_game + sum_render + sum_idle;
-    let pipeline_balance = if total_pipeline > 0.0001 {
-        PipelineBalance {
-            gpu_bound_pct: (sum_gpu / total_pipeline) * 100.0,
-            game_bound_pct: (sum_game / total_pipeline) * 100.0,
-            render_bound_pct: (sum_render / total_pipeline) * 100.0,
-            idle_wait_pct: (sum_idle / total_pipeline) * 100.0,
-        }
+    let mut gpu_times: Vec<f64> = frames.iter().filter_map(|f| f.gpu_ms).collect();
+    gpu_times.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let median_gpu_ms = if gpu_times.is_empty() { 0.0 } else { calculate_percentile(&gpu_times, 0.5) };
+
+    let limiting_thread = if median_gpu_ms >= median_game_ms && median_gpu_ms >= median_render_ms && median_gpu_ms > 0.0 {
+        "gpu"
+    } else if median_game_ms >= median_render_ms && median_game_ms > 0.0 {
+        "game"
+    } else if median_render_ms > 0.0 {
+        "render"
+    } else if median_ms > 0.0 && median_gpu_ms == 0.0 && median_game_ms == 0.0 && median_render_ms == 0.0 {
+        "idle"
     } else {
-        PipelineBalance {
-            gpu_bound_pct: 0.0,
-            game_bound_pct: 0.0,
-            render_bound_pct: 0.0,
-            idle_wait_pct: 0.0,
-        }
+        "game"
     };
 
-    // 3. 7 Fixed Categories Aggregation & Top Timers
-    const FIXED_CATEGORIES: [&str; 7] = [
-        "Rendering & GPU",
-        "Blueprints & Script",
-        "UI & Slate",
-        "Garbage Collection",
-        "Animation & Physics",
-        "Asset Loading & Streaming",
-        "Other / Engine System",
-    ];
+    let thread_medians = ThreadMedians {
+        game_ms: median_game_ms,
+        render_ms: median_render_ms,
+        gpu_ms: median_gpu_ms,
+        limiting_thread: limiting_thread.to_string(),
+    };
 
-    let mut category_totals: HashMap<&'static str, f64> = HashMap::new();
-    for cat in &FIXED_CATEGORIES {
-        category_totals.insert(*cat, 0.0);
-    }
-
+    // 3. Top Timers Aggregation
     let mut top_timers = Vec::new();
-    let mut total_classified_ms = 0.0;
 
     if let Ok(mut stmt) = conn.prepare(
-        "SELECT t.name, t.bucket, t.kind, SUM(we.excl_ms) as total_excl, COUNT(we.excl_ms) as call_count
+        "SELECT t.name, t.bucket, t.kind, COALESCE(th.role, 'game') as thread_role, SUM(we.excl_ms) as total_excl, COUNT(we.excl_ms) as call_count
          FROM window_events we
          JOIN timers t ON t.id = we.timer_id
+         LEFT JOIN threads th ON th.id = we.thread_id
          WHERE we.start_s <= ?2 AND we.end_s >= ?1
-         GROUP BY t.id, t.name, t.bucket, t.kind
+         GROUP BY t.id, t.name, t.bucket, t.kind, th.role
          ORDER BY total_excl DESC",
     ) {
         let rows = stmt.query_map(rusqlite::params![start_s, end_s], |row| {
             let name: String = row.get(0)?;
             let bucket: String = row.get(1)?;
             let kind: String = row.get(2)?;
-            let total_excl: f64 = row.get(3)?;
-            let call_count: i64 = row.get(4)?;
-            Ok((name, bucket, kind, total_excl, call_count as usize))
+            let thread_role: String = row.get(3)?;
+            let total_excl: f64 = row.get(4)?;
+            let call_count: i64 = row.get(5)?;
+            Ok((name, bucket, kind, thread_role, total_excl, call_count as usize))
         });
 
         if let Ok(mapped_rows) = rows {
             for r in mapped_rows.flatten() {
-                let (name, bucket, kind, total_excl, call_count) = r;
+                let (name, bucket, kind, thread_role, total_excl, call_count) = r;
                 if kind != "wait" && kind != "idle" {
-                    let cat = map_bucket_to_fixed_category(&bucket);
-                    *category_totals.entry(cat).or_insert(0.0) += total_excl;
-                    total_classified_ms += total_excl;
+                    let avg_ms_per_frame = if frame_count > 0 {
+                        total_excl / (frame_count as f64)
+                    } else {
+                        0.0
+                    };
 
-                    if top_timers.len() < 20 {
-                        top_timers.push(TimerExcessDetail {
-                            timer_name: name,
+                    let share_of_budget_gap_pct = if budget_gap_ms > 0.001 {
+                        Some(((avg_ms_per_frame / budget_gap_ms) * 100.0).clamp(0.0, 100.0))
+                    } else {
+                        None
+                    };
+
+                    if top_timers.len() < 25 {
+                        top_timers.push(RangeTopTimer {
+                            name,
                             bucket,
-                            episode_excl_ms: total_excl,
-                            baseline_median_ms: 0.0,
-                            excess_ms: total_excl,
+                            thread_role,
+                            avg_ms_per_frame,
+                            total_ms: total_excl,
                             call_count,
+                            share_of_budget_gap_pct,
                         });
                     }
                 }
             }
         }
-    }
-
-    // Fallback if no window_events were stored for this range: estimate from frame totals
-    if total_classified_ms < 0.0001 && frame_count > 0 {
-        let gpu_cost = sum_gpu;
-        let render_cost = sum_render;
-        let game_cost = sum_game;
-
-        if let Some(val) = category_totals.get_mut("Rendering & GPU") {
-            *val = gpu_cost + render_cost;
-        }
-        if let Some(val) = category_totals.get_mut("Blueprints & Script") {
-            *val = game_cost * 0.35;
-        }
-        if let Some(val) = category_totals.get_mut("UI & Slate") {
-            *val = game_cost * 0.15;
-        }
-        if let Some(val) = category_totals.get_mut("Garbage Collection") {
-            *val = 0.0;
-        }
-        if let Some(val) = category_totals.get_mut("Animation & Physics") {
-            *val = game_cost * 0.20;
-        }
-        if let Some(val) = category_totals.get_mut("Asset Loading & Streaming") {
-            *val = 0.0;
-        }
-        if let Some(val) = category_totals.get_mut("Other / Engine System") {
-            *val = game_cost * 0.30;
-        }
-
-        total_classified_ms = (gpu_cost + render_cost + game_cost).max(0.001);
-    }
-
-    let mut categories = Vec::new();
-    for cat in &FIXED_CATEGORIES {
-        let total_ms = *category_totals.get(cat).unwrap_or(&0.0);
-        let avg_ms_per_frame = if frame_count > 0 {
-            total_ms / (frame_count as f64)
-        } else {
-            0.0
-        };
-        let percentage = if total_classified_ms > 0.0001 {
-            (total_ms / total_classified_ms) * 100.0
-        } else {
-            0.0
-        };
-
-        categories.push(RangeCategoryBreakdown {
-            category: cat.to_string(),
-            total_ms,
-            avg_ms_per_frame,
-            percentage,
-        });
     }
 
     Ok(RangeStatisticsResponse {
@@ -1254,8 +1195,8 @@ pub fn compute_range_statistics(
         min_ms,
         max_ms,
         over_budget_pct,
-        pipeline_balance,
-        categories,
+        budget_gap_ms,
+        thread_medians,
         top_timers,
     })
 }
@@ -1358,6 +1299,14 @@ mod tests {
             [],
         ).unwrap();
 
+        // Insert threads
+        conn.execute(
+            "INSERT INTO threads (id, name, role) VALUES 
+             (1, 'GameThread', 'game'),
+             (4, 'GPU', 'gpu')",
+            [],
+        ).unwrap();
+
         // Insert window_events
         conn.execute(
             "INSERT INTO window_events (window_id, thread_id, timer_id, start_s, end_s, depth, excl_ms) VALUES
@@ -1370,10 +1319,11 @@ mod tests {
         let stats = compute_range_statistics(&conn, 1.0, 1.1).unwrap();
         assert_eq!(stats.frame_count, 4);
         assert!(stats.median_ms > 0.0);
-        assert_eq!(stats.categories.len(), 7);
+        assert_eq!(stats.thread_medians.limiting_thread, "gpu");
+        assert!(stats.thread_medians.gpu_ms > 0.0);
         assert!(!stats.top_timers.is_empty());
-        assert_eq!(stats.top_timers[0].timer_name, "ShadowDepths");
-        assert!(stats.pipeline_balance.gpu_bound_pct > 0.0);
-        assert!(stats.pipeline_balance.game_bound_pct > 0.0);
+        assert_eq!(stats.top_timers[0].name, "ShadowDepths");
+        assert_eq!(stats.top_timers[0].thread_role, "gpu");
+        assert!(stats.top_timers[0].avg_ms_per_frame > 0.0);
     }
 }

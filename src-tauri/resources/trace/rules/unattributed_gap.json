@@ -5,16 +5,16 @@
   "when": {
     "timers": ["^.*$"],
     "threads": ["game"],
-    "min_excess_ms": 10.0,
-    "min_share_of_excess": 0.30,
+    "min_excess_ms": 2.0,
+    "min_share_of_excess": 0.50,
     "expects_periodic": false
   },
   "specificity": 0.5,
   "fix_likelihood": "low",
-  "fix_rationale": "The trace shows time elapsed on the GameThread where no active profiled Unreal scopes exist. This occurs when uninstrumented C++ code, third-party libraries, OS thread preemption, or page faults stall execution.",
-  "evidence_template": "The GameThread spent {ms} ms with no active profiled Unreal scopes ({share}% of extra frame time).",
+  "fix_rationale": "Time exists that no timer explains. This occurs when uninstrumented C++ code, third-party libraries, OS thread preemption, or page faults stall execution.",
+  "evidence_template": "Time exists that no timer explains: {ms} with no active profiled Unreal scopes ({share}% of extra frame time).",
   "fixes": [
-    { "text": "Add TRACE_CPUPROFILER_EVENT_SCOPE macros around suspect C++ functions, tick loops, and third-party libraries.", "effort": "medium" },
+    { "text": "Add TRACE_CPUPROFILER_EVENT_SCOPE around suspect code and re-capture.", "effort": "medium" },
     { "text": "Add your project root and engine folders to Windows Defender / Antivirus exclusions.", "effort": "low" },
     { "text": "Set Windows Power Plan to 'High Performance' to prevent CPU core clock throttling or parking.", "effort": "low" }
   ],
