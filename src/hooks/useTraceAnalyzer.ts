@@ -204,10 +204,6 @@ export function useTraceAnalyzer() {
             .then((stats) => setRangeStats(stats))
             .catch((e) => console.error('Failed to fetch initial range stats:', e));
         }
-
-        if (eps.length > 0) {
-          setSelectedEpisodeId(eps[0].id);
-        }
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : String(err);
         setError(msg);
@@ -295,10 +291,6 @@ export function useTraceAnalyzer() {
           })
             .then((stats) => setRangeStats(stats))
             .catch((e) => console.error('Failed to fetch initial range stats:', e));
-        }
-
-        if (eps.length > 0) {
-          setSelectedEpisodeId(eps[0].id);
         }
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : String(err);

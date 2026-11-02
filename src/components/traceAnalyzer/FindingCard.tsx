@@ -2,10 +2,8 @@ import type { Episode, Finding } from '../../types/traceAnalyzer';
 
 interface FindingCardProps {
   finding: Finding;
-  isSelected: boolean;
-  selectedEpisodeId: number | null;
   episodes?: Episode[];
-  onSelectEpisode: (episodeId: number) => void;
+  onSelectRange?: (range: [number, number]) => void;
   onOpenInInsights?: () => void;
 }
 
@@ -18,10 +16,8 @@ function formatTime(s: number): string {
 
 export function FindingCard({
   finding,
-  isSelected,
-  selectedEpisodeId,
   episodes = [],
-  onSelectEpisode,
+  onSelectRange,
   onOpenInInsights,
 }: FindingCardProps) {
   const p = finding.parsedPayload;
@@ -63,23 +59,12 @@ export function FindingCard({
   const episodesMap = new Map<number, Episode>(episodes.map((ep) => [ep.id, ep]));
 
   return (
-    <div
-      className={`flex flex-col gap-3.5 rounded-lg border p-4.5 transition-all ${
-        isSelected
-          ? 'bg-slate-800/90 border-sky-500/90 ring-1 ring-sky-500/50 shadow-lg shadow-sky-950/30'
-          : 'bg-slate-800/40 border-slate-700/60 hover:bg-slate-800/60'
-      }`}
-    >
+    <div className="flex flex-col gap-3.5 rounded-lg border p-4 bg-slate-800/40 border-slate-700/60 hover:bg-slate-800/60 transition-all">
       {/* Title & Badges & Quick Action */}
       <div className="flex flex-col gap-2">
         <div className="flex items-start justify-between gap-3">
           <div className="flex items-center gap-2 flex-wrap">
             <h4 className="text-sm font-semibold text-slate-100 leading-snug">{p.title}</h4>
-            {isSelected && (
-              <span className="px-1.5 py-0.2 text-[10px] uppercase font-bold tracking-wider rounded bg-sky-600/30 text-sky-300 border border-sky-500/50">
-                Matched Episode #{selectedEpisodeId}
-              </span>
-            )}
           </div>
           <div className="flex items-center gap-2 shrink-0">
             <span
@@ -203,32 +188,31 @@ export function FindingCard({
         </div>
       )}
 
-      {/* Affected Episodes with Timestamps and Peak Durations */}
+      {/* Observed Occurrences / Time Spans */}
       {p.episodeIds && p.episodeIds.length > 0 && (
         <div className="flex items-center gap-2 pt-2 border-t border-slate-700/50 text-xs text-slate-400 flex-wrap">
-          <span className="font-medium">Matching episodes:</span>
+          <span className="font-medium text-slate-400">Observed occurrences:</span>
           <div className="flex flex-wrap gap-1.5">
             {p.episodeIds.map((epId) => {
               const ep = episodesMap.get(epId);
-              const isEpSelected = selectedEpisodeId === epId;
-              const timeLabel = ep ? formatTime(ep.startS) : null;
-              const peakLabel = ep ? `${ep.peakMs.toFixed(0)} ms` : null;
+              if (!ep) return null;
+              const timeLabel = `${formatTime(ep.startS)} – ${formatTime(ep.endS)}`;
+              const peakLabel = `${ep.peakMs.toFixed(0)} ms peak`;
 
               return (
                 <button
                   key={epId}
                   type="button"
-                  onClick={() => onSelectEpisode(epId)}
-                  title={ep ? `Episode #${epId} (${ep.kind === 'hitch' ? 'Hitch' : 'Slow Region'}) at ${timeLabel}, peak ${ep.peakMs.toFixed(1)} ms` : `Episode #${epId}`}
-                  className={`flex items-center gap-1 px-2.5 py-0.5 rounded text-xs border transition-colors ${
-                    isEpSelected
-                      ? 'bg-sky-600 text-white font-semibold border-sky-400 shadow-sm'
-                      : 'bg-slate-700/60 hover:bg-slate-700 text-slate-300 border-slate-600/50'
-                  }`}
+                  onClick={() => {
+                    const padding = 0.5;
+                    onSelectRange?.([Math.max(0, ep.startS - padding), ep.endS + padding]);
+                  }}
+                  title={`Focus timeline on ${timeLabel} (${peakLabel})`}
+                  className="flex items-center gap-1.5 px-2.5 py-1 rounded bg-slate-700/50 hover:bg-sky-900/40 text-slate-300 hover:text-sky-200 border border-slate-600/50 hover:border-sky-500/50 text-xs transition-colors group cursor-pointer"
                 >
-                  <span>#{epId}</span>
-                  {timeLabel && <span className="opacity-75 text-[11px]">({timeLabel})</span>}
-                  {peakLabel && <span className="text-amber-300 font-mono text-[11px]">{peakLabel}</span>}
+                  <span className="text-slate-400 group-hover:text-sky-300">🕒 {timeLabel}</span>
+                  <span className="text-amber-300 font-mono text-[11px]">({peakLabel})</span>
+                  <span className="text-[10px] text-sky-400 opacity-0 group-hover:opacity-100 transition-opacity underline ml-0.5">Focus Range</span>
                 </button>
               );
             })}

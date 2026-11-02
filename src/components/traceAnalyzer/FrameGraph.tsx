@@ -4,9 +4,7 @@ import type { Episode, FrameSeriesResponse, TraceBookmark } from '../../types/tr
 interface FrameGraphProps {
   durationS: number;
   targetMs: number;
-  episodes: Episode[];
-  selectedEpisodeId: number | null;
-  onSelectEpisode: (id: number | null) => void;
+  episodes?: Episode[];
   bookmarks?: TraceBookmark[];
   selectedRange?: [number, number] | null;
   onSelectRange?: (range: [number, number] | null) => void;
@@ -29,9 +27,7 @@ function formatTime(seconds: number | null | undefined): string {
 export function FrameGraph({
   durationS,
   targetMs,
-  episodes,
-  selectedEpisodeId,
-  onSelectEpisode,
+  episodes = [],
   bookmarks = [],
   selectedRange = null,
   onSelectRange,
@@ -207,13 +203,13 @@ export function FrameGraph({
     }
     ctx.setLineDash([]);
 
-    // Draw Slow Region shaded bands (episodes)
+    // Draw Slow Region shaded bands
     for (const ep of episodes) {
       if (ep.kind === 'slow_region') {
         const x1 = Math.max(timeToX(ep.startS), padL);
         const x2 = Math.min(timeToX(ep.endS), padL + graphW);
         if (x2 > x1) {
-          ctx.fillStyle = ep.id === selectedEpisodeId ? 'rgba(245, 158, 11, 0.25)' : 'rgba(245, 158, 11, 0.10)';
+          ctx.fillStyle = 'rgba(245, 158, 11, 0.12)';
           ctx.fillRect(x1, padT, x2 - x1, graphH);
         }
       }
@@ -319,24 +315,14 @@ export function FrameGraph({
         const x = timeToX(ep.startS);
         if (x >= padL && x <= padL + graphW) {
           const y = msToY(ep.peakMs) - 6;
-          const isSel = ep.id === selectedEpisodeId;
 
-          ctx.fillStyle = isSel ? '#fbbf24' : '#ef4444';
+          ctx.fillStyle = '#ef4444';
           ctx.beginPath();
           ctx.moveTo(x, y);
           ctx.lineTo(x - 4, y - 7);
           ctx.lineTo(x + 4, y - 7);
           ctx.closePath();
           ctx.fill();
-
-          if (isSel) {
-            ctx.strokeStyle = '#fbbf24';
-            ctx.lineWidth = 1.5;
-            ctx.beginPath();
-            ctx.moveTo(x, padT);
-            ctx.lineTo(x, padT + graphH);
-            ctx.stroke();
-          }
         }
       }
     }
@@ -445,7 +431,6 @@ export function FrameGraph({
     seriesData,
     targetMs,
     episodes,
-    selectedEpisodeId,
     bookmarks,
     selectedRange,
     showGame,
@@ -697,11 +682,13 @@ export function FrameGraph({
     if (wasBrushing) {
       if (Math.abs(x - dragStartXRef.current) < 4) {
         // Single tap / click:
-        // 1. Check if clicking on an episode marker/region
-        const hitEpisode = episodes.find((ep) => t >= ep.startS - 0.1 && t <= ep.endS + 0.1);
-        if (hitEpisode) {
-          onSelectEpisode(hitEpisode.id);
-          onSelectRange?.([hitEpisode.startS, hitEpisode.endS]);
+        // 1. Check if clicking on an engine bookmark pin
+        const hitBm = bookmarks.find((bm) => Math.abs(timeToPixel(bm.startS, rect.width) - x) < 10);
+        if (hitBm) {
+          const halfWin = 1.5;
+          const wStart = Math.max(0, hitBm.startS - halfWin);
+          const wEnd = Math.min(durationS, hitBm.startS + halfWin);
+          onSelectRange?.([wStart, wEnd]);
         } else {
           // Scope a comfortable 3-second context window around the clicked timestamp
           const halfWin = 1.5;
@@ -719,11 +706,6 @@ export function FrameGraph({
   // Quick range preset actions
   const handleSelectEntireTrace = () => {
     onSelectRange?.([0, durationS]);
-  };
-
-  const handleExcludeStartupLoading = () => {
-    const startupCutoff = Math.min(15.0, durationS * 0.3);
-    onSelectRange?.([startupCutoff, durationS]);
   };
 
   const handleSelectWorst10s = () => {
@@ -790,14 +772,6 @@ export function FrameGraph({
               className="px-2 py-0.5 rounded bg-slate-700/70 hover:bg-slate-700 text-slate-200 transition-colors"
             >
               Entire Trace
-            </button>
-            <button
-              type="button"
-              onClick={handleExcludeStartupLoading}
-              title="Select active gameplay excluding the initial startup loading phase"
-              className="px-2 py-0.5 rounded bg-slate-700/70 hover:bg-slate-700 text-slate-200 transition-colors"
-            >
-              Exclude Startup
             </button>
             <button
               type="button"

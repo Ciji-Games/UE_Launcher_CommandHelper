@@ -28,8 +28,6 @@ export function TraceAnalyzerPanel() {
     summary,
     episodes,
     findings,
-    selectedEpisodeId,
-    setSelectedEpisodeId,
     bookmarks,
     selectedRange,
     setSelectedRange,
@@ -136,66 +134,26 @@ export function TraceAnalyzerPanel() {
     };
   }, [openTrace]);
 
-  // Keyboard navigation for episodes
-  useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (!summary || episodes.length === 0) return;
-
-      if (e.key === 'ArrowRight') {
-        e.preventDefault();
-        setSelectedEpisodeId((current) => {
-          if (current === null) return episodes[0].id;
-          const idx = episodes.findIndex((ep) => ep.id === current);
-          if (idx !== -1 && idx < episodes.length - 1) {
-            return episodes[idx + 1].id;
-          }
-          return current;
-        });
-      } else if (e.key === 'ArrowLeft') {
-        e.preventDefault();
-        setSelectedEpisodeId((current) => {
-          if (current === null) return episodes[episodes.length - 1].id;
-          const idx = episodes.findIndex((ep) => ep.id === current);
-          if (idx > 0) {
-            return episodes[idx - 1].id;
-          }
-          return current;
-        });
-      } else if (e.key === 'Escape') {
-        setSelectedEpisodeId(null);
-      }
-    };
-
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [summary, episodes, setSelectedEpisodeId]);
-
-  // Rank and filter findings based on active selected range
+  // Filter and rank findings strictly based on active selected range
   const scopedFindings = useMemo(() => {
+    if (!summary) return [];
     if (!selectedRange) return findings;
     const [minS, maxS] = [Math.min(...selectedRange), Math.max(...selectedRange)];
 
     // Check if range is roughly entire trace
-    const isFullTrace = summary && (maxS - minS >= (summary.durationS - 0.1));
+    const isFullTrace = maxS - minS >= summary.durationS - 0.05;
 
     if (isFullTrace) {
       return findings;
     }
 
-    // Elevate findings whose episodes overlap the active selection window
-    return [...findings].sort((a, b) => {
-      const aMatches = a.episodeIds.some((id) => {
+    // Filter to only findings whose occurrences/episodes overlap the active selection window
+    return findings.filter((f) => {
+      if (!f.episodeIds || f.episodeIds.length === 0) return true;
+      return f.episodeIds.some((id) => {
         const ep = episodes.find((e) => e.id === id);
         return ep && ep.startS <= maxS && ep.endS >= minS;
       });
-      const bMatches = b.episodeIds.some((id) => {
-        const ep = episodes.find((e) => e.id === id);
-        return ep && ep.startS <= maxS && ep.endS >= minS;
-      });
-
-      if (aMatches && !bMatches) return -1;
-      if (!aMatches && bMatches) return 1;
-      return a.rank - b.rank;
     });
   }, [findings, selectedRange, episodes, summary]);
 
@@ -335,8 +293,6 @@ export function TraceAnalyzerPanel() {
                 durationS={summary.durationS}
                 targetMs={summary.targetMs}
                 episodes={episodes}
-                selectedEpisodeId={selectedEpisodeId}
-                onSelectEpisode={setSelectedEpisodeId}
                 bookmarks={bookmarks}
                 selectedRange={selectedRange}
                 onSelectRange={setSelectedRange}
@@ -435,12 +391,8 @@ export function TraceAnalyzerPanel() {
                     <FindingCard
                       key={f.id}
                       finding={f}
-                      isSelected={
-                        selectedEpisodeId !== null && f.episodeIds.includes(selectedEpisodeId)
-                      }
-                      selectedEpisodeId={selectedEpisodeId}
                       episodes={episodes}
-                      onSelectEpisode={setSelectedEpisodeId}
+                      onSelectRange={(range) => setSelectedRange(range)}
                       onOpenInInsights={() => openInInsights()}
                     />
                   ))
