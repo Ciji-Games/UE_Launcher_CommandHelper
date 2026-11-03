@@ -186,6 +186,39 @@ mod tests {
         assert_eq!(b_wp, "Streaming");
         assert_eq!(map_bucket_to_fixed_category(&b_wp), "Asset Loading & Streaming");
 
+        // Standard UE5 engine timers
+        let (b_nanite, _) = classify_timer("Nanite::ShadeBinning", &rules);
+        assert_eq!(b_nanite, "GPU");
+
+        let (b_cull, _) = classify_timer("NodeAndClusterCull", &rules);
+        assert_eq!(b_cull, "GPU");
+
+        let (b_rdg, _) = classify_timer("RenderGraphExecute", &rules);
+        assert_eq!(b_rdg, "RHI");
+
+        let (b_d3d_res, _) = classify_timer("CreateCommittedResource", &rules);
+        assert_eq!(b_d3d_res, "RHI");
+
+        let (b_rhi_buf, _) = classify_timer("CreateRHIBuffer", &rules);
+        assert_eq!(b_rhi_buf, "RHI");
+
+        let (b_abp, _) = classify_timer("ABP_Manny_C", &rules);
+        assert_eq!(b_abp, "Animation");
+
+        let (b_anim_g, _) = classify_timer("AnimGraph_Layer", &rules);
+        assert_eq!(b_anim_g, "Animation");
+
+        let (b_async_wait, k_async_wait) = classify_timer("MainThreadWaitingOnAsyncLoadingThread", &rules);
+        assert_eq!(b_async_wait, "Loading");
+        assert_eq!(k_async_wait, "work");
+
+        let (b_mips, _) = classify_timer("FTexturePlatformData::TryLoadMips", &rules);
+        assert_eq!(b_mips, "Loading");
+
+        let (b_gt_wait, k_gt_wait) = classify_timer("GameThreadWaitForTask", &rules);
+        assert_eq!(b_gt_wait, "Wait");
+        assert_eq!(k_gt_wait, "wait");
+
         assert_eq!(map_bucket_to_fixed_category("GPU"), "Rendering & GPU");
         assert_eq!(map_bucket_to_fixed_category("Render CPU"), "Rendering & GPU");
         assert_eq!(map_bucket_to_fixed_category("Blueprint"), "Blueprints & Script");

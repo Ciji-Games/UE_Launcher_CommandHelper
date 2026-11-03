@@ -100,7 +100,8 @@ export function RangeAnalysisPanel({
     threadMedians,
   } = stats;
 
-  const isOverBudget = budgetGapMs > 0.001;
+  const isSteadyOverBudget = budgetGapMs > 0.001;
+  const showGapShare = isSteadyOverBudget;
   const maxScaleMs = Math.max(targetMs * 1.5, medianMs * 1.3, maxMs * 0.5, 20.0);
 
   const stateBadgeStyle =
@@ -153,9 +154,17 @@ export function RangeAnalysisPanel({
             <span className="text-xs font-semibold text-slate-300 uppercase tracking-wider">
               Frame Health vs Budget
             </span>
-            {isOverBudget ? (
+            {isSteadyOverBudget ? (
               <span className="text-xs text-rose-400 font-semibold font-mono">
                 +{budgetGapMs.toFixed(1)} ms over budget
+              </span>
+            ) : hitchCount > 0 ? (
+              <span className="text-xs text-rose-400 font-semibold font-mono">
+                {hitchCount} {hitchCount === 1 ? 'hitch' : 'hitches'} in range (worst: {maxMs.toFixed(0)} ms)
+              </span>
+            ) : overBudgetPct > 15 || p95Ms > targetMs ? (
+              <span className="text-xs text-amber-400 font-semibold font-mono">
+                {overBudgetPct.toFixed(0)}% frames over budget (p95: {p95Ms.toFixed(1)} ms)
               </span>
             ) : (
               <span className="text-xs text-emerald-400 font-semibold font-mono">
@@ -332,7 +341,7 @@ export function RangeAnalysisPanel({
                 <th className="py-2 px-2.5">Category</th>
                 <th className="py-2 px-2.5 text-right">ms / Frame</th>
                 <th className="py-2 px-2.5 text-right">Calls</th>
-                {isOverBudget && (
+                {showGapShare && (
                   <th className="py-2 px-3 text-right">Share of Gap</th>
                 )}
               </tr>
@@ -341,7 +350,7 @@ export function RangeAnalysisPanel({
               {filteredTimers.length === 0 ? (
                 <tr>
                   <td
-                    colSpan={isOverBudget ? 5 : 4}
+                    colSpan={showGapShare ? 5 : 4}
                     className="py-4 text-center text-xs text-slate-500 font-sans"
                   >
                     No profiled timer records found in this window.
@@ -372,7 +381,7 @@ export function RangeAnalysisPanel({
                       <td className="py-2 px-2.5 text-right text-slate-400">
                         {timer.callCount.toLocaleString()}
                       </td>
-                      {isOverBudget && (
+                      {showGapShare && (
                         <td className="py-2 px-3 text-right">
                           {timer.shareOfBudgetGapPct !== undefined && timer.shareOfBudgetGapPct !== null ? (
                             <span className="font-semibold text-amber-300">

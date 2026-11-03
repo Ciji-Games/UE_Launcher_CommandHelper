@@ -5,7 +5,7 @@
     "kind": "idle"
   },
   {
-    "pattern": "^(?i)(ReflexSleep|NvReflexSleep|NvLowLatencySleep|WaitForTasks|WaitUntilTasksComplete|ProcessUntilTasksComplete|FRenderCommandFence|GpuWait|WaitForFrame|TaskWorkerIsLookingForWork|FTaskGraphImplementation::WaitUntilTasksComplete|FQueuedThreadPoolWrapper::WaitForWork|FEvent::Wait|FRHICommandListExecutor::Wait|WaitUntilIdle)",
+    "pattern": "^(?i)(GameThreadWaitForTask|ReflexSleep|NvReflexSleep|NvLowLatencySleep|WaitForTasks|WaitUntilTasksComplete|ProcessUntilTasksComplete|FRenderCommandFence|GpuWait|WaitForFrame|TaskWorkerIsLookingForWork|FTaskGraphImplementation::WaitUntilTasksComplete|FQueuedThreadPoolWrapper::WaitForWork|FEvent::Wait|FRHICommandListExecutor::Wait|WaitUntilIdle)",
     "bucket": "Wait",
     "kind": "wait"
   },
@@ -25,6 +25,16 @@
     "kind": "work"
   },
   {
+    "pattern": "^(?i)(MainThreadWaitingOnAsyncLoadingThread|FTexturePlatformData::TryLoadMips|FlushAsyncLoading|LoadPackage|StaticLoadObject|LoadObject|LoadSynchronous|PostLoad|FAsyncLoadingThread|SerializeImports|CreateExport|Serialize:|LoadPackage:|AsyncLoading|IoStore|Zen|PackageLocalization|PackageStore)",
+    "bucket": "Loading",
+    "kind": "work"
+  },
+  {
+    "pattern": "^(?i)(ABP_|AnimGraph|SkeletalMeshComponent|TickPose|RefreshBoneTransforms|EvaluateAnimation|UpdateAnimation|AnimInstance|SkeletalMesh|MorphTarget|BlendStack|ControlRig|PoseSearch|IKRig|AnimationBudgetAllocator|ParallelAnimation)",
+    "bucket": "Animation",
+    "kind": "work"
+  },
+  {
     "pattern": "^(?i)(ExecuteUbergraph_|ProcessEvent|BlueprintTime|UFunction::Invoke|ProcessLocalScriptFunction|BP_|Function |.*_C::|.*::ReceiveTick|.*::UserConstructionScript|.*::ReceiveBeginPlay|.*::ReceiveAnyDamage|K2_|Blueprint|CallFunction|ScriptContext)",
     "bucket": "Blueprint",
     "kind": "work"
@@ -40,11 +50,6 @@
     "kind": "work"
   },
   {
-    "pattern": "^(?i)(FlushAsyncLoading|LoadPackage|StaticLoadObject|LoadObject|LoadSynchronous|PostLoad|FAsyncLoadingThread|SerializeImports|CreateExport|Serialize:|LoadPackage:|AsyncLoading|IoStore|Zen|PackageLocalization|PackageStore)",
-    "bucket": "Loading",
-    "kind": "work"
-  },
-  {
     "pattern": "^(?i)(SpawnActor|FinishSpawning|PostSpawnInitialize|RegisterAllComponents|OnRegister|UserConstructionScript|BeginPlay|UWorld::SpawnActor|DuplicateObject|NewObject)",
     "bucket": "Spawning",
     "kind": "work"
@@ -52,11 +57,6 @@
   {
     "pattern": "^(?i)(Chaos|PhysScene|StartPhysics|EndPhysics|SolverAdvance|LineTrace|SweepMulti|OverlapMulti|Chaos_PhysicsParallelFor|Physics|PhysX|RigidBody|Collision|AsyncPhysics)",
     "bucket": "Physics",
-    "kind": "work"
-  },
-  {
-    "pattern": "^(?i)(SkeletalMeshComponent|TickPose|RefreshBoneTransforms|EvaluateAnimation|AnimGraph|UpdateAnimation|AnimInstance|SkeletalMesh|MorphTarget|BlendStack|ControlRig|PoseSearch|IKRig|AnimationBudgetAllocator|ParallelAnimation)",
-    "bucket": "Animation",
     "kind": "work"
   },
   {
@@ -70,12 +70,12 @@
     "kind": "work"
   },
   {
-    "pattern": "^(?i)(RHI_|RHICmdList|FRHICommandList|FRHICommandListExecutor|ExecuteCommandList|SubmitCommands|SubmissionQueue|SubmissionQueue_Process|RHIBeginFrame|RHIEndFrame|FD3D12|D3D12|Vulkan|Metal|OpenGL|RHITick|RHIEndDrawingViewFamily|RHIAdvanceFrameForRendering)",
+    "pattern": "^(?i)(RenderGraphExecute|CreateCommittedResource|CreateRHIBuffer|RHICreateTexture|FRDGBuilder|RDG|RHI_|RHICmdList|FRHICommandList|FRHICommandListExecutor|ExecuteCommandList|SubmitCommands|SubmissionQueue|SubmissionQueue_Process|RHIBeginFrame|RHIEndFrame|FD3D12|D3D12|Vulkan|Metal|OpenGL|RHITick|RHIEndDrawingViewFamily|RHIAdvanceFrameForRendering)",
     "bucket": "RHI",
     "kind": "work"
   },
   {
-    "pattern": "^(?i)(Scene$|SceneRender|Scene\\s*Render|SceneRendering|Scene\\s*Rendering|Scene_Render|Lumen|Nanite|Shadow|Shadows|ShadowDepths|ShadowProjection|VirtualShadowMap|VirtualShadowMaps|VSM|LightGrid|DirectLighting|IndirectLighting|InjectLight|TiledDeferred|ClusteredDeferred|BasePass|BasePassParallel|PrePass|PrePassParallel|EarlyZ|DepthPrepass|Translucency|Translucent|Decals|CustomDepth|CustomStencil|Velocity|RenderVelocities|PostProcess|PostProcessing|PostProcessTonemap|Tonemap|ContrastAdaptive|ContrastAdaptiveShading|ContrastAdaptiveSharpening|Contrast\\s*Adaptive|CAS$|CAS\\s*|Bloom|MotionBlur|AutoExposure|EyeAdaptation|ColorGrading|DOF|DepthOfField|Vignette|SSR|ScreenSpace|SubsurfaceScattering|SSSS|GTAO|HBAO|SSAO|AmbientOcclusion|TemporalSuperResolution|TSR|TAA|TemporalAA|DLSS|XeSS|FSR|AntiAliasing|RayTracing|Substrate|Strata|VolumetricFog|VolumetricCloud|SkyAtmosphere|Atmosphere|HairRendering|HairStrands)",
+    "pattern": "^(?i)(NodeAndClusterCull|Nanite|ShadeBinning|Rasterize|Scene$|SceneRender|Scene\\s*Render|SceneRendering|Scene\\s*Rendering|Scene_Render|Lumen|Shadow|Shadows|ShadowDepths|ShadowProjection|VirtualShadowMap|VirtualShadowMaps|VSM|LightGrid|DirectLighting|IndirectLighting|InjectLight|TiledDeferred|ClusteredDeferred|BasePass|BasePassParallel|PrePass|PrePassParallel|EarlyZ|DepthPrepass|Translucency|Translucent|Decals|CustomDepth|CustomStencil|Velocity|RenderVelocities|PostProcess|PostProcessing|PostProcessTonemap|Tonemap|ContrastAdaptive|ContrastAdaptiveShading|ContrastAdaptiveSharpening|Contrast\\s*Adaptive|CAS$|CAS\\s*|Bloom|MotionBlur|AutoExposure|EyeAdaptation|ColorGrading|DOF|DepthOfField|Vignette|SSR|ScreenSpace|SubsurfaceScattering|SSSS|GTAO|HBAO|SSAO|AmbientOcclusion|TemporalSuperResolution|TSR|TAA|TemporalAA|DLSS|XeSS|FSR|AntiAliasing|RayTracing|Substrate|Strata|VolumetricFog|VolumetricCloud|SkyAtmosphere|Atmosphere|HairRendering|HairStrands)",
     "bucket": "GPU",
     "kind": "work"
   },

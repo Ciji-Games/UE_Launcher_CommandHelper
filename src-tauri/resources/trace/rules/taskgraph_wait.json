@@ -1,0 +1,41 @@
+{
+  "id": "taskgraph-wait",
+  "title": "Game Thread Stalled Waiting on TaskGraph / Worker Tasks",
+  "applies_to": [
+    "hitch",
+    "slow_region"
+  ],
+  "when": {
+    "timers": [
+      "^(?i)(GameThreadWaitForTask|WaitForTasks|WaitUntilTasksComplete|FTaskGraphImplementation::WaitUntilTasksComplete)$"
+    ],
+    "threads": [
+      "game"
+    ],
+    "min_excess_ms": 15.0,
+    "min_share_of_excess": 0.25,
+    "expects_periodic": false
+  },
+  "specificity": 0.82,
+  "fix_likelihood": "high",
+  "fix_rationale": "The Game Thread is blocked waiting synchronously for worker tasks or background jobs to finish. Moving blocking waits off the game thread or optimizing the underlying worker workload eliminates this stall.",
+  "evidence_template": "{thread} spent {ms} in {timer} waiting for concurrent tasks to complete ({share}% of extra frame time){periodic_clause}.",
+  "fixes": [
+    {
+      "text": "Check background tasks and worker threads executing during this window to optimize slow concurrent computations.",
+      "effort": "medium"
+    },
+    {
+      "text": "Convert synchronous WaitUntilTasksComplete / GameThreadWaitForTask calls into asynchronous completion callbacks or multi-frame task queues.",
+      "effort": "high"
+    },
+    {
+      "text": "Ensure background jobs do not contend for shared locks, mutexes, or heavy memory allocations during the stall.",
+      "effort": "low"
+    }
+  ],
+  "verify": "Verify with Unreal Insights Threads channel that Game Thread is no longer blocked in WaitUntilTasksComplete / GameThreadWaitForTask.",
+  "caveats": [
+    "Synchronous task graph waits often indicate heavy asset generation, physics simulation, or custom plugin processing running on worker threads."
+  ]
+}

@@ -214,37 +214,85 @@ export function TraceAnalyzerPanel() {
     const startupSpikes: Finding[] = [];
 
     const episodesMap = new Map<number, Episode>(episodes.map((e) => [e.id, e]));
+    const limiting = rangeStats?.threadMedians?.limitingThread?.toLowerCase();
+    const topTimerNames = new Set((rangeStats?.topTimers || []).slice(0, 5).map((t) => t.name.toLowerCase()));
 
-    scopedFindings.forEach((f) => {
-      const p = f.parsedPayload;
-      const fEpisodes = (p?.episodeIds || [])
-        .map((id) => episodesMap.get(id))
-        .filter(Boolean) as Episode[];
+    for (const f of scopedFindings) {
+      const episodeIds =
+        f.episodeIds && f.episodeIds.length > 0
+          ? f.episodeIds
+          : f.parsedPayload?.episodeIds || [];
 
-      const hasSlowRegion = fEpisodes.some((e) => e.kind === 'slow_region');
-      const isSustainedRule =
-        f.ruleId.includes('region') ||
-        f.ruleId.includes('overhead') ||
-        f.ruleId.includes('gpu-heavy') ||
-        f.ruleId.includes('limiter') ||
-        f.ruleId.includes('editor') ||
-        f.ruleId.includes('slate') ||
-        f.ruleId.includes('lumen') ||
-        f.ruleId.includes('nanite') ||
-        f.ruleId.includes('shadows');
+      const isSpike =
+        episodeIds.some((id) => {
+          const ep = episodesMap.get(id);
+          return ep && ep.kind === 'hitch';
+        }) ||
+        f.ruleId.includes('hitch') ||
+        f.ruleId.includes('stall');
 
-      if (hasSlowRegion || isSustainedRule) {
-        everyFrame.push(f);
-      } else {
-        const allStartup =
-          fEpisodes.length > 0 && fEpisodes.every((e) => e.startS < 1.0);
-        if (allStartup) {
+      if (isSpike) {
+        const isStartup = episodeIds.some((id) => {
+          const ep = episodesMap.get(id);
+          return ep && ep.startS < 1.0;
+        });
+        if (isStartup) {
           startupSpikes.push(f);
         } else {
           normalSpikes.push(f);
         }
+      } else {
+        everyFrame.push(f);
       }
-    });
+    }
+
+    const getFindingScore = (f: Finding): number => {
+      let score = f.parsedPayload?.matchScore ?? f.matchConfidence ?? 0;
+      const rule = f.ruleId.toLowerCase();
+      const title = f.parsedPayload?.title?.toLowerCase() || '';
+
+      if (limiting) {
+        if (
+          limiting === 'gpu' &&
+          (rule.includes('gpu') ||
+            rule.includes('nanite') ||
+            rule.includes('lumen') ||
+            rule.includes('shadows') ||
+            title.includes('gpu'))
+        ) {
+          score += 50;
+        } else if (
+          limiting === 'game' &&
+          (rule.includes('game') ||
+            rule.includes('blueprint') ||
+            rule.includes('gc') ||
+            rule.includes('tick') ||
+            title.includes('game') ||
+            title.includes('cpu'))
+        ) {
+          score += 50;
+        } else if (
+          limiting === 'render' &&
+          (rule.includes('render') || rule.includes('rhi') || title.includes('render'))
+        ) {
+          score += 50;
+        }
+      }
+
+      // Bonus if finding evidence references any top timer from the selected range
+      if (f.parsedPayload?.evidence) {
+        for (const ev of f.parsedPayload.evidence) {
+          if (ev.label && topTimerNames.has(ev.label.toLowerCase())) {
+            score += 20;
+            break;
+          }
+        }
+      }
+
+      return score;
+    };
+
+    everyFrame.sort((a, b) => getFindingScore(b) - getFindingScore(a));
 
     const getEarliestStart = (f: Finding) => {
       const p = f.parsedPayload;
@@ -261,7 +309,7 @@ export function TraceAnalyzerPanel() {
       everyFrameFindings: everyFrame,
       spikeFindings: [...normalSpikes, ...startupSpikes],
     };
-  }, [scopedFindings, episodes]);
+  }, [scopedFindings, episodes, rangeStats]);
 
   return (
     <div className="flex flex-col h-full bg-slate-950 text-slate-100 p-4 gap-3 select-none overflow-hidden">
@@ -399,17 +447,62 @@ export function TraceAnalyzerPanel() {
 
               {/* No Findings State */}
               {everyFrameFindings.length === 0 && spikeFindings.length === 0 ? (
-                <div className="p-8 rounded-xl bg-slate-900/40 border border-emerald-900/30 text-center flex flex-col items-center justify-center gap-2">
-                  <div className="w-9 h-9 rounded-full bg-emerald-950/60 border border-emerald-500/40 flex items-center justify-center text-emerald-400">
-                    <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
-                    </svg>
-                  </div>
-                  <div className="text-sm font-medium text-emerald-300">Within Budget / Smooth</div>
-                  <div className="text-xs text-slate-400 max-w-md">
-                    No performance bottlenecks detected in this range. Frames are running within the target budget.
-                  </div>
-                </div>
+                (() => {
+                  const targetMs = 1000.0 / options.targetFps;
+                  const isUnhealthy =
+                    rangeStats &&
+                    (rangeStats.budgetGapMs > 0.001 ||
+                      rangeStats.overBudgetPct > 15 ||
+                      rangeStats.p95Ms > targetMs ||
+                      rangeHitchCount > 0 ||
+                      rangeEpisodes.length > 0);
+
+                  if (isUnhealthy) {
+                    const limiting = rangeStats?.threadMedians?.limitingThread || 'game';
+                    return (
+                      <div className="p-6 rounded-xl bg-slate-900/40 border border-amber-900/40 text-center flex flex-col items-center justify-center gap-2">
+                        <div className="w-9 h-9 rounded-full bg-amber-950/60 border border-amber-500/40 flex items-center justify-center text-amber-400">
+                          <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+                          </svg>
+                        </div>
+                        <div className="text-sm font-medium text-amber-300">
+                          Over Budget ({rangeStats?.overBudgetPct.toFixed(0)}% frames over {targetMs.toFixed(1)} ms budget)
+                        </div>
+                        <div className="text-xs text-slate-400 max-w-lg leading-relaxed">
+                          This range is <span className="text-sky-300 font-semibold uppercase">{limiting}-bound</span> (+{(rangeStats?.budgetGapMs || 0).toFixed(1)} ms over budget). 
+                          Sub-function timer scopes were not recorded in Pass B for this specific window, or execution occurred without active custom trace timer scopes.
+                        </div>
+                        <div className="flex items-center gap-2 mt-2">
+                          <button
+                            type="button"
+                            onClick={() => openInInsights()}
+                            className="px-3 py-1.5 rounded bg-sky-600 hover:bg-sky-500 text-white text-xs font-medium transition-colors shadow-sm flex items-center gap-1.5"
+                          >
+                            <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
+                            </svg>
+                            <span>Inspect Callstacks in Insights</span>
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  }
+
+                  return (
+                    <div className="p-8 rounded-xl bg-slate-900/40 border border-emerald-900/30 text-center flex flex-col items-center justify-center gap-2">
+                      <div className="w-9 h-9 rounded-full bg-emerald-950/60 border border-emerald-500/40 flex items-center justify-center text-emerald-400">
+                        <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                        </svg>
+                      </div>
+                      <div className="text-sm font-medium text-emerald-300">Within Budget / Smooth</div>
+                      <div className="text-xs text-slate-400 max-w-md">
+                        No performance bottlenecks detected in this range. Frames are running within the target budget.
+                      </div>
+                    </div>
+                  );
+                })()
               ) : (
                 <>
                   {/* Section 1: Every Frame (Sustained Bottlenecks) */}

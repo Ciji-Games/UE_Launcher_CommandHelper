@@ -126,7 +126,7 @@ export function StartHereBanner({
           <span className="text-sm select-none">💡</span>
           <div>
             <strong className="text-sky-300 font-semibold">First thing to try: </strong>
-            {rangeDesc.stateLabel === 'Smooth' || findings.length === 0 ? (
+            {rangeDesc.stateLabel === 'Smooth' ? (
               <span className="text-emerald-300 font-medium">
                 No performance bottlenecks in this range — frames are within the {summary.targetMs.toFixed(1)} ms budget.
               </span>
@@ -139,9 +139,13 @@ export function StartHereBanner({
                   </span>
                 )}
               </span>
+            ) : rangeDesc.limitingThread === 'Game Thread' || rangeDesc.limitingThread === 'Render Thread' ? (
+              <span className="text-slate-300">
+                Inspect thread callstacks in Unreal Insights or profile with <code className="text-sky-300 bg-slate-800 px-1 py-0.5 rounded font-mono">-cpuprofilertrace</code> to break down {rangeDesc.limitingThread} execution.
+              </span>
             ) : (
-              <span className="text-slate-400">
-                Re-capture with full channels enabled: <code className="text-sky-300 bg-slate-800 px-1 py-0.5 rounded font-mono">-trace=cpu,gpu,frame,bookmark</code> to isolate timer gaps.
+              <span className="text-slate-300">
+                Inspect GPU passes in Unreal Insights or enable Dynamic Resolution (<code className="text-sky-300 bg-slate-800 px-1 py-0.5 rounded font-mono">r.ScreenPercentage</code>) to reduce GPU render duration.
               </span>
             )}
           </div>

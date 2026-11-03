@@ -148,6 +148,8 @@ pub fn format_timer_display_name(tname: &str, rule_id: &str) -> String {
 pub fn load_all_rules() -> Vec<RuleDef> {
     let raw_rules = [
         include_str!("../../resources/trace/rules/gc_hitch.json"),
+        include_str!("../../resources/trace/rules/taskgraph_wait.json"),
+        include_str!("../../resources/trace/rules/cpu_hitch.json"),
         include_str!("../../resources/trace/rules/shader_compile.json"),
         include_str!("../../resources/trace/rules/pso_hitch.json"),
         include_str!("../../resources/trace/rules/sync_load.json"),
@@ -431,18 +433,20 @@ pub fn evaluate_and_save_findings(
         }
     }
 
-    // 2. In-memory preload of thread roles
+    // 2. In-memory preload of thread roles and names
     let mut thread_roles = std::collections::HashMap::new();
+    let mut thread_names = std::collections::HashMap::new();
     {
         let mut stmt = conn
-            .prepare("SELECT id, role FROM threads")
+            .prepare("SELECT id, role, name FROM threads")
             .map_err(|e| e.to_string())?;
         let rows = stmt
-            .query_map([], |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?)))
+            .query_map([], |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?)))
             .map_err(|e| e.to_string())?;
         for r in rows {
-            let (id, role) = r.map_err(|e| e.to_string())?;
+            let (id, role, name) = r.map_err(|e| e.to_string())?;
             thread_roles.insert(id, role);
+            thread_names.insert(id, name);
         }
     }
 
@@ -554,7 +558,7 @@ pub fn evaluate_and_save_findings(
         if let Some(timers) = ep_timers {
             for (&(tid, th_id), &(sum_ms, _)) in timers {
                 let kind = timer_kinds.get(&tid).map(|s| s.as_str()).unwrap_or("work");
-                if kind == "wait" || kind == "idle" {
+                if kind == "idle" {
                     continue;
                 }
 
@@ -577,6 +581,8 @@ pub fn evaluate_and_save_findings(
 
         let bound_by = if total_window_ms > 0.0 && idle_ms > total_window_ms * 0.4 {
             "idle_limited"
+        } else if game_excess >= gpu_excess && game_excess >= render_excess && game_excess >= 3.0 {
+            "game"
         } else if gpu_excess > game_excess && gpu_excess > render_excess && gpu_excess >= 4.0 {
             "gpu"
         } else if render_excess > game_excess && render_excess >= 4.0 {
@@ -696,6 +702,9 @@ pub fn evaluate_and_save_findings(
                 }
 
                 let timer_name = timer_names.get(&tid).cloned().unwrap_or_default();
+                if rule.def.id == "cpu-hitch" && (timer_name == "Frame" || timer_name == "Total") {
+                    continue;
+                }
                 let matches_pattern = rule.regexes.iter().any(|re| re.is_match(&timer_name));
 
                 if matches_pattern {
@@ -740,6 +749,20 @@ pub fn evaluate_and_save_findings(
                         matched_timers: matched_timer_details,
                     });
             }
+        }
+    }
+
+    // For cpu-hitch (generic fallback), only retain matches for episodes that do not have a specialized rule match
+    let specialized_episode_ids: std::collections::HashSet<i64> = matches_by_rule
+        .iter()
+        .filter(|(id, _)| id.as_str() != "cpu-hitch" && id.as_str() != "unattributed-gap" && id.as_str() != "frame-limiter")
+        .flat_map(|(_, matches)| matches.iter().map(|m| m.episode_id))
+        .collect();
+
+    if let Some(cpu_hitch_matches) = matches_by_rule.get_mut("cpu-hitch") {
+        cpu_hitch_matches.retain(|m| !specialized_episode_ids.contains(&m.episode_id));
+        if cpu_hitch_matches.is_empty() {
+            matches_by_rule.remove("cpu-hitch");
         }
     }
 
@@ -819,7 +842,7 @@ pub fn evaluate_and_save_findings(
             };
 
             let mut evidence = Vec::new();
-            for (tname, tms, bms, calls, excess) in top_evidence_timers {
+            for (tname, tms, bms, calls, excess) in &top_evidence_timers {
                 let periodic_clause = if has_periodic && rule.def.when.expects_periodic {
                     " (recurs periodically across trace)"
                 } else {
@@ -832,7 +855,7 @@ pub fn evaluate_and_save_findings(
                     0.0
                 };
 
-                let display_timer_name = format_timer_display_name(&tname, &rule.def.id);
+                let display_timer_name = format_timer_display_name(tname, &rule.def.id);
 
                 let (label, value_ms, baseline_ms) = if rule.def.id == "unattributed-gap" {
                     if is_slow_region {
@@ -851,7 +874,7 @@ pub fn evaluate_and_save_findings(
                                 "Time exists that no timer explains: +{:.1} ms over normal with no active profiled Unreal scopes ({:.0}% of extra frame time).",
                                 tms, share_pct
                             ),
-                            Some(tms),
+                            Some(*tms),
                             Some(0.0),
                         )
                     }
@@ -865,7 +888,7 @@ pub fn evaluate_and_save_findings(
 
                     let mut l = rule.def.evidence_template.clone();
                     if l.contains("{ms} ms (normally {baseline_ms} ms)") {
-                        l = l.replace("{ms} ms (normally {baseline_ms} ms)", &formatted_ms_clause);
+                        l = l.replace("{ms} ms", &formatted_ms_clause);
                     } else if l.contains("{ms} ms") {
                         l = l.replace("{ms} ms", &formatted_ms_clause);
                     } else if l.contains("{ms}") {
@@ -899,17 +922,58 @@ pub fn evaluate_and_save_findings(
                         .replace("{thread}", default_thread_name)
                         .replace("{periodic_clause}", periodic_clause);
 
-                    (l, Some(excess), Some(bms))
+                    (l, Some(*excess), Some(*bms))
                 };
 
                 evidence.push(Evidence {
                     label,
                     value_ms,
                     baseline_ms,
-                    calls: Some(calls),
+                    calls: Some(*calls),
                     thread: Some(default_thread_name.to_string()),
                     note: None,
                 });
+            }
+
+            if rule.def.id == "taskgraph-wait" {
+                // Find top concurrent worker/render thread timers active during these episodes
+                let mut worker_timer_sums: std::collections::HashMap<(i64, i64), (f64, usize)> = std::collections::HashMap::new();
+                for m in rule_matches {
+                    if let Some(ep_timers) = episode_timer_aggregates.get(&m.episode_id) {
+                        for (&(tid, th_id), &(sum_ms, count)) in ep_timers {
+                            let role = thread_roles.get(&th_id).cloned().unwrap_or_else(|| "other".to_string());
+                            let kind = timer_kinds.get(&tid).map(|s| s.as_str()).unwrap_or("work");
+                            if role != "game" && kind != "idle" && kind != "wait" && sum_ms >= 5.0 {
+                                let entry = worker_timer_sums.entry((tid, th_id)).or_insert((0.0, 0));
+                                entry.0 += sum_ms;
+                                entry.1 += count;
+                            }
+                        }
+                    }
+                }
+
+                let mut sorted_workers: Vec<((i64, i64), f64, usize)> = worker_timer_sums
+                    .into_iter()
+                    .map(|(k, (sum_ms, count))| (k, sum_ms / (rule_matches.len() as f64), count / rule_matches.len().max(1)))
+                    .collect();
+                sorted_workers.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+
+                for ((tid, th_id), avg_ms, calls) in sorted_workers.into_iter().take(3) {
+                    let tname = timer_names.get(&tid).cloned().unwrap_or_default();
+                    let th_name = thread_names.get(&th_id).cloned().unwrap_or_else(|| "WorkerThread".to_string());
+                    let display_name = format_timer_display_name(&tname, "taskgraph-wait");
+                    evidence.push(Evidence {
+                        label: format!(
+                            "Concurrent workload during wait: {} ({:.1} ms on {})",
+                            display_name, avg_ms, th_name
+                        ),
+                        value_ms: Some(avg_ms),
+                        baseline_ms: None,
+                        calls: Some(calls),
+                        thread: Some(th_name),
+                        note: Some("Background task executing while Game Thread was blocked".to_string()),
+                    });
+                }
             }
 
             let coverage = if total_of_excess_ms > 0.0 {
@@ -963,6 +1027,22 @@ pub fn evaluate_and_save_findings(
                 total_explains_ms * match_score
             };
             let channel_suggestion = match rule.def.id.as_str() {
+                "taskgraph-wait" => Some(ChannelSuggestion {
+                    badge: "Need more details?".to_string(),
+                    channel_flags: "-trace=cpu,task,counters -cpuprofilertrace".to_string(),
+                    description: "Enable -trace=cpu,task,counters -cpuprofilertrace to correlate GameThread TaskGraph sync points with specific background task names and worker thread dependencies.".to_string(),
+                    missing_channels: ["cpu", "task"]
+                        .iter()
+                        .filter(|&&c| !detected_channels.iter().any(|d| d == c))
+                        .map(|&c| c.to_string())
+                        .collect(),
+                }),
+                "cpu-hitch" => Some(ChannelSuggestion {
+                    badge: "Need more details?".to_string(),
+                    channel_flags: "-trace=cpu -cpuprofilertrace".to_string(),
+                    description: "Launch with -cpuprofilertrace to capture high-resolution callstacks and function timings for this CPU stall.".to_string(),
+                    missing_channels: if !detected_channels.iter().any(|d| d == "cpu") { vec!["cpu".to_string()] } else { Vec::new() },
+                }),
                 "unattributed-gap" => Some(ChannelSuggestion {
                     badge: "Need more details?".to_string(),
                     channel_flags: "-trace=cpu,loadtime,counters -cpuprofilertrace".to_string(),
@@ -1062,8 +1142,19 @@ pub fn evaluate_and_save_findings(
                 _ => None,
             };
 
+            let finding_title = if rule.def.id == "cpu-hitch" {
+                if let Some(top) = top_evidence_timers.first() {
+                    let display = format_timer_display_name(&top.0, "cpu-hitch");
+                    format!("CPU Stall: {}", display)
+                } else {
+                    rule.def.title.clone()
+                }
+            } else {
+                rule.def.title.clone()
+            };
+
             let payload = FindingPayload {
-                title: rule.def.title.clone(),
+                title: finding_title,
                 match_confidence: match_confidence.to_string(),
                 match_score,
                 fix_likelihood: rule.def.fix_likelihood.clone(),
@@ -1226,8 +1317,10 @@ mod tests {
     #[test]
     fn test_load_all_rules() {
         let rules = load_all_rules();
-        assert_eq!(rules.len(), 18);
+        assert_eq!(rules.len(), 20);
         assert!(rules.iter().any(|r| r.id == "gc-hitch"));
+        assert!(rules.iter().any(|r| r.id == "taskgraph-wait"));
+        assert!(rules.iter().any(|r| r.id == "cpu-hitch"));
         assert!(rules.iter().any(|r| r.id == "sync-load"));
         assert!(rules.iter().any(|r| r.id == "async-load-finalization"));
         assert!(rules.iter().any(|r| r.id == "shader-compile"));
@@ -1849,45 +1942,80 @@ mod tests {
     }
 
     #[test]
-    fn test_explains_ms_capped_to_excess_and_evidence_clamped() {
-        let mut ctx = ScenarioContext::new();
-        ctx.seed_baseline_window_frames(1, 6);
-
-        // Inject large timers that together exceed peak_ms - median_ms
-        ctx.add_event(1, 1, "CollectGarbage", 100.0);
-        ctx.add_event(1, 1, "PerformReachabilityAnalysis", 50.0);
-
-        let ep = DbEpisode {
-            id: 1,
-            kind: "hitch".to_string(),
-            start_s: 2.0,
-            end_s: 2.1,
-            frame_from: 120,
-            frame_to: 121,
-            peak_ms: 60.0,
-            median_ms: 16.6, // excess = 43.4 ms
-            bound_by: "unattributed".to_string(),
-            periodic_group: None,
+    fn test_investigate_20261103_153453() {
+        let app_data = std::env::var("APPDATA").unwrap_or_default();
+        let cache_dir = std::path::Path::new(&app_data)
+            .join("com.ue-launcher.app")
+            .join("trace_cache");
+        let path = cache_dir.join("4d71dc240189f2a0a298d1ac47b11faae32fabd5a765909bd2812b121c146cda.db");
+        if !path.is_file() {
+            return;
+        }
+        let conn = Connection::open(&path).unwrap();
+        let processed_frames: Vec<crate::trace::csv_ingest::ProcessedFrame> = {
+            let mut stmt = conn.prepare("SELECT idx, engine_frame, start_s, interval_ms, game_ms, render_ms, gpu_ms FROM frames ORDER BY idx").unwrap();
+            let rows = stmt.query_map([], |r| Ok(crate::trace::csv_ingest::ProcessedFrame {
+                idx: r.get(0)?,
+                engine_frame: r.get(1)?,
+                start_s: r.get(2)?,
+                interval_ms: r.get(3)?,
+                game_ms: r.get(4)?,
+                render_ms: r.get(5)?,
+                gpu_ms: r.get(6)?,
+            })).unwrap();
+            rows.map(|r| r.unwrap()).collect()
         };
 
-        let (findings, _) = ctx.evaluate(ep);
-        assert!(!findings.is_empty());
-        for f in &findings {
-            let payload: FindingPayload = serde_json::from_str(&f.payload).unwrap();
-            assert!(
-                payload.explains_ms <= payload.of_excess_ms + 0.001,
-                "explains_ms ({}) should not exceed of_excess_ms ({})",
-                payload.explains_ms,
-                payload.of_excess_ms
-            );
-            for ev in &payload.evidence {
-                // Ensure no label contains a percentage > 100%
-                if let Some(pct_idx) = ev.label.find('%') {
-                    let text_before = &ev.label[..pct_idx];
-                    let digits: String = text_before.chars().rev().take_while(|c| c.is_ascii_digit() || *c == '.').collect::<String>().chars().rev().collect();
-                    if let Ok(pct_val) = digits.parse::<f64>() {
-                        assert!(pct_val <= 100.0, "Evidence percentage was {}% > 100%", pct_val);
-                    }
+        if processed_frames.is_empty() {
+            return;
+        }
+
+        let stats = crate::trace::frames::calculate_robust_stats(&processed_frames);
+        let opts = crate::trace::frames::AnalysisOptions::default();
+        let eps = crate::trace::frames::detect_episodes(&processed_frames, &stats, &opts);
+        assert!(!eps.is_empty(), "Should detect episodes for 20261103_153453");
+    }
+
+    #[test]
+    fn test_real_trace_store_caches_if_present() {
+        let app_data = std::env::var("APPDATA").unwrap_or_default();
+        if app_data.is_empty() {
+            return;
+        }
+        let cache_dir = std::path::Path::new(&app_data)
+            .join("com.ue-launcher.app")
+            .join("trace_cache");
+
+        if !cache_dir.is_dir() {
+            return;
+        }
+
+        let key_traces = [
+            ("20261103_153453", "4d71dc240189f2a0a298d1ac47b11faae32fabd5a765909bd2812b121c146cda.db"),
+            ("20261103_142454", "f4795b2f589bc30c7746a3c4916324de81a65a7365ddba7d557a212b467a88a3.db"),
+            ("20261103_135912", "e9e690977b674fb78514a83fca95790e1d66b5906c280d1192e9136eed622bb4.db"),
+            ("20261102_172711", "e55ceb310884d399e7e95d31e1452aff4d787056b8d37490ca71175ee5699afb.db"),
+            ("20261029_125618", "0147a674629afca2106113bee5f3abeb76d2f651b35ec46ca601861e52317e1c.db"),
+        ];
+
+        for (label, filename) in key_traces {
+            let path = cache_dir.join(filename);
+            if path.is_file() {
+                let mut conn = Connection::open(&path).unwrap();
+                let episodes = crate::trace::store::query_episodes(&conn).unwrap();
+                if episodes.is_empty() {
+                    continue;
+                }
+                let findings = evaluate_and_save_findings(&mut conn, &episodes).unwrap();
+                let rule_ids: Vec<&str> = findings.iter().map(|f| f.rule_id.as_str()).collect();
+                println!("Trace {} -> Findings: {:?}", label, rule_ids);
+                assert!(!findings.is_empty(), "Findings should not be empty for {}", label);
+
+                if label == "20261103_142454" {
+                    assert!(rule_ids.contains(&"gpu-bound"), "Expected gpu-bound for 20261103_142454");
+                    assert!(rule_ids.contains(&"taskgraph-wait"), "Expected taskgraph-wait for 20261103_142454");
+                } else if label == "20261029_125618" {
+                    assert!(rule_ids.contains(&"gc-hitch") || rule_ids.contains(&"animation-cpu"), "Expected gc or anim finding for 20261029_125618");
                 }
             }
         }

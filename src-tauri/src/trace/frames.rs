@@ -34,7 +34,7 @@ impl Default for AnalysisOptions {
     fn default() -> Self {
         Self {
             target_fps: 60.0,
-            hitch_factor: 2.5,
+            hitch_factor: 1.5,
             hitch_min_extra_ms: 12.0,
             hitch_floor_ms: 33.333,
             max_episodes: 15,
@@ -117,6 +117,74 @@ pub fn calculate_robust_stats(frames: &[ProcessedFrame]) -> FrameStats {
     }
 }
 
+pub fn calculate_local_medians(
+    frames: &[ProcessedFrame],
+    window_radius_s: f64,
+    fallback_median: f64,
+) -> Vec<f64> {
+    if frames.is_empty() {
+        return Vec::new();
+    }
+    let mut medians = Vec::with_capacity(frames.len());
+    let mut w_start = 0;
+    let mut w_end = 0;
+
+    for (i, f) in frames.iter().enumerate() {
+        let t = f.start_s;
+        while w_start < i && frames[w_start].start_s < t - window_radius_s {
+            w_start += 1;
+        }
+        while w_end + 1 < frames.len() && frames[w_end + 1].start_s <= t + window_radius_s {
+            w_end += 1;
+        }
+
+        let count = w_end - w_start + 1;
+        if count >= 5 {
+            let mut vals: Vec<f64> = frames[w_start..=w_end].iter().map(|fr| fr.interval_ms).collect();
+            vals.sort_by(|a, b| a.partial_cmp(b).unwrap_or(Ordering::Equal));
+            medians.push(calculate_percentile(&vals, 0.5));
+        } else {
+            medians.push(fallback_median);
+        }
+    }
+
+    medians
+}
+
+pub fn determine_dominant_thread(frames: &[ProcessedFrame]) -> String {
+    let mut game_times: Vec<f64> = frames.iter().filter_map(|f| f.game_ms).collect();
+    game_times.sort_by(|a, b| a.partial_cmp(b).unwrap_or(Ordering::Equal));
+    let med_game = if game_times.is_empty() { 0.0 } else { calculate_percentile(&game_times, 0.5) };
+
+    let mut render_times: Vec<f64> = frames.iter().filter_map(|f| f.render_ms).collect();
+    render_times.sort_by(|a, b| a.partial_cmp(b).unwrap_or(Ordering::Equal));
+    let med_render = if render_times.is_empty() { 0.0 } else { calculate_percentile(&render_times, 0.5) };
+
+    let mut gpu_times: Vec<f64> = frames.iter().filter_map(|f| f.gpu_ms).collect();
+    gpu_times.sort_by(|a, b| a.partial_cmp(b).unwrap_or(Ordering::Equal));
+    let med_gpu = if gpu_times.is_empty() { 0.0 } else { calculate_percentile(&gpu_times, 0.5) };
+
+    if med_gpu >= med_game && med_gpu >= med_render && med_gpu > 0.0 {
+        "gpu".to_string()
+    } else if med_game >= med_render && med_game > 0.0 {
+        "game".to_string()
+    } else if med_render > 0.0 {
+        "render".to_string()
+    } else {
+        "unattributed".to_string()
+    }
+}
+
+fn get_frame_level_and_thread(frames: &[ProcessedFrame], idx: usize) -> (f64, String) {
+    let end = (idx + 5).min(frames.len());
+    let slice = &frames[idx..end];
+    let mut intervals: Vec<f64> = slice.iter().map(|f| f.interval_ms).collect();
+    intervals.sort_by(|a, b| a.partial_cmp(b).unwrap_or(Ordering::Equal));
+    let level = calculate_percentile(&intervals, 0.5);
+    let thread = determine_dominant_thread(slice);
+    (level, thread)
+}
+
 pub fn detect_episodes(
     frames: &[ProcessedFrame],
     stats: &FrameStats,
@@ -127,93 +195,114 @@ pub fn detect_episodes(
     }
 
     let target_ms = 1000.0 / options.target_fps;
-    let hitch_threshold = f64::max(
-        options.hitch_factor * stats.median_ms,
-        f64::max(stats.median_ms + options.hitch_min_extra_ms, options.hitch_floor_ms),
-    );
+    let local_medians = calculate_local_medians(frames, 1.0, stats.median_ms);
 
     let mut episodes: Vec<DbEpisode> = Vec::new();
     let mut next_id: i64 = 1;
 
-    // 1. Detect Isolated Hitches
+    // 1. Detect Isolated Hitches using local moving baselines
     let mut i = 0;
     while i < frames.len() {
+        let local_med = local_medians[i];
+        let hitch_threshold = f64::max(
+            options.hitch_factor * local_med,
+            f64::max(local_med + options.hitch_min_extra_ms, target_ms + options.hitch_min_extra_ms),
+        );
+
         if frames[i].interval_ms >= hitch_threshold {
             let start_idx = i;
             let mut end_idx = i;
             let mut peak_ms = frames[i].interval_ms;
             let mut interval_sum = frames[i].interval_ms;
 
-            while end_idx + 1 < frames.len() && frames[end_idx + 1].interval_ms >= hitch_threshold {
-                end_idx += 1;
-                peak_ms = peak_ms.max(frames[end_idx].interval_ms);
-                interval_sum += frames[end_idx].interval_ms;
+            while end_idx + 1 < frames.len() {
+                let next_med = local_medians[end_idx + 1];
+                let next_thresh = f64::max(
+                    options.hitch_factor * next_med,
+                    f64::max(next_med + options.hitch_min_extra_ms, target_ms + options.hitch_min_extra_ms),
+                );
+                if frames[end_idx + 1].interval_ms >= next_thresh {
+                    end_idx += 1;
+                    peak_ms = peak_ms.max(frames[end_idx].interval_ms);
+                    interval_sum += frames[end_idx].interval_ms;
+                } else {
+                    break;
+                }
             }
 
             let start_s = frames[start_idx].start_s;
             let last_f = &frames[end_idx];
             let end_s = last_f.start_s + (last_f.interval_ms / 1000.0);
-            let count = (end_idx - start_idx + 1) as f64;
-            let median_ms = interval_sum / count;
+            let frame_count = end_idx - start_idx + 1;
+            let duration_s = end_s - start_s;
+            let median_ms = interval_sum / (frame_count as f64);
 
-            episodes.push(DbEpisode {
-                id: next_id,
-                kind: "hitch".to_string(),
-                start_s,
-                end_s,
-                frame_from: frames[start_idx].idx,
-                frame_to: frames[end_idx].idx,
-                peak_ms,
-                median_ms,
-                bound_by: "unattributed".to_string(), // Initialized, refined in pass B
-                periodic_group: None,
-            });
-            next_id += 1;
+            // Enforce transient criteria: at most 4 frames for isolated hitches
+            if frame_count <= 4 || (frame_count <= 6 && duration_s <= 0.250) {
+                episodes.push(DbEpisode {
+                    id: next_id,
+                    kind: "hitch".to_string(),
+                    start_s,
+                    end_s,
+                    frame_from: frames[start_idx].idx,
+                    frame_to: frames[end_idx].idx,
+                    peak_ms,
+                    median_ms,
+                    bound_by: "unattributed".to_string(), // Initialized, refined in pass B
+                    periodic_group: None,
+                });
+                next_id += 1;
+            }
+
             i = end_idx + 1;
         } else {
             i += 1;
         }
     }
 
-    // 2. Detect Sustained Slow Regions using rolling 2.0s windows
-    let window_duration_s = 2.0;
-    let mut slow_intervals: Vec<(usize, usize)> = Vec::new();
+    // 2. Detect Sustained Slow Regions with Regime Segmentation
+    let slow_threshold = target_ms * 1.2;
 
-    let mut w_start = 0;
-    for w_end in 0..frames.len() {
-        while frames[w_end].start_s - frames[w_start].start_s > window_duration_s && w_start < w_end {
-            w_start += 1;
-        }
-        let count = w_end - w_start + 1;
-        if count >= 10 {
-            let window_frames = &frames[w_start..=w_end];
-            let mut w_intervals: Vec<f64> = window_frames.iter().map(|f| f.interval_ms).collect();
-            w_intervals.sort_by(|a, b| a.partial_cmp(b).unwrap_or(Ordering::Equal));
-            let w_med = calculate_percentile(&w_intervals, 0.5);
-            let w_p95 = calculate_percentile(&w_intervals, 0.95);
-
-            if w_med >= target_ms * 1.2 || w_p95 >= target_ms * 2.0 {
-                slow_intervals.push((w_start, w_end));
-            }
+    let mut slow_frame_indices: Vec<usize> = Vec::new();
+    for (idx, f) in frames.iter().enumerate() {
+        if local_medians[idx] >= slow_threshold || f.interval_ms >= slow_threshold {
+            slow_frame_indices.push(idx);
         }
     }
 
-    // Merge contiguous slow intervals into slow regions
-    if !slow_intervals.is_empty() {
-        let mut merged: Vec<(usize, usize)> = Vec::new();
-        let mut curr = slow_intervals[0];
+    if !slow_frame_indices.is_empty() {
+        let mut regions: Vec<(usize, usize, String)> = Vec::new();
+        let mut start_idx = slow_frame_indices[0];
+        let mut end_idx = slow_frame_indices[0];
+        let (_reg_level, mut reg_thread) = get_frame_level_and_thread(frames, start_idx);
 
-        for next in slow_intervals.into_iter().skip(1) {
-            if next.0 <= curr.1 + 1 {
-                curr.1 = curr.1.max(next.1);
+        for &curr_idx in slow_frame_indices.iter().skip(1) {
+            let prev_frame = &frames[end_idx];
+            let curr_frame = &frames[curr_idx];
+            let gap_s = curr_frame.start_s - (prev_frame.start_s + prev_frame.interval_ms / 1000.0);
+
+            let (_curr_level, curr_thread) = get_frame_level_and_thread(frames, curr_idx);
+
+            let thread_compatible = reg_thread == curr_thread
+                || reg_thread == "unattributed"
+                || curr_thread == "unattributed";
+
+            // If gap between slow frames is small (<= 0.75s) and thread is compatible, continue region
+            if gap_s <= 0.75 && thread_compatible {
+                end_idx = curr_idx;
+                if reg_thread == "unattributed" && curr_thread != "unattributed" {
+                    reg_thread = curr_thread;
+                }
             } else {
-                merged.push(curr);
-                curr = next;
+                regions.push((start_idx, end_idx, reg_thread));
+                start_idx = curr_idx;
+                end_idx = curr_idx;
+                reg_thread = curr_thread;
             }
         }
-        merged.push(curr);
+        regions.push((start_idx, end_idx, reg_thread));
 
-        for (from_idx, to_idx) in merged {
+        for (from_idx, to_idx, reg_thread) in regions {
             let start_s = frames[from_idx].start_s;
             let last_f = &frames[to_idx];
             let end_s = last_f.start_s + (last_f.interval_ms / 1000.0);
@@ -226,6 +315,11 @@ pub fn detect_episodes(
                 intervals.sort_by(|a, b| a.partial_cmp(b).unwrap_or(Ordering::Equal));
                 let peak_ms = intervals.last().copied().unwrap_or(0.0);
                 let median_ms = calculate_percentile(&intervals, 0.5);
+                let bound_by = if reg_thread != "unattributed" {
+                    reg_thread
+                } else {
+                    determine_dominant_thread(region_frames)
+                };
 
                 episodes.push(DbEpisode {
                     id: next_id,
@@ -236,7 +330,7 @@ pub fn detect_episodes(
                     frame_to: frames[to_idx].idx,
                     peak_ms,
                     median_ms,
-                    bound_by: "unattributed".to_string(),
+                    bound_by,
                     periodic_group: None,
                 });
                 next_id += 1;
@@ -363,5 +457,146 @@ mod tests {
         assert_eq!(hitches[0].periodic_group, Some(1));
         assert_eq!(hitches[1].periodic_group, Some(1));
         assert_eq!(hitches[2].periodic_group, Some(1));
+    }
+
+    #[test]
+    fn test_steady_slow_sequence_generates_zero_hitches() {
+        let mut frames = Vec::new();
+        let mut t = 0.0;
+        // 300 frames all at 35ms (below 60 FPS target, but steady)
+        for idx in 0..300 {
+            frames.push(ProcessedFrame {
+                idx,
+                engine_frame: None,
+                start_s: t,
+                interval_ms: 35.0,
+                game_ms: Some(34.0),
+                render_ms: Some(10.0),
+                gpu_ms: Some(12.0),
+            });
+            t += 35.0 / 1000.0;
+        }
+
+        let stats = calculate_robust_stats(&frames);
+        let options = AnalysisOptions::default();
+        let episodes = detect_episodes(&frames, &stats, &options);
+
+        let hitches: Vec<_> = episodes.iter().filter(|e| e.kind == "hitch").collect();
+        assert_eq!(hitches.len(), 0, "Steady 35ms sequence should generate 0 hitches");
+    }
+
+    #[test]
+    fn test_transient_hitch_in_slow_sequence() {
+        let mut frames = Vec::new();
+        let mut t = 0.0;
+        // 200 frames at 35ms with a single 120ms spike at frame 100
+        for idx in 0..200 {
+            let interval = if idx == 100 { 120.0 } else { 35.0 };
+            frames.push(ProcessedFrame {
+                idx,
+                engine_frame: None,
+                start_s: t,
+                interval_ms: interval,
+                game_ms: Some(interval),
+                render_ms: Some(10.0),
+                gpu_ms: Some(12.0),
+            });
+            t += interval / 1000.0;
+        }
+
+        let stats = calculate_robust_stats(&frames);
+        let options = AnalysisOptions::default();
+        let episodes = detect_episodes(&frames, &stats, &options);
+
+        let hitches: Vec<_> = episodes.iter().filter(|e| e.kind == "hitch").collect();
+        assert_eq!(hitches.len(), 1, "Should isolate exactly 1 hitch in slow sequence");
+        assert_eq!(hitches[0].frame_from, 100);
+        assert_eq!(hitches[0].frame_to, 100);
+        assert_eq!(hitches[0].peak_ms, 120.0);
+    }
+
+    #[test]
+    fn test_transient_burst_limit_rejects_long_bursts() {
+        let mut frames = Vec::new();
+        let mut t = 0.0;
+        // 100 frames at 16.6ms with 5 consecutive 60ms frames at 50..55
+        for idx in 0..100 {
+            let interval = if idx >= 50 && idx < 55 { 60.0 } else { 16.6 };
+            frames.push(ProcessedFrame {
+                idx,
+                engine_frame: None,
+                start_s: t,
+                interval_ms: interval,
+                game_ms: Some(interval),
+                render_ms: Some(10.0),
+                gpu_ms: Some(12.0),
+            });
+            t += interval / 1000.0;
+        }
+
+        let stats = calculate_robust_stats(&frames);
+        let options = AnalysisOptions::default();
+        let episodes = detect_episodes(&frames, &stats, &options);
+
+        let hitches: Vec<_> = episodes.iter().filter(|e| e.kind == "hitch").collect();
+        assert_eq!(hitches.len(), 0, "5 consecutive slow frames should not be treated as isolated hitch");
+    }
+
+    #[test]
+    fn test_performance_regime_segmentation_splits_distinct_slow_regions() {
+        let mut frames = Vec::new();
+        let mut t = 0.0;
+        let mut idx = 0;
+
+        // 5 seconds at 22ms (mild GPU-bound load) -> ~227 frames
+        while t < 5.0 {
+            frames.push(ProcessedFrame {
+                idx,
+                engine_frame: None,
+                start_s: t,
+                interval_ms: 22.0,
+                game_ms: Some(10.0),
+                render_ms: Some(8.0),
+                gpu_ms: Some(21.0),
+            });
+            t += 22.0 / 1000.0;
+            idx += 1;
+        }
+
+        // 5 seconds at 80ms (heavy CPU GameThread bottleneck) -> ~63 frames
+        let switch_time = t;
+        while t < 10.0 {
+            frames.push(ProcessedFrame {
+                idx,
+                engine_frame: None,
+                start_s: t,
+                interval_ms: 80.0,
+                game_ms: Some(78.0),
+                render_ms: Some(12.0),
+                gpu_ms: Some(20.0),
+            });
+            t += 80.0 / 1000.0;
+            idx += 1;
+        }
+
+        let stats = calculate_robust_stats(&frames);
+        let options = AnalysisOptions::default();
+        let episodes = detect_episodes(&frames, &stats, &options);
+
+        let slow_regions: Vec<_> = episodes.iter().filter(|e| e.kind == "slow_region").collect();
+        assert_eq!(slow_regions.len(), 2, "Distinct 22ms GPU and 80ms GameThread regimes must be segmented into 2 regions");
+
+        let reg1 = &slow_regions[0];
+        let reg2 = &slow_regions[1];
+
+        assert_eq!(reg1.bound_by, "gpu");
+        assert!(reg1.median_ms >= 21.0 && reg1.median_ms <= 23.0);
+        assert!(reg1.start_s < 1.0);
+        assert!(reg1.end_s <= switch_time + 0.1);
+
+        assert_eq!(reg2.bound_by, "game");
+        assert!(reg2.median_ms >= 78.0 && reg2.median_ms <= 82.0);
+        assert!(reg2.start_s >= switch_time - 0.1);
+        assert!(reg2.end_s >= 9.5);
     }
 }

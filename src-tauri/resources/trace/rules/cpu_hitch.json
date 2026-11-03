@@ -1,0 +1,44 @@
+{
+  "id": "cpu-hitch",
+  "title": "Main Thread CPU Stall / Excessive Execution Time",
+  "applies_to": [
+    "hitch",
+    "slow_region"
+  ],
+  "when": {
+    "timers": [
+      "^.*$"
+    ],
+    "threads": [
+      "game",
+      "render",
+      "rhi"
+    ],
+    "min_excess_ms": 20.0,
+    "min_share_of_excess": 0.35,
+    "expects_periodic": false,
+    "requires_bound_by": "cpu"
+  },
+  "specificity": 0.45,
+  "fix_likelihood": "medium",
+  "fix_rationale": "A single engine or game system timer consumed excessive CPU time, exceeding the per-frame CPU budget.",
+  "evidence_template": "{thread} spent {ms} executing {timer} ({share}% of extra frame time){periodic_clause}.",
+  "fixes": [
+    {
+      "text": "Inspect the offending timer scope highlighted in evidence and profile its internal functions.",
+      "effort": "medium"
+    },
+    {
+      "text": "Amortize the workload across multiple frames or offload computation to async worker threads via TaskGraph.",
+      "effort": "high"
+    },
+    {
+      "text": "Reduce per-frame object counts, complexity, or iteration limits in the affected system.",
+      "effort": "low"
+    }
+  ],
+  "verify": "Profile subsequent runs in Insights to confirm the offending timer duration stays within normal baseline limits.",
+  "caveats": [
+    "This generic CPU stall rule catches custom game code, third-party plugins, and engine systems not covered by specialized rules."
+  ]
+}
