@@ -7,6 +7,8 @@ interface StartHereBannerProps {
   summary: TraceSummary;
   findings: Finding[];
   episodes: Episode[];
+  hitchCount?: number;
+  maxHitchMs?: number;
   onShowOnGraph?: (range: [number, number]) => void;
 }
 
@@ -15,6 +17,8 @@ export function StartHereBanner({
   summary,
   findings,
   episodes,
+  hitchCount,
+  maxHitchMs,
   onShowOnGraph,
 }: StartHereBannerProps) {
   const worstHitch = useMemo(() => {
@@ -23,15 +27,20 @@ export function StartHereBanner({
     return hitches.reduce((worst, e) => (e.peakMs > worst.peakMs ? e : worst), hitches[0]);
   }, [episodes]);
 
+  const effectiveHitchCount =
+    hitchCount !== undefined ? hitchCount : episodes.filter((e) => e.kind === 'hitch').length;
+  const effectiveMaxHitchMs =
+    maxHitchMs !== undefined ? maxHitchMs : worstHitch?.peakMs;
+
   const rangeDesc = useMemo(() => {
     if (!stats) return null;
     return describeRange(
       stats,
       summary.targetMs,
-      summary.hitchCount,
-      worstHitch?.peakMs
+      effectiveHitchCount,
+      effectiveMaxHitchMs
     );
-  }, [stats, summary.targetMs, summary.hitchCount, worstHitch]);
+  }, [stats, summary.targetMs, effectiveHitchCount, effectiveMaxHitchMs]);
 
   // Top finding for "First thing to try"
   const topFinding = useMemo(() => {
@@ -117,7 +126,11 @@ export function StartHereBanner({
           <span className="text-sm select-none">💡</span>
           <div>
             <strong className="text-sky-300 font-semibold">First thing to try: </strong>
-            {topFix ? (
+            {rangeDesc.stateLabel === 'Smooth' || findings.length === 0 ? (
+              <span className="text-emerald-300 font-medium">
+                No performance bottlenecks in this range — frames are within the {summary.targetMs.toFixed(1)} ms budget.
+              </span>
+            ) : topFix ? (
               <span className="text-slate-200">
                 {topFix.text}
                 {topFix.effort && (
@@ -135,7 +148,7 @@ export function StartHereBanner({
         </div>
 
         {/* Action Button: Show on graph */}
-        {topEpisodeRange && onShowOnGraph && (
+        {rangeDesc.stateLabel !== 'Smooth' && topEpisodeRange && onShowOnGraph && (
           <button
             type="button"
             onClick={() => onShowOnGraph(topEpisodeRange)}

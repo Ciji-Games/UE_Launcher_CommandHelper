@@ -104,13 +104,6 @@ export function SummaryHeader({
       {/* Top Row: Navigation Controls & Engine Selector */}
       <div className="flex flex-wrap items-center justify-between gap-2.5">
         <div className="flex flex-wrap items-center gap-2">
-          {/* Logo / Title */}
-          <div className="flex items-center gap-2 mr-1">
-            <span className="text-sm font-bold bg-gradient-to-r from-sky-400 via-indigo-300 to-purple-400 bg-clip-text text-transparent">
-              Trace Analyzer
-            </span>
-          </div>
-
           {/* Open Trace Button */}
           <button
             type="button"

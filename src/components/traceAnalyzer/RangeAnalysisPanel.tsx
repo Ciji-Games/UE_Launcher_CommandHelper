@@ -119,7 +119,14 @@ export function RangeAnalysisPanel({
       ? 'Render-bound'
       : rangeDesc.limitingThread === 'Idle / V-Sync'
       ? 'Idle / V-Sync limited'
+      : rangeDesc.limitingThread === 'Balanced'
+      ? 'Balanced (Within budget)'
       : 'Unattributed';
+
+  const limitingBadgeStyle =
+    rangeDesc.stateLabel === 'Smooth'
+      ? 'bg-emerald-950/80 text-emerald-300 border-emerald-500/40'
+      : 'bg-sky-950/80 text-sky-300 border-sky-500/40';
 
   return (
     <div className="flex flex-col gap-3.5 p-4 rounded-xl bg-slate-900/70 border border-slate-800 shadow-lg">
@@ -206,7 +213,7 @@ export function RangeAnalysisPanel({
             <span className="text-xs font-semibold text-slate-300 uppercase tracking-wider">
               Thread Bottleneck
             </span>
-            <span className="px-2 py-0.5 rounded bg-sky-950/80 text-sky-300 border border-sky-500/40 text-xs font-bold">
+            <span className={`px-2 py-0.5 rounded text-xs font-bold border ${limitingBadgeStyle}`}>
               {limitingLabel}
             </span>
           </div>

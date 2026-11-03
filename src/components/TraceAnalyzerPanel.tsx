@@ -136,6 +136,25 @@ export function TraceAnalyzerPanel() {
     };
   }, [openTrace]);
 
+  // Episodes strictly within active selection window
+  const rangeEpisodes = useMemo(() => {
+    if (!summary) return [];
+    if (!selectedRange) return episodes;
+    const [minS, maxS] = [Math.min(...selectedRange), Math.max(...selectedRange)];
+    if (maxS - minS >= summary.durationS - 0.05) return episodes;
+    return episodes.filter((e) => e.startS <= maxS && e.endS >= minS);
+  }, [episodes, selectedRange, summary]);
+
+  const rangeHitches = useMemo(() => {
+    return rangeEpisodes.filter((e) => e.kind === 'hitch');
+  }, [rangeEpisodes]);
+
+  const rangeHitchCount = rangeHitches.length;
+  const rangeMaxHitchMs = useMemo(() => {
+    if (rangeHitches.length === 0) return undefined;
+    return Math.max(...rangeHitches.map((h) => h.peakMs));
+  }, [rangeHitches]);
+
   // Filter and rank findings strictly based on active selected range & selected timer
   const scopedFindings = useMemo(() => {
     if (!summary) return [];
@@ -148,9 +167,24 @@ export function TraceAnalyzerPanel() {
       const isFullTrace = maxS - minS >= summary.durationS - 0.05;
 
       if (!isFullTrace) {
+        // If range is within budget with no hitches, don't leak global over-budget findings
+        const isSmoothRange =
+          rangeStats &&
+          rangeStats.medianMs <= summary.targetMs &&
+          rangeStats.overBudgetPct <= 10 &&
+          rangeHitchCount === 0;
+
         // Filter to only findings whose occurrences/episodes overlap the active selection window
         list = list.filter((f) => {
-          if (!f.episodeIds || f.episodeIds.length === 0) return true;
+          if (isSmoothRange) {
+            return false;
+          }
+          if (!f.episodeIds || f.episodeIds.length === 0) {
+            // General finding without episodes: only keep if range is over budget
+            return rangeStats
+              ? rangeStats.medianMs > summary.targetMs || rangeStats.overBudgetPct > 15
+              : true;
+          }
           return f.episodeIds.some((id) => {
             const ep = episodes.find((e) => e.id === id);
             return ep && ep.startS <= maxS && ep.endS >= minS;
@@ -171,7 +205,7 @@ export function TraceAnalyzerPanel() {
     }
 
     return list;
-  }, [findings, selectedRange, selectedTimerName, episodes, summary]);
+  }, [findings, selectedRange, selectedTimerName, episodes, summary, rangeStats, rangeHitchCount]);
 
   // Categorize findings into Every Frame (sustained) and Spikes (hitches), with startup hitches (< 1s) ranked last
   const { everyFrameFindings, spikeFindings } = useMemo(() => {
@@ -282,12 +316,14 @@ export function TraceAnalyzerPanel() {
               stats={rangeStats}
               summary={summary}
               findings={scopedFindings}
-              episodes={episodes}
+              episodes={rangeEpisodes}
+              hitchCount={rangeHitchCount}
+              maxHitchMs={rangeMaxHitchMs}
               onShowOnGraph={(range) => setSelectedRange(range)}
             />
 
             {/* Frame Time Graph + Bookmarks Track */}
-            <div className="h-[250px] shrink-0">
+            <div className="min-h-[280px] shrink-0">
               <FrameGraph
                 durationS={summary.durationS}
                 targetMs={summary.targetMs}
@@ -304,8 +340,8 @@ export function TraceAnalyzerPanel() {
               <RangeAnalysisPanel
                 stats={rangeStats}
                 targetMs={summary.targetMs}
-                hitchCount={summary.hitchCount}
-                maxHitchMs={episodes.find((e) => e.kind === 'hitch')?.peakMs}
+                hitchCount={rangeHitchCount}
+                maxHitchMs={rangeMaxHitchMs}
                 isLoading={rangeStatsLoading}
                 selectedTimerName={selectedTimerName}
                 onSelectTimer={setSelectedTimerName}
@@ -363,8 +399,16 @@ export function TraceAnalyzerPanel() {
 
               {/* No Findings State */}
               {everyFrameFindings.length === 0 && spikeFindings.length === 0 ? (
-                <div className="p-8 rounded-lg bg-slate-900/40 border border-slate-800 text-center text-xs text-slate-400">
-                  No severe performance bottlenecks detected against the target frame budget in this scope.
+                <div className="p-8 rounded-xl bg-slate-900/40 border border-emerald-900/30 text-center flex flex-col items-center justify-center gap-2">
+                  <div className="w-9 h-9 rounded-full bg-emerald-950/60 border border-emerald-500/40 flex items-center justify-center text-emerald-400">
+                    <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                    </svg>
+                  </div>
+                  <div className="text-sm font-medium text-emerald-300">Within Budget / Smooth</div>
+                  <div className="text-xs text-slate-400 max-w-md">
+                    No performance bottlenecks detected in this range. Frames are running within the target budget.
+                  </div>
                 </div>
               ) : (
                 <>

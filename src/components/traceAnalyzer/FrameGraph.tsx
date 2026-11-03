@@ -782,7 +782,7 @@ export function FrameGraph({
   };
 
   return (
-    <div className="flex flex-col gap-2 w-full h-full min-h-[220px]">
+    <div className="flex flex-col gap-2 w-full min-h-[280px]">
       {/* Graph Toolbar with Presets */}
       <div className="flex flex-wrap items-center justify-between gap-2 px-2 text-xs text-slate-400">
         <div className="flex items-center gap-3">
@@ -979,8 +979,8 @@ export function FrameGraph({
 
       {/* Bookmarks Track Bar (if bookmarks present) */}
       {bookmarks.length > 0 && (
-        <div className="flex items-center gap-1.5 px-2 py-1 bg-slate-800/40 rounded border border-slate-700/40 text-xs overflow-x-auto">
-          <span className="text-purple-400 font-medium text-[11px] flex items-center gap-1 shrink-0">
+        <div className="flex items-center gap-1.5 px-2.5 py-1.5 bg-slate-800/60 rounded border border-purple-500/30 text-xs overflow-x-auto shrink-0 shadow-inner">
+          <span className="text-purple-300 font-medium text-[11px] flex items-center gap-1 shrink-0">
             <span>📌</span> Bookmarks ({bookmarks.length}):
           </span>
           <div className="flex items-center gap-1.5 flex-nowrap">
@@ -993,10 +993,10 @@ export function FrameGraph({
                   const bEnd = Math.min(durationS, bm.startS + Math.max(bm.durationS, 2.5));
                   onSelectRange?.([bStart, bEnd]);
                 }}
-                className="px-2 py-0.5 rounded bg-purple-950/60 border border-purple-700/50 hover:bg-purple-900/80 text-purple-200 text-[11px] flex items-center gap-1 shrink-0 transition-colors"
+                className="px-2.5 py-1 rounded bg-purple-950/70 border border-purple-600/50 hover:bg-purple-900 text-purple-200 text-[11px] flex items-center gap-1 shrink-0 transition-colors shadow-sm"
                 title={`${bm.name} at ${formatTime(bm.startS)}`}
               >
-                <span className="font-medium">{bm.name}</span>
+                <span className="font-medium">{formatBookmarkName(bm.name, bm.startS)}</span>
                 <span className="text-purple-400 font-mono text-[10px]">({formatTime(bm.startS)})</span>
               </button>
             ))}
