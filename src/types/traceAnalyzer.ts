@@ -219,6 +219,60 @@ export type TraceStage =
   | 'analyzing'
   | 'done';
 
+export type ImportStage = 'pass_a' | 'slices' | 'baseline' | 'summaries' | 'done';
+
+export interface ImportProgressPayload {
+  stage: ImportStage;
+  currentSlice: number;
+  totalSlices: number;
+  processedFrames: number;
+  totalFrames: number;
+  elapsedMs: number;
+  estimatedRemainingMs?: number | null;
+  message: string;
+}
+
+export type ChunkStatus = 'queued' | 'running' | 'done';
+
+export interface ChunkState {
+  chunkId: number;
+  state: ChunkStatus;
+  frameFrom: number;
+  frameTo: number;
+  doneAt?: number | null;
+}
+
+export interface Issue {
+  issueId: number;
+  ruleId: string;
+  keyTimerId: number;
+  threadRole: string;
+  scale: 'spike' | 'sustained';
+  firstFrame: number;
+  lastFrame: number;
+  occurrencesCount: number;
+  totalExcessMs: number;
+  worstExcessMs: number;
+}
+
+export interface Occurrence {
+  occurrenceId: number;
+  issueId: number;
+  chunkId: number;
+  frameFrom: number;
+  frameTo: number;
+  peakFrameMs: number;
+  meanExcessMs: number;
+  sumExcessMs: number;
+  confidence: string;
+  evidenceJson: string;
+}
+
+export interface IssueWithOccurrences {
+  issue: Issue;
+  occurrences: Occurrence[];
+}
+
 export interface TraceProgressPayload {
   stage: TraceStage;
   indeterminate: boolean;

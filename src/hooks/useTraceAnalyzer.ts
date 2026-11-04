@@ -6,11 +6,14 @@ import { useProjects } from './useProjects';
 import { useProgress } from '../contexts/ProgressContext';
 import type {
   AnalysisOptions,
+  ChunkState,
   Episode,
   Finding,
   FindingPayload,
   FrameSeriesResponse,
+  ImportProgressPayload,
   InsightsExeInfo,
+  IssueWithOccurrences,
   RangeStatisticsResponse,
   TraceBookmark,
   TraceCandidate,
@@ -42,6 +45,10 @@ export function useTraceAnalyzer() {
   const [findings, setFindings] = useState<Finding[]>([]);
   const [selectedEpisodeId, setSelectedEpisodeId] = useState<number | null>(null);
 
+  const [chunks, setChunks] = useState<ChunkState[]>([]);
+  const [issues, setIssues] = useState<IssueWithOccurrences[]>([]);
+  const [diagnosisProgress, setDiagnosisProgress] = useState<{ doneChunks: number; totalChunks: number } | null>(null);
+
   const [bookmarks, setBookmarks] = useState<TraceBookmark[]>([]);
   const [selectedRange, setSelectedRange] = useState<[number, number] | null>(null);
   const [rangeStats, setRangeStats] = useState<RangeStatisticsResponse | null>(null);
@@ -49,6 +56,7 @@ export function useTraceAnalyzer() {
 
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [progressPayload, setProgressPayload] = useState<TraceProgressPayload | null>(null);
+  const [importProgress, setImportProgress] = useState<ImportProgressPayload | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const [options, setOptions] = useState<AnalysisOptions>(DEFAULT_OPTIONS);
@@ -111,13 +119,22 @@ export function useTraceAnalyzer() {
   // Listen to Tauri progress events
   useEffect(() => {
     let unlistenProgress: UnlistenFn | undefined;
+    let unlistenImport: UnlistenFn | undefined;
     let unlistenFrames: UnlistenFn | undefined;
     let unlistenFindings: UnlistenFn | undefined;
+    let unlistenChunkDone: UnlistenFn | undefined;
+    let unlistenDiagProgress: UnlistenFn | undefined;
 
     listen<TraceProgressPayload>('trace-analyzer:progress', (event) => {
       setProgressPayload(event.payload);
     }).then((fn) => {
       unlistenProgress = fn;
+    });
+
+    listen<ImportProgressPayload>('trace-analyzer:import-progress', (event) => {
+      setImportProgress(event.payload);
+    }).then((fn) => {
+      unlistenImport = fn;
     });
 
     listen('trace-analyzer:frames-ready', () => {
@@ -127,16 +144,42 @@ export function useTraceAnalyzer() {
     });
 
     listen('trace-analyzer:findings-ready', () => {
-      // Pass B findings ready
+      // Diagnostic findings ready
     }).then((fn) => {
       unlistenFindings = fn;
     });
 
+    listen<number>('trace-analyzer:chunk-done', () => {
+      if (summary?.traceId) {
+        invoke<ChunkState[]>('trace_get_chunks', { traceId: summary.traceId })
+          .then((c) => setChunks(c))
+          .catch(() => {});
+        invoke<IssueWithOccurrences[]>('trace_get_issues', { traceId: summary.traceId })
+          .then((iss) => setIssues(iss))
+          .catch(() => {});
+      }
+    }).then((fn) => {
+      unlistenChunkDone = fn;
+    });
+
+    listen<{ doneChunks: number; totalChunks: number }>('trace-analyzer:diagnosis-progress', (event) => {
+      setDiagnosisProgress(event.payload);
+    }).then((fn) => {
+      unlistenDiagProgress = fn;
+    });
+
     return () => {
       unlistenProgress?.();
+      unlistenImport?.();
       unlistenFrames?.();
       unlistenFindings?.();
+      unlistenChunkDone?.();
+      unlistenDiagProgress?.();
     };
+  }, [summary?.traceId]);
+
+  const setFrontier = useCallback((startS: number) => {
+    invoke('trace_set_frontier', { startS }).catch((e) => console.error('Failed to set frontier:', e));
   }, []);
 
   // Open trace handler
@@ -169,11 +212,13 @@ export function useTraceAnalyzer() {
 
         setSummary(res);
 
-        // Fetch episodes, findings, bookmarks & initial range statistics
-        const [eps, fnds, bms] = await Promise.all([
+        // Fetch episodes, findings, bookmarks, chunks, issues & initial range statistics
+        const [eps, fnds, bms, chks, isss] = await Promise.all([
           invoke<Episode[]>('trace_get_episodes', { traceId: res.traceId }),
           invoke<Finding[]>('trace_get_findings', { traceId: res.traceId }),
           invoke<TraceBookmark[]>('trace_get_bookmarks', { traceId: res.traceId }).catch(() => []),
+          invoke<ChunkState[]>('trace_get_chunks', { traceId: res.traceId }).catch(() => []),
+          invoke<IssueWithOccurrences[]>('trace_get_issues', { traceId: res.traceId }).catch(() => []),
         ]);
 
         const parsedFindings: Finding[] = fnds.map((f) => {
@@ -192,6 +237,8 @@ export function useTraceAnalyzer() {
         setEpisodes(eps);
         setFindings(parsedFindings);
         setBookmarks(bms);
+        setChunks(chks);
+        setIssues(isss);
 
         const initialRange: [number, number] = [0, res.durationS];
         setSelectedRange(initialRange);
@@ -436,6 +483,11 @@ export function useTraceAnalyzer() {
     rangeStats,
     rangeStatsLoading,
     fetchRangeStatistics,
+    chunks,
+    issues,
+    diagnosisProgress,
+    importProgress,
+    setFrontier,
     isAnalyzing,
     progressPayload,
     error,

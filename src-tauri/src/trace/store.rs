@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 
-pub const SCHEMA_VERSION: i32 = 11;
+pub const SCHEMA_VERSION: i32 = 12;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
@@ -39,6 +39,104 @@ pub struct DbEpisode {
     pub median_ms: f64,
     pub bound_by: String, // "game" | "render" | "rhi" | "gpu" | "idle_limited" | "unattributed"
     pub periodic_group: Option<i64>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct DbFrameTimer {
+    pub frame_idx: i64,
+    pub thread_id: i64,
+    pub timer_id: i64,
+    pub excl_ms: f64,
+    pub calls: i64,
+    pub max_ms: f64,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct DbIndexSlice {
+    pub slice_id: i64,
+    pub frame_from: i64,
+    pub frame_to: i64,
+    pub start_s: f64,
+    pub end_s: f64,
+    pub state: String,
+    pub rows: i64,
+    pub export_ms: f64,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct DbBaselineGlobal {
+    pub thread_id: i64,
+    pub timer_id: i64,
+    pub median_excl_ms: f64,
+    pub p95_excl_ms: f64,
+    pub median_calls: f64,
+    pub samples: i64,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct DbBlockProfile {
+    pub level: i32,
+    pub block_idx: i64,
+    pub thread_id: i64,
+    pub timer_id: i64,
+    pub sum_excl_ms: f64,
+    pub sum_calls: i64,
+    pub normal_frames: i64,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct DbBlockFrames {
+    pub level: i32,
+    pub block_idx: i64,
+    pub frames: i64,
+    pub spike_frames: i64,
+    pub sum_frame_ms: f64,
+    pub over_budget_frames: i64,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct DbIssue {
+    pub issue_id: i64,
+    pub rule_id: String,
+    pub key_timer_id: i64,
+    pub thread_role: String,
+    pub scale: String, // "spike" | "sustained"
+    pub first_frame: i64,
+    pub last_frame: i64,
+    pub occurrences_count: i64,
+    pub total_excess_ms: f64,
+    pub worst_excess_ms: f64,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct DbOccurrence {
+    pub occurrence_id: i64,
+    pub issue_id: i64,
+    pub chunk_id: i64,
+    pub frame_from: i64,
+    pub frame_to: i64,
+    pub peak_frame_ms: f64,
+    pub mean_excess_ms: f64,
+    pub sum_excess_ms: f64,
+    pub confidence: String,
+    pub evidence_json: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct DbChunkState {
+    pub chunk_id: i64,
+    pub state: String, // "queued" | "running" | "done"
+    pub frame_from: i64,
+    pub frame_to: i64,
+    pub done_at: Option<f64>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -135,6 +233,95 @@ pub fn init_db(conn: &Connection) -> Result<(), rusqlite::Error> {
         );
         CREATE INDEX IF NOT EXISTS idx_frames_start ON frames(start_s);
 
+        CREATE TABLE IF NOT EXISTS frame_timer (
+            frame_idx INTEGER NOT NULL,
+            thread_id INTEGER NOT NULL,
+            timer_id INTEGER NOT NULL,
+            excl_ms REAL NOT NULL,
+            calls INTEGER NOT NULL,
+            max_ms REAL NOT NULL,
+            PRIMARY KEY(frame_idx, thread_id, timer_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_frame_timer_thread ON frame_timer(thread_id, timer_id);
+
+        CREATE TABLE IF NOT EXISTS index_slices (
+            slice_id INTEGER PRIMARY KEY,
+            frame_from INTEGER NOT NULL,
+            frame_to INTEGER NOT NULL,
+            start_s REAL NOT NULL,
+            end_s REAL NOT NULL,
+            state TEXT NOT NULL,
+            rows INTEGER NOT NULL,
+            export_ms REAL NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS baseline_global (
+            thread_id INTEGER NOT NULL,
+            timer_id INTEGER NOT NULL,
+            median_excl_ms REAL NOT NULL,
+            p95_excl_ms REAL NOT NULL,
+            median_calls REAL NOT NULL,
+            samples INTEGER NOT NULL,
+            PRIMARY KEY(thread_id, timer_id)
+        );
+
+        CREATE TABLE IF NOT EXISTS block_profile (
+            level INTEGER NOT NULL,
+            block_idx INTEGER NOT NULL,
+            thread_id INTEGER NOT NULL,
+            timer_id INTEGER NOT NULL,
+            sum_excl_ms REAL NOT NULL,
+            sum_calls INTEGER NOT NULL,
+            normal_frames INTEGER NOT NULL,
+            PRIMARY KEY(level, block_idx, thread_id, timer_id)
+        );
+
+        CREATE TABLE IF NOT EXISTS block_frames (
+            level INTEGER NOT NULL,
+            block_idx INTEGER NOT NULL,
+            frames INTEGER NOT NULL,
+            spike_frames INTEGER NOT NULL,
+            sum_frame_ms REAL NOT NULL,
+            over_budget_frames INTEGER NOT NULL,
+            PRIMARY KEY(level, block_idx)
+        );
+
+        CREATE TABLE IF NOT EXISTS issue (
+            issue_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            rule_id TEXT NOT NULL,
+            key_timer_id INTEGER NOT NULL,
+            thread_role TEXT NOT NULL,
+            scale TEXT NOT NULL,
+            first_frame INTEGER NOT NULL,
+            last_frame INTEGER NOT NULL,
+            occurrences_count INTEGER NOT NULL,
+            total_excess_ms REAL NOT NULL,
+            worst_excess_ms REAL NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS occurrence (
+            occurrence_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            issue_id INTEGER NOT NULL REFERENCES issue(issue_id),
+            chunk_id INTEGER NOT NULL,
+            frame_from INTEGER NOT NULL,
+            frame_to INTEGER NOT NULL,
+            peak_frame_ms REAL NOT NULL,
+            mean_excess_ms REAL NOT NULL,
+            sum_excess_ms REAL NOT NULL,
+            confidence TEXT NOT NULL,
+            evidence_json TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_occurrence_chunk ON occurrence(chunk_id);
+        CREATE INDEX IF NOT EXISTS idx_occurrence_frames ON occurrence(frame_from, frame_to);
+
+        CREATE TABLE IF NOT EXISTS chunk_state (
+            chunk_id INTEGER PRIMARY KEY,
+            state TEXT NOT NULL,
+            frame_from INTEGER NOT NULL,
+            frame_to INTEGER NOT NULL,
+            done_at REAL
+        );
+
         CREATE TABLE IF NOT EXISTS episodes (
             id INTEGER PRIMARY KEY,
             kind TEXT NOT NULL,
@@ -146,28 +333,6 @@ pub fn init_db(conn: &Connection) -> Result<(), rusqlite::Error> {
             median_ms REAL,
             bound_by TEXT,
             periodic_group INTEGER
-        );
-
-        CREATE TABLE IF NOT EXISTS window_events (
-            window_id INTEGER NOT NULL,
-            thread_id INTEGER NOT NULL,
-            timer_id INTEGER NOT NULL,
-            start_s REAL NOT NULL,
-            end_s REAL NOT NULL,
-            depth INTEGER,
-            excl_ms REAL NOT NULL
-        );
-        CREATE INDEX IF NOT EXISTS idx_we ON window_events(window_id, thread_id, timer_id);
-        CREATE INDEX IF NOT EXISTS idx_we_time ON window_events(start_s, end_s);
-
-        CREATE TABLE IF NOT EXISTS baseline_stats (
-            scope TEXT NOT NULL,
-            thread_id INTEGER,
-            timer_id INTEGER,
-            median_excl_ms REAL,
-            p95_excl_ms REAL,
-            median_calls REAL,
-            samples INTEGER
         );
 
         CREATE TABLE IF NOT EXISTS findings (

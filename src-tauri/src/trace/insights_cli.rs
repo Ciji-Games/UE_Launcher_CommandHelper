@@ -9,7 +9,8 @@ use std::time::Duration;
 use std::os::windows::process::CommandExt;
 
 use crate::running_process::{clear_running_pid, set_running_pid};
-use crate::trace::source::{ExportWindow, PassAOutputs, PassBOutputs, TraceSource};
+use crate::trace::csv_ingest::ProcessedFrame;
+use crate::trace::source::{ExportSlice, PassAOutputs, TraceSource};
 use crate::utils::kill_pid;
 
 #[derive(Debug, serde::Serialize, serde::Deserialize, Clone)]
@@ -235,6 +236,50 @@ impl InsightsCliSource {
             }
         }
     }
+    pub fn plan_slices(
+        frames: &[ProcessedFrame],
+        trace_start_s: f64,
+        target_frames_per_slice: usize,
+    ) -> Vec<ExportSlice> {
+        if frames.is_empty() {
+            return Vec::new();
+        }
+        let chunk_size = target_frames_per_slice.max(100);
+        let mut slices = Vec::new();
+        let pad_s = 0.066; // 66 ms padding for start/end export boundary safety
+
+        let total = frames.len();
+        let mut slice_id = 0;
+        let mut idx = 0;
+
+        while idx < total {
+            let end_idx = (idx + chunk_size).min(total) - 1;
+            let first_frame = &frames[idx];
+            let last_frame = &frames[end_idx];
+
+            let start_s = (first_frame.start_s - pad_s).max(0.0) + trace_start_s;
+            let end_s = last_frame.start_s + (last_frame.interval_ms / 1000.0) + pad_s + trace_start_s;
+
+            slices.push(ExportSlice {
+                slice_id,
+                frame_from: first_frame.idx,
+                frame_to: last_frame.idx,
+                start_s,
+                end_s,
+                threads: vec![
+                    "GameThread".to_string(),
+                    "RenderThread*".to_string(),
+                    "RHIThread".to_string(),
+                    "GPU*".to_string(),
+                ],
+            });
+
+            slice_id += 1;
+            idx = end_idx + 1;
+        }
+
+        slices
+    }
 }
 
 impl TraceSource for InsightsCliSource {
@@ -281,44 +326,34 @@ impl TraceSource for InsightsCliSource {
         })
     }
 
-    fn export_pass_b(
+    fn export_slice(
         &self,
         trace_path: &Path,
-        windows: &[ExportWindow],
+        slice: &ExportSlice,
         output_dir: &Path,
         cancel_flag: &Arc<AtomicBool>,
-    ) -> Result<PassBOutputs, String> {
-        if windows.is_empty() {
-            return Ok(PassBOutputs {
-                window_csvs: Vec::new(),
-            });
-        }
+    ) -> Result<PathBuf, String> {
+        let csv_path = output_dir.join(format!("slice_{}.csv", slice.slice_id));
+        let csv_str = csv_path.to_string_lossy().replace('\\', "/");
+        let threads_arg = if slice.threads.is_empty() {
+            "GameThread,RenderThread*,RHIThread,GPU*".to_string()
+        } else {
+            slice.threads.join(",")
+        };
 
-        let mut lines = Vec::new();
-        let mut window_csvs = Vec::new();
-
-        for win in windows {
-            let csv_path = output_dir.join(format!("window_{}.csv", win.window_id));
-            let csv_str = csv_path.to_string_lossy().replace('\\', "/");
-            let threads_arg = if win.threads.is_empty() {
-                "GameThread,RenderThread*,RHIThread,GPU*".to_string()
-            } else {
-                win.threads.join(",")
-            };
-
-            lines.push(format!(
-                "TimingInsights.ExportTimingEvents {} -threads={} -timers=* -startTime={:.4} -endTime={:.4}",
-                csv_str, threads_arg, win.start_s, win.end_s
-            ));
-            window_csvs.push((win.window_id, csv_path));
-        }
-
-        let rsp_content = lines.join("\n") + "\n";
-        let rsp_path = output_dir.join("pass_b.rsp");
-        let log_path = output_dir.join("pass_b.log");
+        let rsp_content = format!(
+            "TimingInsights.ExportTimingEvents {} -threads={} -timers=* -startTime={:.4} -endTime={:.4}\n",
+            csv_str, threads_arg, slice.start_s, slice.end_s
+        );
+        let rsp_path = output_dir.join(format!("slice_{}.rsp", slice.slice_id));
+        let log_path = output_dir.join(format!("slice_{}.log", slice.slice_id));
 
         self.run_insights_rsp(trace_path, &rsp_content, &rsp_path, &log_path, cancel_flag)?;
 
-        Ok(PassBOutputs { window_csvs })
+        if !csv_path.is_file() {
+            return Err(format!("UnrealInsights failed to export slice {}", slice.slice_id));
+        }
+
+        Ok(csv_path)
     }
 }

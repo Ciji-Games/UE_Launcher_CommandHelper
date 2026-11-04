@@ -43,19 +43,40 @@ UnrealInsights.exe -OpenTraceFile="<TracePath.utrace>" -ABSLOG="<LogPath.log>" -
 
 ---
 
-## 2. Two-Pass Loading Strategy
+## 2. Ingestion & Analysis Architecture (v3 Streaming Pipeline)
 
-1. **Pass A (Lightweight Metadata & Frames)**:
-   - Exports thread list, timer list, and top-level `Frame` timing events on pipeline threads (`GameThread`, `RenderThread*`, `RHIThread`, `GPU*`).
-   - Computes start-to-start frame time intervals and immediately displays the `<canvas>` frame time graph.
-2. **Pass B (Targeted Window Export)**:
-   - Extracts top hitch episodes (up to 15), local baseline normal frames (within ±5 s), and global baseline normal frames.
-   - Computes exclusive runtime per timer scope using an interval stack algorithm.
-   - Evaluates diagnostic rules and displays ranked findings with quantitative evidence.
+1. **Stage 1 (Import & Pyramid Generation)**:
+   - **Pass A (Metadata & Frames)**: Exports thread list, timer list, and top-level `Frame` timing events on pipeline threads (`GameThread`, `RenderThread*`, `RHIThread`, `GPU*`). Computes start-to-start frame intervals and robust baseline statistics.
+   - **Full Streaming Slice Export**: Slices the trace on game frame boundaries (~1.5M events/slice with 66ms padding) and invokes `ExportTimingEvents`.
+   - **Exclusive Time Ingestion & Thresholding**: Computes per-thread exclusive time per frame on the fly. Records timers with sum $\ge 0.1\text{ ms}$, rolling remaining sub-threshold sums into `timer_id = 0` ("other"). Deletes slice CSV files immediately.
+   - **Global Baseline**: Derives `baseline_global` (median exclusive ms and calls) across all normal frames ($\text{interval} \le 1.25 \times \text{median}$).
+   - **2-Level Block Summary Pyramid**: Precomputes `block_profile` and `block_frames` at Level 1 (64 frames) and Level 2 (4096 frames), separating steady-state frames from spike frames.
+
+2. **Stage 2 (Background Diagnosis Timeline)**:
+   - Evaluates trace chunks (512 frames) in background CPU workers prioritizing the user's viewport / selection frontier.
+   - Executes frame health tests, spike analysis ([-1, +3] context), and sustained rolling windows (~2s window, 0.5s hop).
+   - Generates run-length encoded `issue` and `occurrence` entries, merging intra-chunk and stitching across chunk boundaries.
+
+3. **Stage 3 (Instant Range Assembly)**:
+   - Assembles arbitrary range statistics and top timers in $< 100\text{ ms}$ using block summaries + at most 2 partial edge frames from `frame_timer`.
+   - Overlays active spike findings and recurring issue counts without disk I/O.
 
 ---
 
-## 3. SQLite Storage & Caching
+## 3. Benchmarking & Data Sizing Baselines (Phase 0)
+
+| Metric | Raw Event Stream | Sliced Ingestion (0.1 ms Threshold) |
+|---|---|---|
+| **Rows per Frame (Avg)** | ~350 - 800 raw events | ~40 - 70 index rows |
+| **Full Trace (~36k Frames)** | ~15M - 25M CSV rows (~1.2 GB) | ~1.8M - 2.4M rows (~35 MB SQLite) |
+| **Memory Footprint** | Unbounded if buffered | $< 80\text{ MB}$ streaming buffer |
+| **Range Assembly Latency** | $2\text{s} - 15\text{s}$ (file scan) | $< 15\text{ ms}$ (block pyramid + edges) |
+
+`ExportTimerStatistics` CLI command was confirmed to be region/global aggregate only; exact frame-bounded slicing requires `TimingInsights.ExportTimingEvents` with frame padding.
+
+---
+
+## 4. SQLite Storage & Caching
 
 Each trace is cached in a standalone SQLite database located in `%APPDATA%/com.ciji.ue-launcher/trace_cache/<hash>.db` (or custom app data directory).
 

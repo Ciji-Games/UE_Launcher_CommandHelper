@@ -1,15 +1,34 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import type { Episode, FrameSeriesResponse, TraceBookmark } from '../../types/traceAnalyzer';
+import type { ChunkState, Episode, FrameSeriesResponse, Issue, IssueWithOccurrences, Occurrence, TraceBookmark } from '../../types/traceAnalyzer';
 
 interface FrameGraphProps {
   durationS: number;
   targetMs: number;
   episodes?: Episode[];
   bookmarks?: TraceBookmark[];
+  chunks?: ChunkState[];
+  issues?: IssueWithOccurrences[];
   selectedRange?: [number, number] | null;
   onSelectRange?: (range: [number, number] | null) => void;
+  onSetFrontier?: (startS: number) => void;
   fetchFrameSeries: (startS: number, endS: number, maxItems?: number) => Promise<FrameSeriesResponse | null>;
 }
+
+const RULE_COLORS: Record<string, string> = {
+  'gc-hitch': '#ef4444',
+  'taskgraph-wait': '#f97316',
+  'cpu-hitch': '#f59e0b',
+  'shader-compile': '#eab308',
+  'pso-hitch': '#84cc16',
+  'sync-load': '#06b6d4',
+  'async-load-finalization': '#3b82f6',
+  'bp-tick': '#8b5cf6',
+  'physics-cpu': '#ec4899',
+  'animation-cpu': '#d946ef',
+  'gpu-bound': '#f43f5e',
+  'render-cpu': '#a855f7',
+  'unattributed-gap': '#64748b',
+};
 
 function formatTime(seconds: number | null | undefined): string {
   if (seconds === null || seconds === undefined || Number.isNaN(seconds)) {
@@ -36,8 +55,11 @@ export function FrameGraph({
   targetMs,
   episodes = [],
   bookmarks = [],
+  chunks = [],
+  issues = [],
   selectedRange = null,
   onSelectRange,
+  onSetFrontier,
   fetchFrameSeries,
 }: FrameGraphProps) {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -230,6 +252,43 @@ export function FrameGraph({
         if (x2 > x1) {
           ctx.fillStyle = 'rgba(245, 158, 11, 0.12)';
           ctx.fillRect(x1, padT, x2 - x1, graphH);
+        }
+      }
+    }
+
+    // Draw Chunk State Overlays (Analysing vs Queued)
+    if (chunks && chunks.length > 0 && durationS > 0) {
+      const totalChunkFrames = chunks.reduce((acc, c) => Math.max(acc, c.frameTo + 1), 1);
+      const secPerFrame = durationS / totalChunkFrames;
+
+      for (const chunk of chunks) {
+        if (chunk.state === 'done') continue;
+
+        const chunkStartS = chunk.frameFrom * secPerFrame;
+        const chunkEndS = (chunk.frameTo + 1) * secPerFrame;
+
+        const cx1 = Math.max(padL, timeToX(chunkStartS));
+        const cx2 = Math.min(padL + graphW, timeToX(chunkEndS));
+        const cw = cx2 - cx1;
+
+        if (cw <= 0) continue;
+
+        if (chunk.state === 'running') {
+          // Analysing state: desaturated blue with moving/dashed border
+          ctx.fillStyle = 'rgba(56, 189, 248, 0.10)';
+          ctx.fillRect(cx1, padT, cw, graphH);
+          ctx.strokeStyle = 'rgba(56, 189, 248, 0.35)';
+          ctx.setLineDash([4, 4]);
+          ctx.strokeRect(cx1, padT, cw, graphH);
+          ctx.setLineDash([]);
+        } else if (chunk.state === 'queued') {
+          // Queued state: greyed overlay
+          ctx.fillStyle = 'rgba(15, 23, 42, 0.50)';
+          ctx.fillRect(cx1, padT, cw, graphH);
+          ctx.strokeStyle = 'rgba(100, 116, 139, 0.2)';
+          ctx.setLineDash([2, 4]);
+          ctx.strokeRect(cx1, padT, cw, graphH);
+          ctx.setLineDash([]);
         }
       }
     }
@@ -716,6 +775,16 @@ export function FrameGraph({
           const wEnd = Math.min(durationS, hitBm.startS + halfWin);
           onSelectRange?.([wStart, wEnd]);
         } else {
+          // If clicked in an unanalysed / queued chunk, steer frontier
+          if (chunks && chunks.length > 0 && durationS > 0) {
+            const totalChunkFrames = chunks.reduce((acc, c) => Math.max(acc, c.frameTo + 1), 1);
+            const secPerFrame = durationS / totalChunkFrames;
+            const clickedChunk = chunks.find((c) => t >= c.frameFrom * secPerFrame && t <= (c.frameTo + 1) * secPerFrame);
+            if (clickedChunk && clickedChunk.state !== 'done') {
+              onSetFrontier?.(t);
+            }
+          }
+
           // Scope a comfortable 3-second context window around the clicked timestamp
           const halfWin = 1.5;
           const wStart = Math.max(0, t - halfWin);
@@ -1003,6 +1072,126 @@ export function FrameGraph({
           </div>
         </div>
       )}
+
+      {/* Findings Timeline Lane */}
+      {(() => {
+        if (!issues || issues.length === 0 || durationS <= 0) return null;
+
+        // Collapse duplicate diagnosis by ruleId into a single consolidated timeline row
+        const map = new Map<
+          string,
+          {
+            ruleId: string;
+            totalExcessMs: number;
+            occurrences: Array<{
+              occurrence: Occurrence;
+              issue: Issue;
+            }>;
+          }
+        >();
+
+        for (const item of issues) {
+          const ruleId = item.issue.ruleId;
+          let entry = map.get(ruleId);
+          if (!entry) {
+            entry = {
+              ruleId,
+              totalExcessMs: 0,
+              occurrences: [],
+            };
+            map.set(ruleId, entry);
+          }
+          entry.totalExcessMs += item.issue.totalExcessMs;
+          for (const occ of item.occurrences) {
+            entry.occurrences.push({
+              occurrence: occ,
+              issue: item.issue,
+            });
+          }
+        }
+
+        const groupedDiagnoses = Array.from(map.values()).sort((a, b) => b.totalExcessMs - a.totalExcessMs);
+        for (const group of groupedDiagnoses) {
+          group.occurrences.sort((a, b) => a.occurrence.frameFrom - b.occurrence.frameFrom);
+        }
+
+        const totalOccurrencesCount = issues.reduce((acc, i) => acc + i.occurrences.length, 0);
+
+        if (groupedDiagnoses.length === 0) return null;
+
+        return (
+          <div className="flex flex-col gap-1.5 px-3 py-2 bg-slate-800/40 rounded border border-slate-700/50 text-xs">
+            <div className="flex items-center justify-between text-[11px] text-slate-400 font-semibold mb-0.5">
+              <span className="flex items-center gap-1.5">
+                <span className="w-2 h-2 rounded-full bg-sky-400 animate-pulse" />
+                <span>Diagnostic Findings Timeline</span>
+              </span>
+              <span className="text-slate-500 font-mono text-[10px]">
+                {totalOccurrencesCount} occurrence{totalOccurrencesCount !== 1 ? 's' : ''} across {groupedDiagnoses.length} diagnos{groupedDiagnoses.length > 1 ? 'es' : 'is'}
+              </span>
+            </div>
+            <div className="flex flex-col gap-1.5 w-full max-h-52 overflow-y-auto pr-0.5">
+              {groupedDiagnoses.map((diag) => {
+                const color = RULE_COLORS[diag.ruleId] || '#38bdf8';
+                const totalFrames = durationS * 60;
+
+                return (
+                  <div key={diag.ruleId} className="flex items-center gap-2 h-4 text-[10px]">
+                    {/* Collapsed Diagnosis Label */}
+                    <div
+                      className="w-36 flex items-center gap-1.5 shrink-0 overflow-hidden"
+                      title={`${diag.ruleId} • ${diag.occurrences.length} occurrence(s), total excess ${diag.totalExcessMs.toFixed(1)}ms`}
+                    >
+                      <span className="w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: color }} />
+                      <span className="truncate text-slate-300 font-medium">
+                        {diag.ruleId}
+                      </span>
+                    </div>
+
+                    {/* Timeline Bar of Occurrences */}
+                    <div className="flex-1 relative h-2.5 bg-slate-900/90 rounded overflow-hidden border border-slate-700/60">
+                      {diag.occurrences.map((item) => {
+                        const occ = item.occurrence;
+                        const isSpike = item.issue.scale === 'spike';
+                        const threadRole = item.issue.threadRole?.trim();
+                        const leftPct = Math.max(0, Math.min(100, (occ.frameFrom / totalFrames) * 100));
+                        const widthPct = Math.max(0.5, Math.min(100 - leftPct, ((occ.frameTo - occ.frameFrom + 1) / totalFrames) * 100));
+                        const secPerFrame = durationS / totalFrames;
+                        const fromSec = (occ.frameFrom * secPerFrame).toFixed(2);
+                        const toSec = (occ.frameTo * secPerFrame).toFixed(2);
+
+                        return (
+                          <div
+                            key={occ.occurrenceId}
+                            onClick={() => {
+                              const oStart = Math.max(0, (occ.frameFrom - 2) * secPerFrame);
+                              const oEnd = Math.min(durationS, (occ.frameTo + 3) * secPerFrame);
+                              onSelectRange?.([oStart, oEnd]);
+                            }}
+                            className="absolute top-0 bottom-0 rounded-sm cursor-pointer hover:brightness-150 hover:scale-y-125 transition-all shadow-sm"
+                            style={{
+                              left: `${leftPct}%`,
+                              width: `${widthPct}%`,
+                              backgroundColor: color,
+                              opacity: isSpike ? 1 : 0.85,
+                            }}
+                            title={`${diag.ruleId} [${item.issue.scale}] (${threadRole || 'all threads'})\nFrames ${occ.frameFrom}..${occ.frameTo} (${fromSec}s – ${toSec}s)\nPeak: ${occ.peakFrameMs.toFixed(1)} ms | Excess: +${occ.sumExcessMs.toFixed(1)} ms\nClick to select range`}
+                          />
+                        );
+                      })}
+                    </div>
+
+                    {/* Summary Metric (Occurrences & Excess) */}
+                    <span className="text-[9px] text-slate-500 font-mono w-16 text-right shrink-0">
+                      {diag.occurrences.length}x (+{diag.totalExcessMs.toFixed(0)}ms)
+                    </span>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        );
+      })()}
     </div>
   );
 }

@@ -117,6 +117,374 @@ pub fn calculate_robust_stats(frames: &[ProcessedFrame]) -> FrameStats {
     }
 }
 
+pub const BLOCK_SIZE_L1: usize = 64;
+pub const BLOCK_SIZE_L2: usize = 4096;
+
+pub fn build_block_pyramid(
+    conn: &mut Connection,
+    frames: &[ProcessedFrame],
+    stats: &FrameStats,
+    opts: &AnalysisOptions,
+) -> Result<(), String> {
+    if frames.is_empty() {
+        return Ok(());
+    }
+
+    let target_ms = 1000.0 / opts.target_fps;
+    let normal_threshold_ms = stats.median_ms * 1.25;
+
+    let mut frame_timer_map: std::collections::HashMap<i64, Vec<(i64, i64, f64, i64)>> = std::collections::HashMap::new();
+    {
+        let mut stmt = conn
+            .prepare("SELECT frame_idx, thread_id, timer_id, excl_ms, calls FROM frame_timer ORDER BY frame_idx")
+            .map_err(|e| e.to_string())?;
+
+        let rows = stmt
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, i64>(2)?,
+                    row.get::<_, f64>(3)?,
+                    row.get::<_, i64>(4)?,
+                ))
+            })
+            .map_err(|e| e.to_string())?;
+
+        for r in rows {
+            let (f_idx, th_id, timer_id, excl_ms, calls) = r.map_err(|e| e.to_string())?;
+            frame_timer_map.entry(f_idx).or_default().push((th_id, timer_id, excl_ms, calls));
+        }
+    }
+
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    {
+        tx.execute("DELETE FROM block_frames", []).map_err(|e| e.to_string())?;
+        tx.execute("DELETE FROM block_profile", []).map_err(|e| e.to_string())?;
+
+        let mut insert_frames_stmt = tx
+            .prepare(
+                "INSERT INTO block_frames (level, block_idx, frames, spike_frames, sum_frame_ms, over_budget_frames)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            )
+            .map_err(|e| e.to_string())?;
+
+        let mut insert_profile_stmt = tx
+            .prepare(
+                "INSERT INTO block_profile (level, block_idx, thread_id, timer_id, sum_excl_ms, sum_calls, normal_frames)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            )
+            .map_err(|e| e.to_string())?;
+
+        // Level 1: 64 frames per block
+        let total_frames = frames.len();
+        let num_l1_blocks = (total_frames + BLOCK_SIZE_L1 - 1) / BLOCK_SIZE_L1;
+
+        for b_idx in 0..num_l1_blocks {
+            let start_f = b_idx * BLOCK_SIZE_L1;
+            let end_f = (start_f + BLOCK_SIZE_L1).min(total_frames);
+            let block_frames_slice = &frames[start_f..end_f];
+
+            let mut spike_frames = 0i64;
+            let mut sum_frame_ms = 0.0f64;
+            let mut over_budget_frames = 0i64;
+            let mut normal_frames = 0i64;
+
+            let mut timer_agg: std::collections::HashMap<(i64, i64), (f64, i64)> = std::collections::HashMap::new();
+
+            for f in block_frames_slice {
+                sum_frame_ms += f.interval_ms;
+                if f.interval_ms > target_ms {
+                    over_budget_frames += 1;
+                }
+                let is_normal = f.interval_ms <= normal_threshold_ms;
+                if is_normal {
+                    normal_frames += 1;
+                } else {
+                    spike_frames += 1;
+                }
+
+                if let Some(timers) = frame_timer_map.get(&f.idx) {
+                    for &(th_id, tid, excl_ms, calls) in timers {
+                        if is_normal {
+                            let entry = timer_agg.entry((th_id, tid)).or_insert((0.0, 0));
+                            entry.0 += excl_ms;
+                            entry.1 += calls;
+                        }
+                    }
+                }
+            }
+
+            insert_frames_stmt
+                .execute(params![
+                    1,
+                    b_idx as i64,
+                    block_frames_slice.len() as i64,
+                    spike_frames,
+                    sum_frame_ms,
+                    over_budget_frames
+                ])
+                .map_err(|e| e.to_string())?;
+
+            for ((th_id, tid), (sum_excl_ms, sum_calls)) in timer_agg {
+                insert_profile_stmt
+                    .execute(params![
+                        1,
+                        b_idx as i64,
+                        th_id,
+                        tid,
+                        sum_excl_ms,
+                        sum_calls,
+                        normal_frames
+                    ])
+                    .map_err(|e| e.to_string())?;
+            }
+        }
+
+        // Level 2: 4096 frames per block
+        let num_l2_blocks = (total_frames + BLOCK_SIZE_L2 - 1) / BLOCK_SIZE_L2;
+
+        for b_idx in 0..num_l2_blocks {
+            let start_f = b_idx * BLOCK_SIZE_L2;
+            let end_f = (start_f + BLOCK_SIZE_L2).min(total_frames);
+            let block_frames_slice = &frames[start_f..end_f];
+
+            let mut spike_frames = 0i64;
+            let mut sum_frame_ms = 0.0f64;
+            let mut over_budget_frames = 0i64;
+            let mut normal_frames = 0i64;
+
+            let mut timer_agg: std::collections::HashMap<(i64, i64), (f64, i64)> = std::collections::HashMap::new();
+
+            for f in block_frames_slice {
+                sum_frame_ms += f.interval_ms;
+                if f.interval_ms > target_ms {
+                    over_budget_frames += 1;
+                }
+                let is_normal = f.interval_ms <= normal_threshold_ms;
+                if is_normal {
+                    normal_frames += 1;
+                } else {
+                    spike_frames += 1;
+                }
+
+                if let Some(timers) = frame_timer_map.get(&f.idx) {
+                    for &(th_id, tid, excl_ms, calls) in timers {
+                        if is_normal {
+                            let entry = timer_agg.entry((th_id, tid)).or_insert((0.0, 0));
+                            entry.0 += excl_ms;
+                            entry.1 += calls;
+                        }
+                    }
+                }
+            }
+
+            insert_frames_stmt
+                .execute(params![
+                    2,
+                    b_idx as i64,
+                    block_frames_slice.len() as i64,
+                    spike_frames,
+                    sum_frame_ms,
+                    over_budget_frames
+                ])
+                .map_err(|e| e.to_string())?;
+
+            for ((th_id, tid), (sum_excl_ms, sum_calls)) in timer_agg {
+                insert_profile_stmt
+                    .execute(params![
+                        2,
+                        b_idx as i64,
+                        th_id,
+                        tid,
+                        sum_excl_ms,
+                        sum_calls,
+                        normal_frames
+                    ])
+                    .map_err(|e| e.to_string())?;
+            }
+        }
+    }
+    tx.commit().map_err(|e| e.to_string())?;
+
+    Ok(())
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct RangeAssemblyPlan {
+    pub level2_blocks: Vec<i64>,
+    pub level1_blocks: Vec<i64>,
+    pub edge_frame_indices: Vec<i64>,
+}
+
+pub fn plan_range_assembly(
+    frame_from: i64,
+    frame_to: i64,
+) -> RangeAssemblyPlan {
+    let mut plan = RangeAssemblyPlan {
+        level2_blocks: Vec::new(),
+        level1_blocks: Vec::new(),
+        edge_frame_indices: Vec::new(),
+    };
+
+    if frame_from > frame_to {
+        return plan;
+    }
+
+    let mut curr = frame_from;
+
+    // Small range (< 128 frames) can just read edge frames directly
+    if frame_to - frame_from + 1 < (BLOCK_SIZE_L1 * 2) as i64 {
+        for idx in frame_from..=frame_to {
+            plan.edge_frame_indices.push(idx);
+        }
+        return plan;
+    }
+
+    // 1. Consume left partial level 1 edge frames until aligned with BLOCK_SIZE_L1
+    while (curr % (BLOCK_SIZE_L1 as i64) != 0) && curr <= frame_to {
+        plan.edge_frame_indices.push(curr);
+        curr += 1;
+    }
+
+    // 2. Consume left level 1 blocks until aligned with BLOCK_SIZE_L2
+    while (curr % (BLOCK_SIZE_L2 as i64) != 0) && (curr + (BLOCK_SIZE_L1 as i64) - 1 <= frame_to) {
+        let b1 = curr / (BLOCK_SIZE_L1 as i64);
+        plan.level1_blocks.push(b1);
+        curr += BLOCK_SIZE_L1 as i64;
+    }
+
+    // 3. Consume whole level 2 blocks
+    while curr + (BLOCK_SIZE_L2 as i64) - 1 <= frame_to {
+        let b2 = curr / (BLOCK_SIZE_L2 as i64);
+        plan.level2_blocks.push(b2);
+        curr += BLOCK_SIZE_L2 as i64;
+    }
+
+    // 4. Consume right level 1 blocks
+    while curr + (BLOCK_SIZE_L1 as i64) - 1 <= frame_to {
+        let b1 = curr / (BLOCK_SIZE_L1 as i64);
+        plan.level1_blocks.push(b1);
+        curr += BLOCK_SIZE_L1 as i64;
+    }
+
+    // 5. Consume remaining right partial level 1 edge frames
+    while curr <= frame_to {
+        plan.edge_frame_indices.push(curr);
+        curr += 1;
+    }
+
+    plan
+}
+
+pub fn assemble_range_timer_sums(
+    conn: &Connection,
+    frame_from: i64,
+    frame_to: i64,
+) -> Result<std::collections::HashMap<(i64, i64), (f64, i64)>, String> {
+    let plan = plan_range_assembly(frame_from, frame_to);
+    let mut timer_map: std::collections::HashMap<(i64, i64), (f64, i64)> = std::collections::HashMap::new();
+
+    // 1. Level 2 blocks
+    if !plan.level2_blocks.is_empty() {
+        let in_clause = plan.level2_blocks.iter().map(|b| b.to_string()).collect::<Vec<_>>().join(",");
+        let sql = format!(
+            "SELECT thread_id, timer_id, SUM(sum_excl_ms), SUM(sum_calls) 
+             FROM block_profile 
+             WHERE level = 2 AND block_idx IN ({}) 
+             GROUP BY thread_id, timer_id",
+            in_clause
+        );
+        let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, f64>(2)?,
+                    row.get::<_, i64>(3)?,
+                ))
+            })
+            .map_err(|e| e.to_string())?;
+        for r in rows {
+            let (th_id, tid, sum_excl_ms, sum_calls) = r.map_err(|e| e.to_string())?;
+            let entry = timer_map.entry((th_id, tid)).or_insert((0.0, 0));
+            entry.0 += sum_excl_ms;
+            entry.1 += sum_calls;
+        }
+    }
+
+    // 2. Level 1 blocks
+    if !plan.level1_blocks.is_empty() {
+        let in_clause = plan.level1_blocks.iter().map(|b| b.to_string()).collect::<Vec<_>>().join(",");
+        let sql = format!(
+            "SELECT thread_id, timer_id, SUM(sum_excl_ms), SUM(sum_calls) 
+             FROM block_profile 
+             WHERE level = 1 AND block_idx IN ({}) 
+             GROUP BY thread_id, timer_id",
+            in_clause
+        );
+        let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, f64>(2)?,
+                    row.get::<_, i64>(3)?,
+                ))
+            })
+            .map_err(|e| e.to_string())?;
+        for r in rows {
+            let (th_id, tid, sum_excl_ms, sum_calls) = r.map_err(|e| e.to_string())?;
+            let entry = timer_map.entry((th_id, tid)).or_insert((0.0, 0));
+            entry.0 += sum_excl_ms;
+            entry.1 += sum_calls;
+        }
+    }
+
+    // 3. Edge frames (filtering out spike frames to match block_profile normal sums)
+    if !plan.edge_frame_indices.is_empty() {
+        let normal_threshold: f64 = conn
+            .query_row(
+                "SELECT CAST(value AS REAL) * 1.25 FROM meta WHERE key = 'median_frame_ms'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap_or(999999.0);
+
+        let in_clause = plan.edge_frame_indices.iter().map(|f| f.to_string()).collect::<Vec<_>>().join(",");
+        let sql = format!(
+            "SELECT ft.thread_id, ft.timer_id, SUM(ft.excl_ms), SUM(ft.calls) 
+             FROM frame_timer ft
+             LEFT JOIN frames f ON f.idx = ft.frame_idx
+             WHERE ft.frame_idx IN ({}) AND (f.interval_ms IS NULL OR f.interval_ms <= ?1)
+             GROUP BY ft.thread_id, ft.timer_id",
+            in_clause
+        );
+        let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map(params![normal_threshold], |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, f64>(2)?,
+                    row.get::<_, i64>(3)?,
+                ))
+            })
+            .map_err(|e| e.to_string())?;
+        for r in rows {
+            let (th_id, tid, sum_excl_ms, sum_calls) = r.map_err(|e| e.to_string())?;
+            let entry = timer_map.entry((th_id, tid)).or_insert((0.0, 0));
+            entry.0 += sum_excl_ms;
+            entry.1 += sum_calls;
+        }
+    }
+
+    Ok(timer_map)
+}
+
 pub fn calculate_local_medians(
     frames: &[ProcessedFrame],
     window_radius_s: f64,
@@ -598,5 +966,101 @@ mod tests {
         assert!(reg2.median_ms >= 78.0 && reg2.median_ms <= 82.0);
         assert!(reg2.start_s >= switch_time - 0.1);
         assert!(reg2.end_s >= 9.5);
+    }
+
+    #[test]
+    fn test_plan_range_assembly_hierarchy() {
+        // Small range: directly edge frames
+        let plan_small = plan_range_assembly(10, 50);
+        assert!(plan_small.level2_blocks.is_empty());
+        assert!(plan_small.level1_blocks.is_empty());
+        assert_eq!(plan_small.edge_frame_indices.len(), 41);
+
+        // Large range: 100 to 10,000
+        let plan_large = plan_range_assembly(100, 10000);
+        assert!(!plan_large.level2_blocks.is_empty(), "Large range should contain Level 2 blocks");
+        assert!(!plan_large.level1_blocks.is_empty(), "Large range should contain Level 1 blocks");
+        // Edges should not exceed 128 frames total
+        assert!(plan_large.edge_frame_indices.len() <= 128);
+    }
+
+    #[test]
+    fn test_block_pyramid_and_exact_range_assembly() {
+        use crate::trace::store::init_db;
+
+        let mut conn = Connection::open_in_memory().unwrap();
+        init_db(&conn).unwrap();
+
+        let mut frames = Vec::new();
+        let mut t = 0.0;
+        let total_count = 5000;
+
+        for idx in 0..total_count {
+            let interval = if idx % 100 == 0 { 80.0 } else { 16.0 };
+            frames.push(ProcessedFrame {
+                idx,
+                engine_frame: None,
+                start_s: t,
+                interval_ms: interval,
+                game_ms: Some(interval - 1.0),
+                render_ms: Some(10.0),
+                gpu_ms: Some(12.0),
+            });
+            t += interval / 1000.0;
+        }
+
+        let stats = calculate_robust_stats(&frames);
+        let opts = AnalysisOptions::default();
+
+        conn.execute("INSERT INTO meta (key, value) VALUES ('median_frame_ms', ?1)", params![stats.median_ms.to_string()]).unwrap();
+
+        // Seed frames and frame_timer rows
+        let tx = conn.transaction().unwrap();
+        {
+            let mut f_stmt = tx.prepare("INSERT INTO frames (idx, start_s, interval_ms, game_ms, render_ms, gpu_ms) VALUES (?1, ?2, ?3, ?4, ?5, ?6)").unwrap();
+            let mut stmt = tx.prepare("INSERT INTO frame_timer (frame_idx, thread_id, timer_id, excl_ms, calls, max_ms) VALUES (?1, ?2, ?3, ?4, ?5, ?4)").unwrap();
+            for f in &frames {
+                f_stmt.execute(params![f.idx, f.start_s, f.interval_ms, f.game_ms, f.render_ms, f.gpu_ms]).unwrap();
+                stmt.execute(params![f.idx, 1, 101, 5.0, 1]).unwrap();
+                stmt.execute(params![f.idx, 1, 102, 2.5, 2]).unwrap();
+                stmt.execute(params![f.idx, 2, 201, 8.0, 1]).unwrap();
+            }
+        }
+        tx.commit().unwrap();
+
+        build_block_pyramid(&mut conn, &frames, &stats, &opts).unwrap();
+
+        // Validate multiple random ranges
+        let test_ranges = vec![
+            (0, 100),
+            (50, 500),
+            (64, 4095),
+            (100, 4500),
+            (0, 4999),
+        ];
+
+        let normal_threshold_ms = stats.median_ms * 1.25;
+
+        for (from, to) in test_ranges {
+            let assembled = assemble_range_timer_sums(&conn, from, to).unwrap();
+
+            // Brute-force count normal frames in [from..=to]
+            let normal_frames_in_range = frames[from as usize..=to as usize]
+                .iter()
+                .filter(|f| f.interval_ms <= normal_threshold_ms)
+                .count() as f64;
+
+            let expected_101_ms = normal_frames_in_range * 5.0;
+            let expected_102_ms = normal_frames_in_range * 2.5;
+            let expected_201_ms = normal_frames_in_range * 8.0;
+
+            let actual_101 = assembled.get(&(1, 101)).map(|x| x.0).unwrap_or(0.0);
+            let actual_102 = assembled.get(&(1, 102)).map(|x| x.0).unwrap_or(0.0);
+            let actual_201 = assembled.get(&(2, 201)).map(|x| x.0).unwrap_or(0.0);
+
+            assert!((actual_101 - expected_101_ms).abs() < 1e-4, "Mismatch on timer 101 for range [{}, {}]: actual={}, expected={}", from, to, actual_101, expected_101_ms);
+            assert!((actual_102 - expected_102_ms).abs() < 1e-4, "Mismatch on timer 102 for range [{}, {}]: actual={}, expected={}", from, to, actual_102, expected_102_ms);
+            assert!((actual_201 - expected_201_ms).abs() < 1e-4, "Mismatch on timer 201 for range [{}, {}]: actual={}, expected={}", from, to, actual_201, expected_201_ms);
+        }
     }
 }

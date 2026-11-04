@@ -9,7 +9,8 @@ import { FindingCard } from './traceAnalyzer/FindingCard';
 import { LoadingStages } from './traceAnalyzer/LoadingStages';
 import { RangeAnalysisPanel } from './traceAnalyzer/RangeAnalysisPanel';
 import { DetailsDrawer } from './traceAnalyzer/DetailsDrawer';
-import type { Episode, Finding, TraceCandidate } from '../types/traceAnalyzer';
+import { getRemediationAdvice } from '../utils/remediationAdvice';
+import type { Episode, Finding, FindingPayload, Level, TraceCandidate } from '../types/traceAnalyzer';
 
 function formatDuration(s: number): string {
   if (s < 60) return `${s.toFixed(2)}s`;
@@ -34,6 +35,10 @@ export function TraceAnalyzerPanel() {
     setSelectedRange,
     rangeStats,
     rangeStatsLoading,
+    chunks,
+    issues,
+    importProgress,
+    setFrontier,
     isAnalyzing,
     progressPayload,
     error,
@@ -158,7 +163,83 @@ export function TraceAnalyzerPanel() {
   // Filter and rank findings strictly based on active selected range & selected timer
   const scopedFindings = useMemo(() => {
     if (!summary) return [];
-    let list = findings;
+    
+    // 1. Convert diagnosed issues and occurrences overlapping the range into Findings
+    const convertedIssueFindings: Finding[] = [];
+    if (issues && issues.length > 0 && summary.durationS > 0) {
+      const [minS, maxS] = selectedRange
+        ? [Math.min(...selectedRange), Math.max(...selectedRange)]
+        : [0, summary.durationS];
+      const totalFrames = summary.durationS * 60;
+      const secPerFrame = summary.durationS / totalFrames;
+
+      for (const item of issues) {
+        const issue = item.issue;
+        for (const occ of item.occurrences) {
+          const fromS = occ.frameFrom * secPerFrame;
+          const toS = (occ.frameTo + 1) * secPerFrame;
+
+          if (fromS <= maxS && toS >= minS) {
+            let evidenceObj: { timer?: string; excessMs?: number } = {};
+            try {
+              evidenceObj = JSON.parse(occ.evidenceJson);
+            } catch {
+              // ignore
+            }
+
+            const timerName = evidenceObj.timer || 'Unprofiled Execution';
+            const isSpike = issue.scale === 'spike';
+            const threadRole = issue.threadRole || 'general';
+
+            const advice = getRemediationAdvice(
+              issue.ruleId,
+              timerName,
+              threadRole,
+              isSpike ? 'spike' : 'sustained'
+            );
+
+            const explainsMs =
+              occ.meanExcessMs > 0
+                ? occ.meanExcessMs
+                : occ.sumExcessMs / Math.max(1, occ.frameTo - occ.frameFrom + 1);
+
+            const parsed: FindingPayload = {
+              title: advice.title,
+              matchConfidence: advice.matchConfidence || ((occ.confidence as Level) || 'medium'),
+              matchScore: occ.confidence === 'high' ? 90 : 75,
+              fixLikelihood: advice.fixLikelihood || 'high',
+              explainsMs,
+              ofExcessMs: occ.sumExcessMs,
+              evidence: [
+                {
+                  label: timerName,
+                  valueMs: explainsMs,
+                  thread: threadRole,
+                  note: `Frames ${occ.frameFrom}..${occ.frameTo} (${fromS.toFixed(2)}s – ${toS.toFixed(2)}s), Peak: ${occ.peakFrameMs.toFixed(1)} ms, Total Excess: +${occ.sumExcessMs.toFixed(1)} ms`,
+                },
+              ],
+              fixes: advice.fixes,
+              verify: advice.verify,
+              caveats: advice.caveats || [],
+              episodeIds: [],
+            };
+
+            convertedIssueFindings.push({
+              id: occ.occurrenceId + 100000,
+              ruleId: issue.ruleId,
+              rank: 1,
+              matchConfidence: occ.confidence === 'high' ? 0.9 : 0.7,
+              fixLikelihood: 'high',
+              payload: JSON.stringify(parsed),
+              episodeIds: [],
+              parsedPayload: parsed,
+            });
+          }
+        }
+      }
+    }
+
+    let list = [...findings, ...convertedIssueFindings];
 
     if (selectedRange) {
       const [minS, maxS] = [Math.min(...selectedRange), Math.max(...selectedRange)];
@@ -205,7 +286,7 @@ export function TraceAnalyzerPanel() {
     }
 
     return list;
-  }, [findings, selectedRange, selectedTimerName, episodes, summary, rangeStats, rangeHitchCount]);
+  }, [findings, issues, selectedRange, selectedTimerName, episodes, summary, rangeStats, rangeHitchCount]);
 
   // Categorize findings into Every Frame (sustained) and Spikes (hitches), with startup hitches (< 1s) ranked last
   const { everyFrameFindings, spikeFindings } = useMemo(() => {
@@ -354,7 +435,7 @@ export function TraceAnalyzerPanel() {
         {/* Loading State */}
         {isAnalyzing ? (
           <div className="flex-1 flex items-center justify-center min-h-0">
-            <LoadingStages progress={progressPayload} onCancel={cancelAnalysis} />
+            <LoadingStages progress={progressPayload} importProgress={importProgress} onCancel={cancelAnalysis} />
           </div>
         ) : summary ? (
           /* Active Trace View: Unified Performance Studio Dashboard */
@@ -370,15 +451,18 @@ export function TraceAnalyzerPanel() {
               onShowOnGraph={(range) => setSelectedRange(range)}
             />
 
-            {/* Frame Time Graph + Bookmarks Track */}
+            {/* Frame Time Graph + Bookmarks Track + Diagnosis Chunk Overlays */}
             <div className="min-h-[280px] shrink-0">
               <FrameGraph
                 durationS={summary.durationS}
                 targetMs={summary.targetMs}
                 episodes={episodes}
                 bookmarks={bookmarks}
+                chunks={chunks}
+                issues={issues}
                 selectedRange={selectedRange}
                 onSelectRange={setSelectedRange}
+                onSetFrontier={setFrontier}
                 fetchFrameSeries={fetchFrameSeries}
               />
             </div>
@@ -459,25 +543,105 @@ export function TraceAnalyzerPanel() {
 
                   if (isUnhealthy) {
                     const limiting = rangeStats?.threadMedians?.limitingThread || 'game';
+                    const topTimers = rangeStats?.topTimers || [];
+                    const waitTimer = topTimers.find(
+                      (t) =>
+                        t.name.toLowerCase().includes('reflex') ||
+                        t.name.toLowerCase().includes('waitfortask') ||
+                        t.bucket.toLowerCase() === 'wait'
+                    );
+
                     return (
-                      <div className="p-6 rounded-xl bg-slate-900/40 border border-amber-900/40 text-center flex flex-col items-center justify-center gap-2">
-                        <div className="w-9 h-9 rounded-full bg-amber-950/60 border border-amber-500/40 flex items-center justify-center text-amber-400">
-                          <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
-                          </svg>
+                      <div className="p-5 rounded-xl bg-slate-900/50 border border-amber-900/40 flex flex-col gap-4 text-left">
+                        <div className="flex items-start gap-3.5">
+                          <div className="w-9 h-9 rounded-full bg-amber-950/60 border border-amber-500/40 flex items-center justify-center text-amber-400 shrink-0 mt-0.5">
+                            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+                            </svg>
+                          </div>
+                          <div className="flex-1 flex flex-col gap-1">
+                            <div className="text-sm font-semibold text-amber-300 flex items-center justify-between">
+                              <span>Over Budget ({rangeStats?.overBudgetPct.toFixed(0)}% frames over {targetMs.toFixed(1)} ms budget)</span>
+                              <span className="text-xs font-mono font-normal text-slate-400">
+                                Median {rangeStats?.medianMs.toFixed(1)} ms (+{(rangeStats?.budgetGapMs || 0).toFixed(1)} ms gap)
+                              </span>
+                            </div>
+                            <div className="text-xs text-slate-300 leading-relaxed">
+                              This range is <span className="text-sky-300 font-bold uppercase">{limiting}-bound</span> (+{(rangeStats?.budgetGapMs || 0).toFixed(1)} ms over budget).
+                              {limiting === 'gpu' && waitTimer && (
+                                <span className="ml-1 text-slate-400">
+                                  Game Thread wall duration is elevated because it is waiting on GPU synchronization (e.g. <span className="text-amber-200 font-mono">{waitTimer.name}</span> averaging {waitTimer.avgMsPerFrame.toFixed(1)} ms/frame).
+                                </span>
+                              )}
+                            </div>
+                          </div>
                         </div>
-                        <div className="text-sm font-medium text-amber-300">
-                          Over Budget ({rangeStats?.overBudgetPct.toFixed(0)}% frames over {targetMs.toFixed(1)} ms budget)
-                        </div>
-                        <div className="text-xs text-slate-400 max-w-lg leading-relaxed">
-                          This range is <span className="text-sky-300 font-semibold uppercase">{limiting}-bound</span> (+{(rangeStats?.budgetGapMs || 0).toFixed(1)} ms over budget). 
-                          Sub-function timer scopes were not recorded in Pass B for this specific window, or execution occurred without active custom trace timer scopes.
-                        </div>
-                        <div className="flex items-center gap-2 mt-2">
+
+                        {/* Top Contributing Timers Breakdown */}
+                        {topTimers.length > 0 && (
+                          <div className="flex flex-col gap-2 pt-2 border-t border-slate-800">
+                            <div className="text-xs font-semibold text-slate-300 flex items-center justify-between">
+                              <span>Top Functions & Timers in Range</span>
+                              <span className="text-[11px] text-slate-500">Sorted by avg time per frame</span>
+                            </div>
+
+                            <div className="overflow-x-auto rounded border border-slate-800 bg-slate-950/60">
+                              <table className="w-full text-left text-xs">
+                                <thead>
+                                  <tr className="border-b border-slate-800/80 text-[10.5px] text-slate-400 bg-slate-900/60 font-medium">
+                                    <th className="py-1.5 px-3">Function / Scope</th>
+                                    <th className="py-1.5 px-2">Thread</th>
+                                    <th className="py-1.5 px-2">Category</th>
+                                    <th className="py-1.5 px-2 text-right">Avg / Frame</th>
+                                    <th className="py-1.5 px-3 text-right">Share of Gap</th>
+                                  </tr>
+                                </thead>
+                                <tbody className="divide-y divide-slate-800/40 font-mono text-[11px]">
+                                  {topTimers.slice(0, 8).map((timer, idx) => (
+                                    <tr
+                                      key={`${timer.threadRole}-${timer.name}-${idx}`}
+                                      onClick={() => setSelectedTimerName(selectedTimerName === timer.name ? null : timer.name)}
+                                      className={`hover:bg-slate-800/40 cursor-pointer transition-colors ${
+                                        selectedTimerName === timer.name ? 'bg-sky-950/40 text-sky-200' : 'text-slate-300'
+                                      }`}
+                                    >
+                                      <td className="py-1.5 px-3 font-medium truncate max-w-xs font-sans" title={timer.name}>
+                                        {timer.name}
+                                      </td>
+                                      <td className="py-1.5 px-2">
+                                        <span className="px-1 py-0.2 rounded text-[9px] uppercase font-bold bg-slate-800 text-slate-400 border border-slate-700/60">
+                                          {timer.threadRole}
+                                        </span>
+                                      </td>
+                                      <td className="py-1.5 px-2">
+                                        <span className="px-1 py-0.2 rounded text-[9px] bg-slate-900 text-sky-400 border border-sky-800/40 font-sans">
+                                          {timer.bucket}
+                                        </span>
+                                      </td>
+                                      <td className="py-1.5 px-2 text-right text-slate-200">
+                                        {timer.avgMsPerFrame.toFixed(2)} ms
+                                      </td>
+                                      <td className="py-1.5 px-3 text-right text-amber-300 font-semibold">
+                                        {timer.shareOfBudgetGapPct !== undefined && timer.shareOfBudgetGapPct !== null
+                                          ? `${timer.shareOfBudgetGapPct.toFixed(1)}%`
+                                          : '—'}
+                                      </td>
+                                    </tr>
+                                  ))}
+                                </tbody>
+                              </table>
+                            </div>
+                          </div>
+                        )}
+
+                        <div className="flex items-center justify-between pt-2 border-t border-slate-800">
+                          <span className="text-[11px] text-slate-400">
+                            Tip: Click any timer to isolate its occurrence findings across the timeline.
+                          </span>
                           <button
                             type="button"
                             onClick={() => openInInsights()}
-                            className="px-3 py-1.5 rounded bg-sky-600 hover:bg-sky-500 text-white text-xs font-medium transition-colors shadow-sm flex items-center gap-1.5"
+                            className="px-3 py-1.5 rounded bg-sky-600 hover:bg-sky-500 text-white text-xs font-medium transition-colors shadow-sm flex items-center gap-1.5 shrink-0"
                           >
                             <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />

@@ -3,7 +3,31 @@
   "title": "GPU rendering throughput bottleneck",
   "applies_to": ["hitch", "slow_region"],
   "when": {
-    "timers": ["^Lumen", "^Nanite", "^ShadowDepths$", "^BasePass$", "^Translucency$", "^PostProcess$", "^TemporalSuperResolution$", "^TSR$", "^DLSS$", "^XeSS$", "^FSR$", "^Frame$"],
+    "timers": [
+      "^SceneRender",
+      "^Scene$",
+      "^FXSystem",
+      "^Lumen",
+      "^Nanite",
+      "^Shadow",
+      "^ShadowDepths$",
+      "^BasePass",
+      "^Translucency",
+      "^PostProcess",
+      "^TemporalSuperResolution",
+      "^TSR",
+      "^DLSS",
+      "^XeSS",
+      "^FSR",
+      "^DirectLighting",
+      "^LightGrid",
+      "^PrePass",
+      "^Velocity",
+      "^SlateUI",
+      "^Composition",
+      "^Frame$",
+      ".*"
+    ],
     "threads": ["gpu"],
     "min_excess_ms": 4.0,
     "min_share_of_excess": 0.25,
@@ -16,8 +40,9 @@
   "evidence_template": "{timer} took {ms} ms ({share}% of excess time), outlasting CPU thread workloads.",
   "fixes": [
     { "text": "Enable or tune Dynamic Resolution / Temporal Super Resolution (r.ScreenPercentage) for your target framerate.", "effort": "low", "cvarsOrApis": ["r.ScreenPercentage"] },
-    { "text": "Review Lumen and Reflection scalability settings in Project Settings.", "effort": "medium" },
-    { "text": "Optimize shadow-casting lights and Virtual Shadow Map (VSM) resolution limits.", "effort": "medium" }
+    { "text": "Optimize Virtual Shadow Map (VSM) resolution bias or clamp local shadow-casting lights.", "effort": "medium", "cvarsOrApis": ["r.Shadow.Virtual.ResolutionLodBias"] },
+    { "text": "Review Lumen Global Illumination and Reflection scalability presets in Project Settings.", "effort": "medium", "cvarsOrApis": ["r.Lumen.DiffuseIndirect.Allow", "r.Lumen.Reflections.Allow"] },
+    { "text": "For heavy particle rendering / FX passes, budget GPU emitter counts and enable Niagara compute culling.", "effort": "medium", "cvarsOrApis": ["fx.Niagara.GPUComputeBudget"] }
   ],
   "verify": "Adjust screen percentage or shadow quality and verify that GPU frame duration decreases proportionally.",
   "caveats": []

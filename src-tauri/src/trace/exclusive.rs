@@ -110,17 +110,23 @@ pub fn compute_exclusive_times(events: &[RawWindowEvent]) -> Vec<ExclusiveEvent>
     output
 }
 
-pub fn ingest_window_csv(
+use crate::trace::csv_ingest::ProcessedFrame;
+use crate::trace::source::ExportSlice;
+
+pub fn ingest_slice_timing_events_stream(
     conn: &mut Connection,
-    window_id: i64,
+    slice: &ExportSlice,
+    frames: &[ProcessedFrame],
     csv_path: &Path,
     trace_start_s: f64,
-) -> Result<Vec<ExclusiveEvent>, String> {
+    threshold_ms: f64,
+    export_ms: f64,
+) -> Result<usize, String> {
     if !csv_path.is_file() {
-        return Ok(Vec::new());
+        return Ok(0);
     }
 
-    let file = File::open(csv_path).map_err(|e| format!("Failed to open window CSV: {}", e))?;
+    let file = File::open(csv_path).map_err(|e| format!("Failed to open slice CSV: {}", e))?;
     let mut rdr = csv::ReaderBuilder::new()
         .flexible(true)
         .trim(csv::Trim::All)
@@ -128,7 +134,7 @@ pub fn ingest_window_csv(
 
     let headers = rdr
         .headers()
-        .map_err(|e| format!("Failed to read window events header: {}", e))?
+        .map_err(|e| format!("Failed to read slice events header: {}", e))?
         .clone();
 
     let thread_idx = headers
@@ -146,7 +152,7 @@ pub fn ingest_window_csv(
     let depth_idx = headers.iter().position(|h| h.eq_ignore_ascii_case("depth"));
 
     if thread_idx.is_none() || timer_idx.is_none() || start_idx.is_none() || end_idx.is_none() {
-        return Err("Window events CSV is missing required columns".to_string());
+        return Err("Slice events CSV is missing required columns".to_string());
     }
 
     let thread_idx = thread_idx.unwrap();
@@ -194,37 +200,192 @@ pub fn ingest_window_csv(
 
     let exclusive_events = compute_exclusive_times(&raw_events);
 
-    // Save to window_events table in SQLite
+    // Group by (frame_idx, thread_id, timer_id) -> (sum_excl_ms, calls, max_ms)
+    struct TimerAgg {
+        excl_ms: f64,
+        calls: i64,
+        max_ms: f64,
+    }
+
+    let mut frame_aggregates: HashMap<(i64, i64, i64), TimerAgg> = HashMap::new();
+
+    for ev in &exclusive_events {
+        let p = frames.partition_point(|f| f.start_s <= ev.start_s);
+        if p == 0 {
+            continue;
+        }
+        let candidate_idx = p - 1;
+        let cand = &frames[candidate_idx];
+        if cand.idx < slice.frame_from || cand.idx > slice.frame_to {
+            continue;
+        }
+
+        let frame_end_s = if candidate_idx + 1 < frames.len() {
+            frames[candidate_idx + 1].start_s
+        } else {
+            cand.start_s + (cand.interval_ms / 1000.0)
+        };
+
+        if ev.start_s >= cand.start_s && ev.start_s < frame_end_s {
+            let key = (cand.idx, ev.thread_id, ev.timer_id);
+            let entry = frame_aggregates.entry(key).or_insert(TimerAgg {
+                excl_ms: 0.0,
+                calls: 0,
+                max_ms: 0.0,
+            });
+            entry.excl_ms += ev.excl_ms;
+            entry.calls += 1;
+            entry.max_ms = entry.max_ms.max(ev.excl_ms);
+        }
+    }
+
+    let mut thread_timers: HashMap<(i64, i64), Vec<(i64, TimerAgg)>> = HashMap::new();
+    for ((f_idx, t_id, timer_id), agg) in frame_aggregates {
+        thread_timers.entry((f_idx, t_id)).or_default().push((timer_id, agg));
+    }
+
+    let mut rows_to_insert: Vec<(i64, i64, i64, f64, i64, f64)> = Vec::new();
+
+    for ((f_idx, t_id), timers) in thread_timers {
+        let mut rem_excl_ms: f64 = 0.0;
+        let mut rem_calls: i64 = 0;
+        let mut rem_max_ms: f64 = 0.0;
+
+        for (timer_id, agg) in timers {
+            if agg.excl_ms >= threshold_ms {
+                rows_to_insert.push((f_idx, t_id, timer_id, agg.excl_ms, agg.calls, agg.max_ms));
+            } else {
+                rem_excl_ms += agg.excl_ms;
+                rem_calls += agg.calls;
+                rem_max_ms = rem_max_ms.max(agg.max_ms);
+            }
+        }
+
+        if rem_excl_ms > 0.0 || rem_calls > 0 {
+            rows_to_insert.push((f_idx, t_id, 0, rem_excl_ms, rem_calls, rem_max_ms));
+        }
+    }
+
+    let inserted_count = rows_to_insert.len();
+
     let tx = conn.transaction().map_err(|e| e.to_string())?;
     {
         let mut stmt = tx
             .prepare(
-                "INSERT INTO window_events (window_id, thread_id, timer_id, start_s, end_s, depth, excl_ms)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                "INSERT OR REPLACE INTO frame_timer (frame_idx, thread_id, timer_id, excl_ms, calls, max_ms)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
             )
             .map_err(|e| e.to_string())?;
 
-        for ev in &exclusive_events {
-            stmt.execute(params![
-                window_id,
-                ev.thread_id,
-                ev.timer_id,
-                ev.start_s,
-                ev.end_s,
-                ev.depth,
-                ev.excl_ms,
-            ])
-            .map_err(|e| e.to_string())?;
+        for r in &rows_to_insert {
+            stmt.execute(params![r.0, r.1, r.2, r.3, r.4, r.5])
+                .map_err(|e| e.to_string())?;
         }
+
+        tx.execute(
+            "INSERT OR REPLACE INTO index_slices (slice_id, frame_from, frame_to, start_s, end_s, state, rows, export_ms)
+             VALUES (?1, ?2, ?3, ?4, ?5, 'done', ?6, ?7)",
+            params![
+                slice.slice_id,
+                slice.frame_from,
+                slice.frame_to,
+                slice.start_s,
+                slice.end_s,
+                inserted_count as i64,
+                export_ms
+            ],
+        )
+        .map_err(|e| e.to_string())?;
     }
     tx.commit().map_err(|e| e.to_string())?;
 
-    Ok(exclusive_events)
+    let _ = std::fs::remove_file(csv_path);
+
+    Ok(inserted_count)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::trace::store::init_db;
+    use std::io::Write;
+
+    #[test]
+    fn test_ingest_slice_streaming_and_thresholding() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        init_db(&conn).unwrap();
+
+        let frames = vec![
+            ProcessedFrame {
+                idx: 0,
+                engine_frame: None,
+                start_s: 0.0,
+                interval_ms: 16.666,
+                game_ms: Some(16.0),
+                render_ms: Some(15.0),
+                gpu_ms: Some(14.0),
+            },
+            ProcessedFrame {
+                idx: 1,
+                engine_frame: None,
+                start_s: 0.016666,
+                interval_ms: 16.666,
+                game_ms: Some(16.0),
+                render_ms: Some(15.0),
+                gpu_ms: Some(14.0),
+            },
+        ];
+
+        let slice = ExportSlice {
+            slice_id: 0,
+            frame_from: 0,
+            frame_to: 1,
+            start_s: 0.0,
+            end_s: 0.033332,
+            threads: vec!["GameThread".to_string()],
+        };
+
+        let csv_path = std::env::temp_dir().join(format!("test_slice_{}.csv", std::process::id()));
+        let mut f = File::create(&csv_path).unwrap();
+        writeln!(f, "ThreadId,TimerId,StartTime,EndTime,Depth").unwrap();
+
+        // Big timer: 5ms
+        writeln!(f, "1,100,0.001,0.006,0").unwrap();
+        // Small timer (< 0.1ms): 0.04ms
+        writeln!(f, "1,101,0.007,0.00704,0").unwrap();
+        // Another small timer (< 0.1ms): 0.03ms
+        writeln!(f, "1,102,0.008,0.00803,0").unwrap();
+
+        // Frame 1 event: 8ms
+        writeln!(f, "1,200,0.020,0.028,0").unwrap();
+        drop(f);
+
+        let rows = ingest_slice_timing_events_stream(&mut conn, &slice, &frames, &csv_path, 0.0, 0.1, 10.0).unwrap();
+        assert!(!csv_path.exists(), "CSV should be deleted after ingestion");
+        assert_eq!(rows, 3); // Frame 0: timer 100 (5ms), timer 0 (0.07ms); Frame 1: timer 200 (8ms)
+
+        let mut stmt = conn.prepare("SELECT frame_idx, timer_id, excl_ms, calls FROM frame_timer ORDER BY frame_idx, timer_id").unwrap();
+        let query_rows: Vec<(i64, i64, f64, i64)> = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))).unwrap().map(|r| r.unwrap()).collect();
+
+        assert_eq!(query_rows.len(), 3);
+        // Frame 0 remainder (timer_id = 0)
+        assert_eq!(query_rows[0].0, 0);
+        assert_eq!(query_rows[0].1, 0);
+        assert!((query_rows[0].2 - 0.07).abs() < 1e-3);
+        assert_eq!(query_rows[0].3, 2);
+
+        // Frame 0 big timer (timer_id = 100)
+        assert_eq!(query_rows[1].0, 0);
+        assert_eq!(query_rows[1].1, 100);
+        assert!((query_rows[1].2 - 5.0).abs() < 1e-3);
+        assert_eq!(query_rows[1].3, 1);
+
+        // Frame 1 timer (timer_id = 200)
+        assert_eq!(query_rows[2].0, 1);
+        assert_eq!(query_rows[2].1, 200);
+        assert!((query_rows[2].2 - 8.0).abs() < 1e-3);
+        assert_eq!(query_rows[2].3, 1);
+    }
 
     #[test]
     fn test_exclusive_time_stack() {

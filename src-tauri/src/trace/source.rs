@@ -2,9 +2,12 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
-#[derive(Debug, Clone)]
-pub struct ExportWindow {
-    pub window_id: i64,
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExportSlice {
+    pub slice_id: i64,
+    pub frame_from: i64,
+    pub frame_to: i64,
     pub start_s: f64,
     pub end_s: f64,
     pub threads: Vec<String>,
@@ -18,11 +21,6 @@ pub struct PassAOutputs {
     pub bookmarks_csv: Option<PathBuf>,
 }
 
-#[derive(Debug, Clone)]
-pub struct PassBOutputs {
-    pub window_csvs: Vec<(i64, PathBuf)>,
-}
-
 pub trait TraceSource: Send + Sync {
     fn export_pass_a(
         &self,
@@ -31,11 +29,11 @@ pub trait TraceSource: Send + Sync {
         cancel_flag: &Arc<AtomicBool>,
     ) -> Result<PassAOutputs, String>;
 
-    fn export_pass_b(
+    fn export_slice(
         &self,
         trace_path: &Path,
-        windows: &[ExportWindow],
+        slice: &ExportSlice,
         output_dir: &Path,
         cancel_flag: &Arc<AtomicBool>,
-    ) -> Result<PassBOutputs, String>;
+    ) -> Result<PathBuf, String>;
 }
