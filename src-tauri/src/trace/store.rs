@@ -122,6 +122,8 @@ pub struct DbOccurrence {
     pub chunk_id: i64,
     pub frame_from: i64,
     pub frame_to: i64,
+    pub start_s: f64,
+    pub end_s: f64,
     pub peak_frame_ms: f64,
     pub mean_excess_ms: f64,
     pub sum_excess_ms: f64,
@@ -219,7 +221,9 @@ pub fn init_db(conn: &Connection) -> Result<(), rusqlite::Error> {
             id INTEGER PRIMARY KEY,
             name TEXT NOT NULL,
             bucket TEXT,
-            kind TEXT
+            kind TEXT,
+            parent_id INTEGER,
+            path TEXT
         );
 
         CREATE TABLE IF NOT EXISTS frames (
@@ -305,6 +309,8 @@ pub fn init_db(conn: &Connection) -> Result<(), rusqlite::Error> {
             chunk_id INTEGER NOT NULL,
             frame_from INTEGER NOT NULL,
             frame_to INTEGER NOT NULL,
+            start_s REAL NOT NULL DEFAULT 0.0,
+            end_s REAL NOT NULL DEFAULT 0.0,
             peak_frame_ms REAL NOT NULL,
             mean_excess_ms REAL NOT NULL,
             sum_excess_ms REAL NOT NULL,
@@ -407,12 +413,22 @@ pub fn clear_cache(app_data_dir: &Path, specific_key: Option<&str>) -> Result<()
             let _ = fs::remove_file(cache_dir.join(format!("{}.db-wal", key)));
             let _ = fs::remove_file(cache_dir.join(format!("{}.db-shm", key)));
         }
-    } else if let Ok(entries) = fs::read_dir(&cache_dir) {
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.is_file() {
-                let _ = fs::remove_file(path);
+        let temp_dir = app_data_dir.join("temp_trace").join(key);
+        if temp_dir.exists() {
+            let _ = fs::remove_dir_all(&temp_dir);
+        }
+    } else {
+        if let Ok(entries) = fs::read_dir(&cache_dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_file() {
+                    let _ = fs::remove_file(path);
+                }
             }
+        }
+        let temp_trace_dir = app_data_dir.join("temp_trace");
+        if temp_trace_dir.exists() {
+            let _ = fs::remove_dir_all(&temp_trace_dir);
         }
     }
     Ok(())
@@ -604,4 +620,46 @@ pub fn query_bookmarks(conn: &Connection) -> Result<Vec<TraceBookmark>, rusqlite
     }
 
     Ok(bookmarks)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_cache_info_and_clear_cache() {
+        let unique_name = format!("test_cache_{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos());
+        let app_data_dir = std::env::temp_dir().join(unique_name);
+        fs::create_dir_all(&app_data_dir).unwrap();
+
+        let cache_dir = get_cache_dir(&app_data_dir).unwrap();
+        assert!(cache_dir.is_dir());
+
+        // Create sample db files
+        let db1 = cache_dir.join("key1.db");
+        let db1_wal = cache_dir.join("key1.db-wal");
+        let db2 = cache_dir.join("key2.db");
+        fs::write(&db1, b"sample db 1 content").unwrap();
+        fs::write(&db1_wal, b"wal").unwrap();
+        fs::write(&db2, b"sample db 2 content").unwrap();
+
+        let info = get_cache_info(&app_data_dir).unwrap();
+        assert_eq!(info.total_files, 3);
+        assert!(info.total_size_bytes > 0);
+
+        // Clear specific key
+        clear_cache(&app_data_dir, Some("key1")).unwrap();
+        assert!(!db1.exists());
+        assert!(!db1_wal.exists());
+        assert!(db2.exists());
+
+        // Clear all
+        clear_cache(&app_data_dir, None).unwrap();
+        assert!(!db2.exists());
+        let info_after = get_cache_info(&app_data_dir).unwrap();
+        assert_eq!(info_after.total_files, 0);
+        assert_eq!(info_after.total_size_bytes, 0);
+
+        let _ = fs::remove_dir_all(&app_data_dir);
+    }
 }

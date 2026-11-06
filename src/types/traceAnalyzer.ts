@@ -165,6 +165,15 @@ export interface PipelineBalance {
   idleWaitPct: number;
 }
 
+export interface RegimeChange {
+  timestampS: number;
+  frameIdx: number;
+  fromMedianMs: number;
+  toMedianMs: number;
+  description: string;
+  topDeltas: string[];
+}
+
 export interface RangeStatisticsResponse {
   startS: number;
   endS: number;
@@ -179,6 +188,9 @@ export interface RangeStatisticsResponse {
   budgetGapMs: number;
   threadMedians: ThreadMedians;
   topTimers: RangeTopTimer[];
+  findings?: Finding[];
+  regimeChanges?: RegimeChange[];
+  sanityFlags?: string[];
   pipelineBalance?: PipelineBalance;
   categories?: RangeCategoryBreakdown[];
 }
@@ -261,6 +273,8 @@ export interface Occurrence {
   chunkId: number;
   frameFrom: number;
   frameTo: number;
+  startS: number;
+  endS: number;
   peakFrameMs: number;
   meanExcessMs: number;
   sumExcessMs: number;

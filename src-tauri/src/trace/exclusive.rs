@@ -31,8 +31,15 @@ struct StackEntry {
 }
 
 pub fn compute_exclusive_times(events: &[RawWindowEvent]) -> Vec<ExclusiveEvent> {
+    let (exclusive_events, _) = compute_exclusive_times_with_hierarchy(events);
+    exclusive_events
+}
+
+pub fn compute_exclusive_times_with_hierarchy(
+    events: &[RawWindowEvent],
+) -> (Vec<ExclusiveEvent>, HashMap<i64, (Option<i64>, Vec<i64>)>) {
     if events.is_empty() {
-        return Vec::new();
+        return (Vec::new(), HashMap::new());
     }
 
     // Group event indices by thread_id
@@ -42,6 +49,7 @@ pub fn compute_exclusive_times(events: &[RawWindowEvent]) -> Vec<ExclusiveEvent>
     }
 
     let mut excl_ms_results: Vec<f64> = vec![0.0; events.len()];
+    let mut timer_hierarchy: HashMap<i64, (Option<i64>, Vec<i64>)> = HashMap::new();
 
     for (_thread_id, mut indices) in thread_map {
         // Sort events by start_s ascending, then end_s descending (parents before children)
@@ -73,6 +81,15 @@ pub fn compute_exclusive_times(events: &[RawWindowEvent]) -> Vec<ExclusiveEvent>
                 } else {
                     break;
                 }
+            }
+
+            // Record parent hierarchy
+            if let Some(parent) = stack.last() {
+                let parent_tid = events[parent.index].timer_id;
+                let ancestors: Vec<i64> = stack.iter().map(|s| events[s.index].timer_id).collect();
+                timer_hierarchy.entry(ev.timer_id).or_insert((Some(parent_tid), ancestors));
+            } else {
+                timer_hierarchy.entry(ev.timer_id).or_insert((None, Vec::new()));
             }
 
             // If there is still a parent scope on top of the stack, attribute this event's duration to parent
@@ -107,7 +124,7 @@ pub fn compute_exclusive_times(events: &[RawWindowEvent]) -> Vec<ExclusiveEvent>
         });
     }
 
-    output
+    (output, timer_hierarchy)
 }
 
 use crate::trace::csv_ingest::ProcessedFrame;
@@ -198,7 +215,7 @@ pub fn ingest_slice_timing_events_stream(
         });
     }
 
-    let exclusive_events = compute_exclusive_times(&raw_events);
+    let (exclusive_events, timer_hierarchy) = compute_exclusive_times_with_hierarchy(&raw_events);
 
     // Group by (frame_idx, thread_id, timer_id) -> (sum_excl_ms, calls, max_ms)
     struct TimerAgg {
@@ -280,6 +297,42 @@ pub fn ingest_slice_timing_events_stream(
         for r in &rows_to_insert {
             stmt.execute(params![r.0, r.1, r.2, r.3, r.4, r.5])
                 .map_err(|e| e.to_string())?;
+        }
+
+        // Update timer parent IDs and paths if discovered
+        if !timer_hierarchy.is_empty() {
+            let mut timer_names_map: HashMap<i64, String> = HashMap::new();
+            if let Ok(mut t_stmt) = tx.prepare("SELECT id, name FROM timers") {
+                if let Ok(t_rows) = t_stmt.query_map([], |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))) {
+                    for tr in t_rows.flatten() {
+                        timer_names_map.insert(tr.0, tr.1);
+                    }
+                }
+            }
+
+            let mut update_timer_stmt = tx.prepare(
+                "UPDATE timers SET parent_id = ?1, path = ?2 WHERE id = ?3 AND (path IS NULL OR path = '')"
+            ).map_err(|e| e.to_string())?;
+
+            for (tid, (parent_id, ancestors)) in timer_hierarchy {
+                if tid <= 0 {
+                    continue;
+                }
+                let mut path_components: Vec<String> = ancestors
+                    .iter()
+                    .filter_map(|aid| timer_names_map.get(aid).cloned())
+                    .collect();
+                if let Some(leaf_name) = timer_names_map.get(&tid) {
+                    path_components.push(leaf_name.clone());
+                }
+                let full_path = if !path_components.is_empty() {
+                    path_components.join(" > ")
+                } else {
+                    timer_names_map.get(&tid).cloned().unwrap_or_default()
+                };
+
+                let _ = update_timer_stmt.execute(params![parent_id, full_path, tid]);
+            }
         }
 
         tx.execute(

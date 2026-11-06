@@ -1,9 +1,10 @@
 import { useState, useMemo } from 'react';
-import type { Episode, Finding } from '../../types/traceAnalyzer';
+import type { Episode, Finding, TraceBookmark } from '../../types/traceAnalyzer';
 
 interface FindingCardProps {
   finding: Finding;
   episodes?: Episode[];
+  bookmarks?: TraceBookmark[];
   targetFps?: number;
   budgetGapMs?: number;
   defaultExpanded?: boolean;
@@ -21,6 +22,7 @@ function formatTime(s: number): string {
 export function FindingCard({
   finding,
   episodes = [],
+  bookmarks = [],
   targetFps = 60,
   budgetGapMs = 0,
   defaultExpanded = true,
@@ -48,6 +50,31 @@ export function FindingCard({
   const episodesMap = useMemo(() => {
     return new Map<number, Episode>(episodes.map((ep) => [ep.id, ep]));
   }, [episodes]);
+
+  // Nearest bookmark calculation (Item 8)
+  const nearestBookmark = useMemo(() => {
+    if (!bookmarks || bookmarks.length === 0) return null;
+    const targetTime = p?.episodeIds?.[0]
+      ? episodesMap.get(p.episodeIds[0])?.startS
+      : null;
+    if (targetTime === null || targetTime === undefined) return null;
+
+    let closest = bookmarks[0];
+    let minDiff = Math.abs(bookmarks[0].startS - targetTime);
+
+    for (let i = 1; i < bookmarks.length; i++) {
+      const diff = Math.abs(bookmarks[i].startS - targetTime);
+      if (diff < minDiff) {
+        minDiff = diff;
+        closest = bookmarks[i];
+      }
+    }
+
+    if (minDiff <= 10.0) {
+      return { bookmark: closest, distanceS: minDiff };
+    }
+    return null;
+  }, [bookmarks, p, episodesMap]);
 
   const isInconclusive = finding.ruleId === 'inconclusive';
   const isFrameLimiter = finding.ruleId === 'frame-limiter';
@@ -184,6 +211,18 @@ export function FindingCard({
       {/* Expanded Details */}
       {isExpanded && (
         <div className="flex flex-col gap-3 pl-6 pt-1 border-t border-slate-800/80">
+          {/* Nearest Bookmark Badge (Item 8) */}
+          {nearestBookmark && (
+            <div className="flex items-center gap-1.5 px-2.5 py-1 rounded bg-slate-900 border border-slate-700/80 text-xs text-slate-300 w-fit">
+              <span className="text-amber-400">🏷️</span>
+              <span className="text-slate-400">Nearest Bookmark:</span>
+              <span className="font-semibold text-slate-200">"{nearestBookmark.bookmark.name}"</span>
+              <span className="text-slate-500 font-mono text-[11px]">
+                at {formatTime(nearestBookmark.bookmark.startS)} ({nearestBookmark.distanceS.toFixed(2)}s away)
+              </span>
+            </div>
+          )}
+
           {/* Quantitative Evidence (Capped <= 100%) */}
           {p.evidence && p.evidence.length > 0 && (
             <div className="flex flex-col gap-1.5 p-2.5 rounded-lg bg-slate-950/50 border border-slate-800">

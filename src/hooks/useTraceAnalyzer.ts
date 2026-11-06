@@ -463,6 +463,37 @@ export function useTraceAnalyzer() {
     [summary, isAnalyzing, options, insightsInfo]
   );
 
+  // Clear all local trace cache databases
+  const clearLocalTraceDatabase = useCallback(async (): Promise<boolean> => {
+    try {
+      await invoke('trace_clear_cache');
+      refreshCandidates();
+      return true;
+    } catch (e) {
+      console.error('Failed to clear trace database cache:', e);
+      const msg = e instanceof Error ? e.message : String(e);
+      setError(msg);
+      throw e;
+    }
+  }, [refreshCandidates]);
+
+  // Re-import and refresh diagnostic for the currently open trace
+  const refreshTraceDiagnostic = useCallback(async () => {
+    const p = currentTracePath || summary?.path;
+    if (!p || isAnalyzing) return;
+    const traceId = summary?.traceId;
+    try {
+      if (traceId) {
+        await invoke('trace_clear_cache', { traceId });
+      }
+      await openTrace(p);
+    } catch (e) {
+      console.error('Failed to refresh trace diagnostic:', e);
+      const msg = e instanceof Error ? e.message : String(e);
+      setError(msg);
+    }
+  }, [currentTracePath, summary, isAnalyzing, openTrace]);
+
   return {
     candidates,
     candidatesLoading,
@@ -498,5 +529,7 @@ export function useTraceAnalyzer() {
     fetchFrameSeries,
     openInInsights,
     setTargetFps,
+    clearLocalTraceDatabase,
+    refreshTraceDiagnostic,
   };
 }

@@ -49,10 +49,15 @@ export function TraceAnalyzerPanel() {
     fetchFrameSeries,
     openInInsights,
     setTargetFps,
+    clearLocalTraceDatabase,
+    refreshTraceDiagnostic,
   } = useTraceAnalyzer();
 
   const [isDragOver, setIsDragOver] = useState(false);
   const [showLaunchModal, setShowLaunchModal] = useState(false);
+  const [showCleanDbModal, setShowCleanDbModal] = useState(false);
+  const [isCleaningDb, setIsCleaningDb] = useState(false);
+  const [cleanStatusMsg, setCleanStatusMsg] = useState<string | null>(null);
   const [selectedExePath, setSelectedExePath] = useState<string>('');
   const [customArgs, setCustomArgs] = useState<string>('');
   const [selectedTimerName, setSelectedTimerName] = useState<string | null>(null);
@@ -163,24 +168,73 @@ export function TraceAnalyzerPanel() {
   // Filter and rank findings strictly based on active selected range & selected timer
   const scopedFindings = useMemo(() => {
     if (!summary) return [];
+
+    const isSmoothRange =
+      selectedRange &&
+      rangeStats &&
+      rangeStats.medianMs <= summary.targetMs * 1.05 &&
+      rangeStats.overBudgetPct <= 5 &&
+      rangeHitchCount === 0;
+
+    if (isSmoothRange) {
+      return [];
+    }
+
+    // Prioritize selection-clipped findings directly from backend range statistics if available (Item 3)
+    if (rangeStats?.findings && rangeStats.findings.length > 0) {
+      const parsedRangeFindings: Finding[] = rangeStats.findings
+        .map((f) => {
+          let parsed: FindingPayload | undefined;
+          try {
+            parsed = JSON.parse(f.payload);
+          } catch {
+            // ignore
+          }
+          return {
+            id: f.id,
+            ruleId: f.ruleId,
+            rank: f.rank,
+            matchConfidence: f.matchConfidence,
+            fixLikelihood: f.fixLikelihood as Level,
+            payload: f.payload,
+            episodeIds: f.episodeIds,
+            parsedPayload: parsed,
+          };
+        })
+        .filter((f) => {
+          const p = f.parsedPayload;
+          if (!p) return false;
+          // Discard zero / trivial sub-0.1ms findings
+          if (p.explainsMs < 0.1 && (p.ofExcessMs ?? 0) < 0.5) return false;
+          return true;
+        });
+
+      if (selectedTimerName) {
+        const lower = selectedTimerName.toLowerCase();
+        const filtered = parsedRangeFindings.filter((f) => {
+          const payloadStr = f.payload.toLowerCase();
+          return payloadStr.includes(lower) || f.ruleId.toLowerCase().includes(lower);
+        });
+        if (filtered.length > 0) return filtered;
+      }
+      return parsedRangeFindings;
+    }
     
-    // 1. Convert diagnosed issues and occurrences overlapping the range into Findings
+    // Fallback: Convert diagnosed issues and occurrences overlapping the range into Findings
     const convertedIssueFindings: Finding[] = [];
     if (issues && issues.length > 0 && summary.durationS > 0) {
       const [minS, maxS] = selectedRange
         ? [Math.min(...selectedRange), Math.max(...selectedRange)]
         : [0, summary.durationS];
-      const totalFrames = summary.durationS * 60;
-      const secPerFrame = summary.durationS / totalFrames;
 
       for (const item of issues) {
         const issue = item.issue;
         for (const occ of item.occurrences) {
-          const fromS = occ.frameFrom * secPerFrame;
-          const toS = (occ.frameTo + 1) * secPerFrame;
+          const fromS = occ.startS ?? 0;
+          const toS = occ.endS > fromS ? occ.endS : fromS + 0.016;
 
           if (fromS <= maxS && toS >= minS) {
-            let evidenceObj: { timer?: string; excessMs?: number } = {};
+            let evidenceObj: { timer?: string; excessMs?: number; path?: string } = {};
             try {
               evidenceObj = JSON.parse(occ.evidenceJson);
             } catch {
@@ -212,7 +266,7 @@ export function TraceAnalyzerPanel() {
               ofExcessMs: occ.sumExcessMs,
               evidence: [
                 {
-                  label: timerName,
+                  label: evidenceObj.path ? `${evidenceObj.path}` : timerName,
                   valueMs: explainsMs,
                   thread: threadRole,
                   note: `Frames ${occ.frameFrom}..${occ.frameTo} (${fromS.toFixed(2)}s – ${toS.toFixed(2)}s), Peak: ${occ.peakFrameMs.toFixed(1)} ms, Total Excess: +${occ.sumExcessMs.toFixed(1)} ms`,
@@ -229,7 +283,7 @@ export function TraceAnalyzerPanel() {
               ruleId: issue.ruleId,
               rank: 1,
               matchConfidence: occ.confidence === 'high' ? 0.9 : 0.7,
-              fixLikelihood: 'high',
+              fixLikelihood: advice.fixLikelihood || 'high',
               payload: JSON.stringify(parsed),
               episodeIds: [],
               parsedPayload: parsed,
@@ -398,6 +452,9 @@ export function TraceAnalyzerPanel() {
       <SummaryHeader
         summary={summary}
         findings={scopedFindings}
+        issues={issues}
+        rangeStats={rangeStats}
+        bookmarks={bookmarks}
         targetFps={options.targetFps}
         onTargetFpsChange={setTargetFps}
         onOpenInInsights={() => openInInsights()}
@@ -411,6 +468,8 @@ export function TraceAnalyzerPanel() {
         insightsExists={!!insightsInfo?.exists}
         isAnalyzing={isAnalyzing}
         selectedRange={selectedRange}
+        onRefreshDiagnostic={refreshTraceDiagnostic}
+        onCleanTraceDatabase={() => setShowCleanDbModal(true)}
       />
 
       {/* Main Content Area */}
@@ -482,6 +541,23 @@ export function TraceAnalyzerPanel() {
 
             {/* Scoped Diagnostic Findings Section */}
             <div className="flex flex-col gap-4 min-h-[300px] pb-6 pt-1 border-t border-slate-800/80">
+
+              {/* Regime Changes Notification Banner (Item 7) */}
+              {rangeStats?.regimeChanges && rangeStats.regimeChanges.length > 0 && (
+                <div className="p-3 rounded-lg bg-slate-900 border border-sky-500/30 text-slate-200 text-xs flex flex-col gap-1.5">
+                  <div className="flex items-center gap-2 font-bold text-sky-400">
+                    <span>📈 Frame Time Regime Transitions</span>
+                  </div>
+                  <ul className="list-disc list-inside text-[11px] text-slate-300 flex flex-col gap-1">
+                    {rangeStats.regimeChanges.map((rc, idx) => (
+                      <li key={`rc-${idx}`}>
+                        <span className="font-semibold text-slate-100">{rc.description}</span>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+
               {/* Selected Scope Indicator Bar (Hidden when entire trace is active) */}
               {selectedRange &&
                 Math.max(...selectedRange) - Math.min(...selectedRange) < summary.durationS - 0.05 && (
@@ -689,6 +765,7 @@ export function TraceAnalyzerPanel() {
                             key={f.id}
                             finding={f}
                             episodes={episodes}
+                            bookmarks={bookmarks}
                             targetFps={options.targetFps}
                             budgetGapMs={rangeStats?.budgetGapMs || 0}
                             defaultExpanded={idx < 3}
@@ -721,6 +798,7 @@ export function TraceAnalyzerPanel() {
                             key={f.id}
                             finding={f}
                             episodes={episodes}
+                            bookmarks={bookmarks}
                             targetFps={options.targetFps}
                             budgetGapMs={rangeStats?.budgetGapMs || 0}
                             defaultExpanded={everyFrameFindings.length + idx < 3}
@@ -735,7 +813,11 @@ export function TraceAnalyzerPanel() {
               )}
 
               {/* Bottom Collapsible Details Drawer */}
-              <DetailsDrawer summary={summary} />
+              <DetailsDrawer
+                summary={summary}
+                onRefreshDiagnostic={refreshTraceDiagnostic}
+                onCleanAllCaches={() => setShowCleanDbModal(true)}
+              />
             </div>
           </div>
         ) : (
@@ -763,7 +845,7 @@ export function TraceAnalyzerPanel() {
                 </p>
               </div>
 
-              <div className="flex items-center gap-3 mt-2">
+              <div className="flex flex-wrap items-center justify-center gap-3 mt-2">
                 <button
                   type="button"
                   onClick={handlePickFile}
@@ -777,6 +859,17 @@ export function TraceAnalyzerPanel() {
                   className="px-4 py-2 rounded bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-medium border border-slate-600 transition-colors shadow-sm"
                 >
                   Launch .exe Game...
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setShowCleanDbModal(true)}
+                  className="px-3.5 py-2 rounded bg-slate-800/80 hover:bg-rose-950/60 hover:border-rose-700/60 hover:text-rose-200 text-slate-300 text-xs font-medium border border-slate-700 transition-colors shadow-sm flex items-center gap-1.5"
+                  title="Clear all cached trace SQLite databases (original .utrace files will NOT be deleted)"
+                >
+                  <svg className="w-3.5 h-3.5 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                  </svg>
+                  <span>Clean Local Trace DB</span>
                 </button>
               </div>
 
@@ -806,6 +899,82 @@ export function TraceAnalyzerPanel() {
           </div>
         )}
       </div>
+
+      {/* Clean Trace Database Modal */}
+      {showCleanDbModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm p-4">
+          <div className="bg-slate-900 border border-slate-700 rounded-xl p-5 max-w-md w-full shadow-2xl flex flex-col gap-4">
+            <div className="flex items-center justify-between">
+              <h3 className="text-sm font-bold text-slate-100 flex items-center gap-2">
+                <span className="text-rose-400">🗑️</span> Clean Local Trace Database
+              </h3>
+              <button
+                type="button"
+                onClick={() => {
+                  setShowCleanDbModal(false);
+                  setCleanStatusMsg(null);
+                }}
+                className="text-slate-400 hover:text-slate-200 text-sm"
+              >
+                ✕
+              </button>
+            </div>
+
+            <div className="flex flex-col gap-3 text-xs text-slate-300 leading-relaxed">
+              <p>
+                This action will delete all local SQLite cache databases, index pyramids, and precomputed diagnoses generated by the launcher.
+              </p>
+              <div className="p-3 rounded bg-amber-950/30 border border-amber-600/30 text-amber-200 text-xs">
+                <strong>Important:</strong> Your original <code className="bg-slate-900 px-1 py-0.5 rounded font-mono text-amber-100">.utrace</code> files will <strong>NOT</strong> be deleted. Any trace can be re-opened and re-imported fresh at any time.
+              </div>
+              {cleanStatusMsg && (
+                <div className="p-2.5 rounded bg-emerald-950/40 border border-emerald-500/40 text-emerald-300 text-xs">
+                  {cleanStatusMsg}
+                </div>
+              )}
+            </div>
+
+            <div className="flex items-center justify-end gap-2 pt-2 border-t border-slate-800">
+              <button
+                type="button"
+                onClick={() => {
+                  setShowCleanDbModal(false);
+                  setCleanStatusMsg(null);
+                }}
+                className="px-3 py-1.5 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                disabled={isCleaningDb}
+                onClick={async () => {
+                  setIsCleaningDb(true);
+                  try {
+                    await clearLocalTraceDatabase();
+                    setCleanStatusMsg('All trace database caches have been cleared successfully.');
+                    setTimeout(() => {
+                      setShowCleanDbModal(false);
+                      setCleanStatusMsg(null);
+                    }, 1200);
+                  } catch (e) {
+                    console.error('Failed to clean cache:', e);
+                  } finally {
+                    setIsCleaningDb(false);
+                  }
+                }}
+                className="px-3.5 py-1.5 rounded bg-rose-600 hover:bg-rose-500 disabled:opacity-50 text-white text-xs font-medium transition-colors shadow-sm flex items-center gap-1.5"
+              >
+                {isCleaningDb ? (
+                  <span>Cleaning...</span>
+                ) : (
+                  <span>Confirm Clean</span>
+                )}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Launch Game Modal */}
       {showLaunchModal && (

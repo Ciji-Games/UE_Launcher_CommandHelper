@@ -522,6 +522,8 @@ export function FrameGraph({
     showRender,
     showGpu,
     scaleMode,
+    chunks,
+    durationS,
   ]);
 
   // Handle ResizeObserver & Canvas resolution
@@ -1133,7 +1135,6 @@ export function FrameGraph({
             <div className="flex flex-col gap-1.5 w-full max-h-52 overflow-y-auto pr-0.5">
               {groupedDiagnoses.map((diag) => {
                 const color = RULE_COLORS[diag.ruleId] || '#38bdf8';
-                const totalFrames = durationS * 60;
 
                 return (
                   <div key={diag.ruleId} className="flex items-center gap-2 h-4 text-[10px]">
@@ -1148,24 +1149,25 @@ export function FrameGraph({
                       </span>
                     </div>
 
-                    {/* Timeline Bar of Occurrences */}
+                    {/* Timeline Bar of Occurrences using exact startS and endS */}
                     <div className="flex-1 relative h-2.5 bg-slate-900/90 rounded overflow-hidden border border-slate-700/60">
                       {diag.occurrences.map((item) => {
                         const occ = item.occurrence;
                         const isSpike = item.issue.scale === 'spike';
                         const threadRole = item.issue.threadRole?.trim();
-                        const leftPct = Math.max(0, Math.min(100, (occ.frameFrom / totalFrames) * 100));
-                        const widthPct = Math.max(0.5, Math.min(100 - leftPct, ((occ.frameTo - occ.frameFrom + 1) / totalFrames) * 100));
-                        const secPerFrame = durationS / totalFrames;
-                        const fromSec = (occ.frameFrom * secPerFrame).toFixed(2);
-                        const toSec = (occ.frameTo * secPerFrame).toFixed(2);
+                        const occStart = occ.startS ?? 0;
+                        const occEnd = occ.endS > occStart ? occ.endS : occStart + 0.016;
+                        const leftPct = Math.max(0, Math.min(100, (occStart / durationS) * 100));
+                        const widthPct = Math.max(0.4, Math.min(100 - leftPct, ((occEnd - occStart) / durationS) * 100));
+                        const fromSec = occStart.toFixed(2);
+                        const toSec = occEnd.toFixed(2);
 
                         return (
                           <div
                             key={occ.occurrenceId}
                             onClick={() => {
-                              const oStart = Math.max(0, (occ.frameFrom - 2) * secPerFrame);
-                              const oEnd = Math.min(durationS, (occ.frameTo + 3) * secPerFrame);
+                              const oStart = Math.max(0, occStart - 0.2);
+                              const oEnd = Math.min(durationS, occEnd + 0.2);
                               onSelectRange?.([oStart, oEnd]);
                             }}
                             className="absolute top-0 bottom-0 rounded-sm cursor-pointer hover:brightness-150 hover:scale-y-125 transition-all shadow-sm"

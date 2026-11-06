@@ -84,6 +84,17 @@ pub struct RangeTopTimer {
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
+pub struct RegimeChange {
+    pub timestamp_s: f64,
+    pub frame_idx: i64,
+    pub from_median_ms: f64,
+    pub to_median_ms: f64,
+    pub description: String,
+    pub top_deltas: Vec<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
 pub struct RangeStatisticsResponse {
     pub start_s: f64,
     pub end_s: f64,
@@ -98,6 +109,9 @@ pub struct RangeStatisticsResponse {
     pub budget_gap_ms: f64,
     pub thread_medians: ThreadMedians,
     pub top_timers: Vec<RangeTopTimer>,
+    pub findings: Vec<DbFinding>,
+    pub regime_changes: Vec<RegimeChange>,
+    pub sanity_flags: Vec<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -1102,7 +1116,7 @@ pub fn compute_range_statistics(
 
     // 1. Query frames in [start_s, end_s]
     let mut stmt = conn.prepare(
-        "SELECT start_s, interval_ms, game_ms, render_ms, gpu_ms
+        "SELECT idx, start_s, interval_ms, game_ms, render_ms, gpu_ms
          FROM frames
          WHERE start_s >= ?1 AND start_s <= ?2
          ORDER BY start_s ASC",
@@ -1110,6 +1124,7 @@ pub fn compute_range_statistics(
 
     #[allow(dead_code)]
     struct FrameRow {
+        idx: i64,
         start_s: f64,
         interval_ms: f64,
         game_ms: Option<f64>,
@@ -1119,11 +1134,12 @@ pub fn compute_range_statistics(
 
     let frame_rows = stmt.query_map(rusqlite::params![start_s, end_s], |row| {
         Ok(FrameRow {
-            start_s: row.get(0)?,
-            interval_ms: row.get(1)?,
-            game_ms: row.get(2)?,
-            render_ms: row.get(3)?,
-            gpu_ms: row.get(4)?,
+            idx: row.get(0)?,
+            start_s: row.get(1)?,
+            interval_ms: row.get(2)?,
+            game_ms: row.get(3)?,
+            render_ms: row.get(4)?,
+            gpu_ms: row.get(5)?,
         })
     })?;
 
@@ -1135,7 +1151,7 @@ pub fn compute_range_statistics(
     // Fallback if no frames strictly inside range: try closest single frame using index
     if frames.is_empty() {
         let mut fallback_stmt = conn.prepare(
-            "SELECT start_s, interval_ms, game_ms, render_ms, gpu_ms
+            "SELECT idx, start_s, interval_ms, game_ms, render_ms, gpu_ms
              FROM frames
              WHERE start_s <= ?1
              ORDER BY start_s DESC
@@ -1143,11 +1159,12 @@ pub fn compute_range_statistics(
         )?;
         let mut fb_rows = fallback_stmt.query_map(rusqlite::params![start_s], |row| {
             Ok(FrameRow {
-                start_s: row.get(0)?,
-                interval_ms: row.get(1)?,
-                game_ms: row.get(2)?,
-                render_ms: row.get(3)?,
-                gpu_ms: row.get(4)?,
+                idx: row.get(0)?,
+                start_s: row.get(1)?,
+                interval_ms: row.get(2)?,
+                game_ms: row.get(3)?,
+                render_ms: row.get(4)?,
+                gpu_ms: row.get(5)?,
             })
         })?;
         if let Some(r) = fb_rows.next() {
@@ -1158,7 +1175,7 @@ pub fn compute_range_statistics(
 
         if frames.is_empty() {
             let mut next_stmt = conn.prepare(
-                "SELECT start_s, interval_ms, game_ms, render_ms, gpu_ms
+                "SELECT idx, start_s, interval_ms, game_ms, render_ms, gpu_ms
                  FROM frames
                  WHERE start_s >= ?1
                  ORDER BY start_s ASC
@@ -1166,11 +1183,12 @@ pub fn compute_range_statistics(
             )?;
             let mut next_rows = next_stmt.query_map(rusqlite::params![start_s], |row| {
                 Ok(FrameRow {
-                    start_s: row.get(0)?,
-                    interval_ms: row.get(1)?,
-                    game_ms: row.get(2)?,
-                    render_ms: row.get(3)?,
-                    gpu_ms: row.get(4)?,
+                    idx: row.get(0)?,
+                    start_s: row.get(1)?,
+                    interval_ms: row.get(2)?,
+                    game_ms: row.get(3)?,
+                    render_ms: row.get(4)?,
+                    gpu_ms: row.get(5)?,
                 })
             })?;
             if let Some(r) = next_rows.next() {
@@ -1399,6 +1417,316 @@ pub fn compute_range_statistics(
         limiting_thread: limiting_thread.to_string(),
     };
 
+    let mut findings = Vec::new();
+    let mut sanity_flags = Vec::new();
+
+    let f_from = frames.first().map(|f| f.idx).unwrap_or(0);
+    let f_to = frames.last().map(|f| f.idx).unwrap_or(0);
+
+    let range_hitch_count: usize = conn.query_row(
+        "SELECT COUNT(*) FROM episodes WHERE kind = 'hitch' AND start_s <= ?2 AND end_s >= ?1",
+        rusqlite::params![start_s, end_s],
+        |r| r.get(0),
+    ).unwrap_or(0);
+
+    // Check sanity: individual thread exclusive totals vs frame intervals (Item 9)
+    if let Ok(mut sanity_stmt) = conn.prepare(
+        "SELECT f.idx, f.interval_ms, th.name, th.role, SUM(ft.excl_ms) as thread_excl
+         FROM frame_timer ft
+         JOIN frames f ON f.idx = ft.frame_idx
+         JOIN threads th ON th.id = ft.thread_id
+         WHERE f.start_s >= ?1 AND f.start_s <= ?2
+         GROUP BY f.idx, th.id
+         HAVING thread_excl > (f.interval_ms * 1.35 + 2.0)
+         LIMIT 5"
+    ) {
+        if let Ok(rows) = sanity_stmt.query_map(rusqlite::params![start_s, end_s], |r| {
+            Ok((r.get::<_, i64>(0)?, r.get::<_, f64>(1)?, r.get::<_, String>(2)?, r.get::<_, String>(3)?, r.get::<_, f64>(4)?))
+        }) {
+            for r in rows.flatten() {
+                sanity_flags.push(format!(
+                    "Frame #{}: thread '{}' ({}) exclusive duration ({:.1} ms) exceeded frame interval ({:.1} ms).",
+                    r.0, r.2, r.3, r.4, r.1
+                ));
+            }
+        }
+    }
+
+    // Query overlapping issues & occurrences for selection (Item 3)
+    let mut issue_map: std::collections::HashMap<i64, (DbIssue, Vec<DbOccurrence>)> = std::collections::HashMap::new();
+    if let Ok(mut occ_stmt) = conn.prepare(
+        "SELECT o.occurrence_id, o.issue_id, o.chunk_id, o.frame_from, o.frame_to, o.start_s, o.end_s,
+                o.peak_frame_ms, o.mean_excess_ms, o.sum_excess_ms, o.confidence, o.evidence_json,
+                i.rule_id, i.key_timer_id, i.thread_role, i.scale, i.first_frame, i.last_frame, i.occurrences_count, i.total_excess_ms, i.worst_excess_ms
+         FROM occurrence o
+         JOIN issue i ON i.issue_id = o.issue_id
+         WHERE o.end_s >= ?1 AND o.start_s <= ?2"
+    ) {
+        if let Ok(rows) = occ_stmt.query_map(rusqlite::params![start_s, end_s], |r| {
+            let occ = DbOccurrence {
+                occurrence_id: r.get(0)?,
+                issue_id: r.get(1)?,
+                chunk_id: r.get(2)?,
+                frame_from: r.get(3)?,
+                frame_to: r.get(4)?,
+                start_s: r.get(5)?,
+                end_s: r.get(6)?,
+                peak_frame_ms: r.get(7)?,
+                mean_excess_ms: r.get(8)?,
+                sum_excess_ms: r.get(9)?,
+                confidence: r.get(10)?,
+                evidence_json: r.get(11)?,
+            };
+            let iss = DbIssue {
+                issue_id: r.get(1)?,
+                rule_id: r.get(12)?,
+                key_timer_id: r.get(13)?,
+                thread_role: r.get(14)?,
+                scale: r.get(15)?,
+                first_frame: r.get(16)?,
+                last_frame: r.get(17)?,
+                occurrences_count: r.get(18)?,
+                total_excess_ms: r.get(19)?,
+                worst_excess_ms: r.get(20)?,
+            };
+            Ok((iss, occ))
+        }) {
+            for r in rows.flatten() {
+                let entry = issue_map.entry(r.0.issue_id).or_insert((r.0, Vec::new()));
+                entry.1.push(r.1);
+            }
+        }
+    }
+
+    let compiled_rules = crate::trace::rules::load_compiled_rules();
+
+    for (issue_id, (issue, occs)) in issue_map {
+        let matched_rule = compiled_rules.iter().find(|r| r.def.id == issue.rule_id);
+        let rule_title = matched_rule.map(|r| r.def.title.clone()).unwrap_or_else(|| issue.rule_id.clone());
+
+        // Extract primary culprit timer information from occs or DB timers table
+        let mut culprit_timer = String::new();
+        let mut culprit_path = String::new();
+        let mut calls_per_frame_opt: Option<f64> = None;
+        let mut observed_ms_opt: Option<f64> = None;
+        let mut base_ms_opt: Option<f64> = None;
+
+        // Try extracting from the occurrence with the largest sum_excess_ms
+        if let Some(best_occ) = occs.iter().max_by(|a, b| a.sum_excess_ms.partial_cmp(&b.sum_excess_ms).unwrap_or(std::cmp::Ordering::Equal)) {
+            if let Ok(ev) = serde_json::from_str::<serde_json::Value>(&best_occ.evidence_json) {
+                if let Some(t) = ev.get("timer").and_then(|v| v.as_str()) {
+                    culprit_timer = t.to_string();
+                }
+                if let Some(p) = ev.get("path").and_then(|v| v.as_str()) {
+                    culprit_path = p.to_string();
+                }
+                calls_per_frame_opt = ev.get("callsPerFrame").and_then(|v| v.as_f64());
+                observed_ms_opt = ev.get("observedMsPerFrame").and_then(|v| v.as_f64());
+                base_ms_opt = ev.get("baselineMsPerFrame").and_then(|v| v.as_f64());
+            }
+        }
+
+        // If not found from evidence JSON, query timers table by issue.key_timer_id
+        if culprit_timer.is_empty() || culprit_timer == "Other" {
+            if let Ok((name, path)) = conn.query_row(
+                "SELECT name, path FROM timers WHERE id = ?1",
+                rusqlite::params![issue.key_timer_id],
+                |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)),
+            ) {
+                culprit_timer = name;
+                if culprit_path.is_empty() {
+                    culprit_path = path;
+                }
+            }
+        }
+
+        // Formulate dynamic culprit title
+        let finding_title = if !culprit_timer.is_empty() && culprit_timer != "Other" && culprit_timer != "Unprofiled Execution" {
+            if issue.rule_id == "cpu-hitch" {
+                if issue.scale == "spike" {
+                    format!("CPU Execution Spike: {} ({})", culprit_timer, issue.thread_role)
+                } else {
+                    format!("Sustained CPU Overhead: {} ({})", culprit_timer, issue.thread_role)
+                }
+            } else if issue.rule_id == "render-cpu" {
+                format!("Render Thread CPU Bottleneck: {}", culprit_timer)
+            } else if issue.rule_id == "gpu-bound" {
+                let lower = culprit_timer.to_lowercase();
+                if lower.contains("fxsystem") || lower.contains("niagara") || lower.contains("compute") {
+                    format!("GPU Compute Pass: {}", culprit_timer)
+                } else {
+                    format!("GPU Rendering Pass: {}", culprit_timer)
+                }
+            } else if issue.rule_id == "taskgraph-wait" {
+                format!("TaskGraph Worker Stall: {}", culprit_timer)
+            } else {
+                format!("{}: {}", rule_title, culprit_timer)
+            }
+        } else {
+            rule_title
+        };
+
+        // Numbers strictly clipped to selection, computed per frame vs baseline (Item 3 & Item 4)
+        let mut selection_excess_sum = 0.0f64;
+        let mut selection_frames = 0usize;
+
+        for occ in &occs {
+            let occ_start = occ.frame_from.max(f_from);
+            let occ_end = occ.frame_to.min(f_to);
+            if occ_start <= occ_end {
+                let overlap_count = (occ_end - occ_start + 1) as f64;
+                let occ_total_count = (occ.frame_to - occ.frame_from + 1).max(1) as f64;
+                let fraction = (overlap_count / occ_total_count).clamp(0.0, 1.0);
+                selection_excess_sum += occ.sum_excess_ms * fraction;
+                selection_frames += overlap_count as usize;
+            }
+        }
+
+        if selection_excess_sum < 0.5 || selection_frames == 0 {
+            continue;
+        }
+
+        let explains_ms_per_frame = if frame_count > 0 {
+            selection_excess_sum / (frame_count as f64)
+        } else {
+            0.0
+        };
+
+        if explains_ms_per_frame < 0.1 {
+            continue;
+        }
+
+        if budget_gap_ms <= 0.001 && issue.scale == "sustained" {
+            continue;
+        }
+
+        if budget_gap_ms <= 0.001 && issue.scale == "spike" && explains_ms_per_frame < 0.3 && range_hitch_count == 0 {
+            continue;
+        }
+
+        let of_excess_ms_per_frame = if budget_gap_ms > 0.001 {
+            budget_gap_ms
+        } else {
+            explains_ms_per_frame
+        };
+
+        let share_of_excess = if of_excess_ms_per_frame > 0.001 {
+            (explains_ms_per_frame / of_excess_ms_per_frame).clamp(0.0, 1.0)
+        } else {
+            1.0
+        };
+
+        let confidence = if share_of_excess < 0.10 {
+            "low"
+        } else if share_of_excess >= 0.40 && (selection_frames as f64 / frame_count.max(1) as f64) >= 0.50 {
+            "high"
+        } else {
+            "medium"
+        };
+
+        let fix_likelihood = if share_of_excess >= 0.40 { "high" } else if share_of_excess >= 0.20 { "medium" } else { "low" };
+
+        let fixes = matched_rule.map(|r| r.def.fixes.clone()).unwrap_or_default();
+        let verify = matched_rule.map(|r| r.def.verify.clone()).unwrap_or_else(|| "Re-capture the trace to confirm reduced execution time.".to_string());
+        let caveats = matched_rule.map(|r| r.def.caveats.clone()).unwrap_or_default();
+
+        let evidence_label = if !culprit_timer.is_empty() && culprit_timer != "Other" {
+            if !culprit_path.is_empty() && culprit_path != culprit_timer {
+                format!("{}: {:.1} ms/frame excess ({:.0}% of frame gap) [Path: {}]", culprit_timer, explains_ms_per_frame, share_of_excess * 100.0, culprit_path)
+            } else {
+                format!("{}: {:.1} ms/frame excess ({:.0}% of frame gap)", culprit_timer, explains_ms_per_frame, share_of_excess * 100.0)
+            }
+        } else {
+            format!("{:.1} ms/frame excess ({:.0}% of frame gap)", explains_ms_per_frame, share_of_excess * 100.0)
+        };
+
+        let mut ev_obj = serde_json::json!({
+            "label": evidence_label,
+            "value": format!("{:.1} ms", explains_ms_per_frame),
+            "isKey": true
+        });
+        if !culprit_timer.is_empty() && culprit_timer != "Other" {
+            ev_obj["timer"] = serde_json::Value::String(culprit_timer.clone());
+        }
+        if !culprit_path.is_empty() && culprit_path != "Other" {
+            ev_obj["path"] = serde_json::Value::String(culprit_path.clone());
+        }
+        if let Some(c) = calls_per_frame_opt {
+            ev_obj["callsPerFrame"] = serde_json::json!(c);
+        }
+        if let Some(o) = observed_ms_opt {
+            ev_obj["observedMsPerFrame"] = serde_json::json!(o);
+        }
+        if let Some(b) = base_ms_opt {
+            ev_obj["baselineMsPerFrame"] = serde_json::json!(b);
+        }
+
+        let payload_json = serde_json::json!({
+            "title": finding_title,
+            "explainsMs": explains_ms_per_frame,
+            "ofExcessMs": of_excess_ms_per_frame,
+            "matchConfidence": confidence,
+            "fixLikelihood": fix_likelihood,
+            "fixes": fixes,
+            "verify": verify,
+            "caveats": caveats,
+            "episodeIds": occs.iter().map(|o| o.occurrence_id).collect::<Vec<_>>(),
+            "evidence": [ev_obj]
+        }).to_string();
+
+        let match_conf_val = if confidence == "high" { 0.9 } else if confidence == "medium" { 0.6 } else { 0.3 };
+        let episode_ids_vec: Vec<i64> = occs.iter().map(|o| o.occurrence_id).collect();
+
+        findings.push(DbFinding {
+            id: issue_id,
+            rule_id: issue.rule_id,
+            rank: explains_ms_per_frame,
+            match_confidence: match_conf_val,
+            fix_likelihood: fix_likelihood.to_string(),
+            episode_ids: episode_ids_vec,
+            payload: payload_json,
+        });
+    }
+
+    // Detect Regime Changes (Item 7)
+    let mut regime_changes = Vec::new();
+    if frames.len() >= 60 {
+        let step = 30;
+        let win = 30;
+        let mut i = 0;
+        while i + 2 * win <= frames.len() {
+            let win1 = &frames[i..i + win];
+            let win2 = &frames[i + win..i + 2 * win];
+
+            let mut intv1: Vec<f64> = win1.iter().map(|f| f.interval_ms).collect();
+            let mut intv2: Vec<f64> = win2.iter().map(|f| f.interval_ms).collect();
+            intv1.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+            intv2.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+
+            let med1 = calculate_percentile(&intv1, 0.5);
+            let med2 = calculate_percentile(&intv2, 0.5);
+
+            if (med2 - med1).abs() >= 4.0 || (med1 > 0.0 && (med2 - med1) / med1 >= 0.25) {
+                let shift_time_s = win2.first().map(|f| f.start_s).unwrap_or(0.0);
+                let shift_frame_idx = i as i64 + win as i64;
+
+                let delta_ms = med2 - med1;
+                let desc = format!("at {:.1} s frame time {:.1} -> {:.1} ms ({:+.1} ms/frame)", shift_time_s, med1, med2, delta_ms);
+
+                regime_changes.push(RegimeChange {
+                    timestamp_s: shift_time_s,
+                    frame_idx: shift_frame_idx,
+                    from_median_ms: med1,
+                    to_median_ms: med2,
+                    description: desc,
+                    top_deltas: Vec::new(),
+                });
+                i += win; // jump past window
+            }
+            i += step;
+        }
+    }
+
     Ok(RangeStatisticsResponse {
         start_s,
         end_s,
@@ -1413,6 +1741,9 @@ pub fn compute_range_statistics(
         budget_gap_ms,
         thread_medians,
         top_timers,
+        findings,
+        regime_changes,
+        sanity_flags,
     })
 }
 
@@ -1617,7 +1948,7 @@ pub fn trace_get_issues(app: AppHandle, trace_id: String) -> Result<Vec<IssueWit
     for issue in issues {
         let mut occ_stmt = conn
             .prepare(
-                "SELECT occurrence_id, issue_id, chunk_id, frame_from, frame_to, peak_frame_ms, mean_excess_ms, sum_excess_ms, confidence, evidence_json
+                "SELECT occurrence_id, issue_id, chunk_id, frame_from, frame_to, start_s, end_s, peak_frame_ms, mean_excess_ms, sum_excess_ms, confidence, evidence_json
                  FROM occurrence
                  WHERE issue_id = ?1
                  ORDER BY frame_from ASC",
@@ -1632,11 +1963,13 @@ pub fn trace_get_issues(app: AppHandle, trace_id: String) -> Result<Vec<IssueWit
                     chunk_id: r.get(2)?,
                     frame_from: r.get(3)?,
                     frame_to: r.get(4)?,
-                    peak_frame_ms: r.get(5)?,
-                    mean_excess_ms: r.get(6)?,
-                    sum_excess_ms: r.get(7)?,
-                    confidence: r.get(8)?,
-                    evidence_json: r.get(9)?,
+                    start_s: r.get(5)?,
+                    end_s: r.get(6)?,
+                    peak_frame_ms: r.get(7)?,
+                    mean_excess_ms: r.get(8)?,
+                    sum_excess_ms: r.get(9)?,
+                    confidence: r.get(10)?,
+                    evidence_json: r.get(11)?,
                 })
             })
             .map_err(|e| e.to_string())?;
@@ -1757,5 +2090,103 @@ mod tests {
         assert_eq!(stats.top_timers[0].name, "ShadowDepths");
         assert_eq!(stats.top_timers[0].thread_role, "gpu");
         assert!(stats.top_timers[0].avg_ms_per_frame > 0.0);
+    }
+
+    #[test]
+    fn test_culprit_attribution_and_sanity_concurrency() {
+        let conn = Connection::open_in_memory().unwrap();
+        init_db(&conn).unwrap();
+
+        // Insert frames
+        conn.execute(
+            "INSERT INTO frames (idx, start_s, interval_ms, game_ms, render_ms, gpu_ms) VALUES 
+             (0, 10.0, 30.0, 10.0, 28.0, 12.0),
+             (1, 10.033, 32.0, 10.0, 30.0, 12.0)",
+            [],
+        ).unwrap();
+
+        // Insert timers with paths
+        conn.execute(
+            "INSERT INTO timers (id, name, bucket, kind, path) VALUES 
+             (10, 'NodeAndClusterCull', 'Rendering', 'work', 'LaunchVisibilityTasks > WaitUntilTasksComplete > NodeAndClusterCull')",
+            [],
+        ).unwrap();
+
+        // Insert threads
+        conn.execute(
+            "INSERT INTO threads (id, name, role) VALUES 
+             (2, 'RenderThread 0', 'render')",
+            [],
+        ).unwrap();
+
+        // Insert frame_timer
+        conn.execute(
+            "INSERT INTO frame_timer (frame_idx, thread_id, timer_id, excl_ms, calls, max_ms) VALUES
+             (0, 2, 10, 25.0, 1, 25.0),
+             (1, 2, 10, 26.0, 1, 26.0)",
+            [],
+        ).unwrap();
+
+        // Insert issue & occurrence
+        conn.execute(
+            "INSERT INTO issue (issue_id, rule_id, key_timer_id, thread_role, scale, first_frame, last_frame, occurrences_count, total_excess_ms, worst_excess_ms)
+             VALUES (1, 'cpu-hitch', 10, 'render', 'spike', 0, 1, 1, 51.0, 26.0)",
+            [],
+        ).unwrap();
+
+        let ev_json = r#"{"timer":"NodeAndClusterCull","path":"LaunchVisibilityTasks > WaitUntilTasksComplete > NodeAndClusterCull","excessMs":51.0,"shareOfExcess":0.85,"callsPerFrame":1.0,"observedMsPerFrame":25.5,"baselineMsPerFrame":0.5,"sanityViolation":false}"#;
+        conn.execute(
+            "INSERT INTO occurrence (occurrence_id, issue_id, chunk_id, frame_from, frame_to, start_s, end_s, peak_frame_ms, mean_excess_ms, sum_excess_ms, confidence, evidence_json)
+             VALUES (101, 1, 0, 0, 1, 10.0, 10.065, 32.0, 25.5, 51.0, 'high', ?1)",
+            rusqlite::params![ev_json],
+        ).unwrap();
+
+        let stats = compute_range_statistics(&conn, 10.0, 10.1).unwrap();
+        assert_eq!(stats.findings.len(), 1);
+        let f = &stats.findings[0];
+        assert_eq!(f.rule_id, "cpu-hitch");
+
+        let payload: serde_json::Value = serde_json::from_str(&f.payload).unwrap();
+        assert_eq!(payload["title"], "CPU Execution Spike: NodeAndClusterCull (render)");
+        assert_eq!(payload["matchConfidence"], "high");
+
+        let ev = &payload["evidence"][0];
+        assert_eq!(ev["timer"], "NodeAndClusterCull");
+        assert!(ev["label"].as_str().unwrap().contains("NodeAndClusterCull"));
+        assert!(ev["label"].as_str().unwrap().contains("LaunchVisibilityTasks"));
+    }
+
+    #[test]
+    fn test_smooth_range_produces_no_findings() {
+        let conn = Connection::open_in_memory().unwrap();
+        init_db(&conn).unwrap();
+
+        // Insert smooth frames (all ~13.5 ms, well under 16.7 ms target budget)
+        conn.execute(
+            "INSERT INTO frames (idx, start_s, interval_ms, game_ms, render_ms, gpu_ms) VALUES 
+             (10, 13.0, 13.5, 10.0, 8.0, 12.0),
+             (11, 13.016, 13.6, 10.0, 8.0, 12.0),
+             (12, 13.032, 13.4, 10.0, 8.0, 12.0)",
+            [],
+        ).unwrap();
+
+        // Insert an issue that happened elsewhere (at frame 400, 20.0s)
+        conn.execute(
+            "INSERT INTO issue (issue_id, rule_id, key_timer_id, thread_role, scale, first_frame, last_frame, occurrences_count, total_excess_ms, worst_excess_ms)
+             VALUES (1, 'cpu-hitch', 10, 'game', 'spike', 400, 401, 1, 50.0, 50.0)",
+            [],
+        ).unwrap();
+
+        let ev_json = r#"{"timer":"UWorld_SendAllEndOfFrameUpdates","path":"FEngineLoop::Tick > SendAllEndOfFrameUpdates","excessMs":50.0,"shareOfExcess":0.80,"callsPerFrame":1.0,"observedMsPerFrame":45.0,"baselineMsPerFrame":2.0,"sanityViolation":false}"#;
+        conn.execute(
+            "INSERT INTO occurrence (occurrence_id, issue_id, chunk_id, frame_from, frame_to, start_s, end_s, peak_frame_ms, mean_excess_ms, sum_excess_ms, confidence, evidence_json)
+             VALUES (101, 1, 0, 400, 401, 20.0, 20.05, 55.0, 50.0, 50.0, 'high', ?1)",
+            rusqlite::params![ev_json],
+        ).unwrap();
+
+        let stats = compute_range_statistics(&conn, 13.0, 13.1).unwrap();
+        assert_eq!(stats.frame_count, 3);
+        assert!(stats.median_ms < 16.7);
+        assert_eq!(stats.findings.len(), 0);
     }
 }

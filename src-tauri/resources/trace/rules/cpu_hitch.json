@@ -1,6 +1,6 @@
 {
   "id": "cpu-hitch",
-  "title": "Main Thread CPU Stall / Excessive Execution Time",
+  "title": "CPU Execution Spike / Heavy System Computation",
   "applies_to": [
     "hitch",
     "slow_region"
@@ -25,20 +25,20 @@
   "evidence_template": "{thread} spent {ms} executing {timer} ({share}% of extra frame time){periodic_clause}.",
   "fixes": [
     {
-      "text": "Inspect the offending timer scope highlighted in evidence and profile its internal functions.",
-      "effort": "medium"
-    },
-    {
-      "text": "Amortize the workload across multiple frames or offload computation to async worker threads via TaskGraph.",
+      "text": "Amortize high-cost computation across multiple frames or offload calculation to background TaskGraph worker threads.",
       "effort": "high"
     },
     {
-      "text": "Reduce per-frame object counts, complexity, or iteration limits in the affected system.",
+      "text": "Reduce per-frame object counts, tick frequency, or iteration limits in the affected system.",
+      "effort": "medium"
+    },
+    {
+      "text": "Enable distance-based tick throttling, URO (Update Rate Optimization), or visibility culling for high-frequency actors.",
       "effort": "low"
     }
   ],
-  "verify": "Profile subsequent runs in Insights to confirm the offending timer duration stays within normal baseline limits.",
+  "verify": "Re-run the performance capture to confirm the offending timer duration and call counts stay within baseline limits.",
   "caveats": [
-    "This generic CPU stall rule catches custom game code, third-party plugins, and engine systems not covered by specialized rules."
+    "This CPU stall rule catches custom game code, third-party plugins, and engine systems not covered by specialized rules."
   ]
 }

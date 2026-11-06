@@ -4,9 +4,11 @@ import type { CacheInfo, TraceSummary } from '../../types/traceAnalyzer';
 
 interface DetailsDrawerProps {
   summary: TraceSummary | null;
+  onRefreshDiagnostic?: () => void;
+  onCleanAllCaches?: () => void;
 }
 
-export function DetailsDrawer({ summary }: DetailsDrawerProps) {
+export function DetailsDrawer({ summary, onRefreshDiagnostic, onCleanAllCaches }: DetailsDrawerProps) {
   const [isOpen, setIsOpen] = useState(false);
   const [cacheInfo, setCacheInfo] = useState<CacheInfo | null>(null);
 
@@ -84,11 +86,33 @@ export function DetailsDrawer({ summary }: DetailsDrawerProps) {
             <div>
               Trace Path: <code className="text-slate-300 bg-slate-900 px-1 py-0.5 rounded font-mono">{summary.path || 'Unknown'}</code>
             </div>
-            {cacheInfo && (
-              <div>
-                Cache: <span className="font-mono text-slate-300">{cacheInfo.totalFiles} files</span> ({((cacheInfo.totalSizeBytes || 0) / 1024 / 1024).toFixed(1)} MB)
-              </div>
-            )}
+            <div className="flex items-center gap-3">
+              {cacheInfo && (
+                <div>
+                  Cache: <span className="font-mono text-slate-300">{cacheInfo.totalFiles} files</span> ({((cacheInfo.totalSizeBytes || 0) / 1024 / 1024).toFixed(1)} MB)
+                </div>
+              )}
+              {onRefreshDiagnostic && (
+                <button
+                  type="button"
+                  onClick={onRefreshDiagnostic}
+                  className="px-2 py-0.5 rounded bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 text-[11px] transition-colors"
+                  title="Clear cache and re-import this trace"
+                >
+                  Re-import Trace
+                </button>
+              )}
+              {onCleanAllCaches && (
+                <button
+                  type="button"
+                  onClick={onCleanAllCaches}
+                  className="px-2 py-0.5 rounded bg-slate-800 hover:bg-rose-950/60 hover:text-rose-200 hover:border-rose-700/60 text-slate-300 border border-slate-700 text-[11px] transition-colors"
+                  title="Clear all cached trace databases"
+                >
+                  Clean All DB Caches
+                </button>
+              )}
+            </div>
           </div>
         </div>
       )}

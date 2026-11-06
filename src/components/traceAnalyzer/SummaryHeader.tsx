@@ -1,9 +1,12 @@
 import { useState } from 'react';
-import type { Finding, TraceCandidate, TraceSummary } from '../../types/traceAnalyzer';
+import type { Finding, IssueWithOccurrences, RangeStatisticsResponse, TraceBookmark, TraceCandidate, TraceSummary } from '../../types/traceAnalyzer';
 
 export interface SummaryHeaderProps {
   summary: TraceSummary | null;
   findings: Finding[];
+  issues?: IssueWithOccurrences[];
+  rangeStats?: RangeStatisticsResponse | null;
+  bookmarks?: TraceBookmark[];
   targetFps: number;
   onTargetFpsChange: (fps: number) => void;
   onOpenInInsights: () => void;
@@ -17,6 +20,8 @@ export interface SummaryHeaderProps {
   insightsExists: boolean;
   isAnalyzing: boolean;
   selectedRange?: [number, number] | null;
+  onRefreshDiagnostic?: () => void;
+  onCleanTraceDatabase?: () => void;
 }
 
 function formatDuration(seconds: number | null | undefined): string {
@@ -34,6 +39,9 @@ function formatDuration(seconds: number | null | undefined): string {
 export function SummaryHeader({
   summary,
   findings,
+  issues = [],
+  rangeStats,
+  bookmarks = [],
   targetFps,
   onTargetFpsChange,
   onOpenInInsights,
@@ -47,8 +55,11 @@ export function SummaryHeader({
   insightsExists,
   isAnalyzing,
   selectedRange,
+  onRefreshDiagnostic,
+  onCleanTraceDatabase,
 }: SummaryHeaderProps) {
   const [copied, setCopied] = useState(false);
+  const [jsonExported, setJsonExported] = useState(false);
 
   const medianFps =
     summary && (summary.medianMs ?? 0) > 0 ? Math.round(1000 / summary.medianMs) : 0;
@@ -73,10 +84,31 @@ export function SummaryHeader({
       md += `> **Note**: Captured in Unreal Editor session. Slate and Editor overhead are included.\n\n`;
     }
 
-    md += `### Scoped Findings (${findings.length})\n\n`;
-    if (findings.length === 0) {
-      md += `*No abnormal bottlenecks detected against frame budget.*\n`;
-    } else {
+    if (rangeStats?.regimeChanges && rangeStats.regimeChanges.length > 0) {
+      md += `### Frame Time Regime Changes\n\n`;
+      rangeStats.regimeChanges.forEach((rc) => {
+        md += `- ${rc.description}\n`;
+      });
+      md += `\n`;
+    }
+
+    // Export one entry per issue with every occurrence (Item 10)
+    if (issues && issues.length > 0) {
+      md += `### Diagnosed Issues (${issues.length})\n\n`;
+      issues.forEach((item, idx) => {
+        const iss = item.issue;
+        md += `#### ${idx + 1}. ${iss.ruleId} [${iss.scale}] (${iss.threadRole})\n`;
+        md += `- **Occurrences**: ${item.occurrences.length} (${iss.totalExcessMs.toFixed(1)} ms total excess, worst peak: ${iss.worstExcessMs.toFixed(1)} ms)\n`;
+        md += `- **Occurrences Detail**:\n`;
+        item.occurrences.forEach((occ, oIdx) => {
+          const sTime = occ.startS?.toFixed(2) ?? '0.00';
+          const eTime = occ.endS?.toFixed(2) ?? '0.00';
+          md += `  - #${oIdx + 1}: Frames ${occ.frameFrom}..${occ.frameTo} (${sTime}s – ${eTime}s) | Peak: ${occ.peakFrameMs.toFixed(1)} ms | Mean Excess: ${occ.meanExcessMs.toFixed(1)} ms/frame\n`;
+        });
+        md += `\n`;
+      });
+    } else if (findings.length > 0) {
+      md += `### Scoped Findings (${findings.length})\n\n`;
       findings.forEach((f, idx) => {
         const p = f.parsedPayload;
         md += `#### ${idx + 1}. ${p?.title || f.ruleId}\n`;
@@ -97,6 +129,32 @@ export function SummaryHeader({
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
     });
+  };
+
+  const handleExportJson = () => {
+    if (!summary) return;
+
+    const data = {
+      summary,
+      selectedRange,
+      rangeStats,
+      issues,
+      findings,
+      bookmarks,
+      exportedAt: new Date().toISOString(),
+    };
+
+    const jsonStr = JSON.stringify(data, null, 2);
+    const blob = new Blob([jsonStr], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `${summary.traceId || 'trace'}_diagnosis.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+
+    setJsonExported(true);
+    setTimeout(() => setJsonExported(false), 2000);
   };
 
   return (
@@ -204,6 +262,7 @@ export function SummaryHeader({
             onClick={handleCopyReport}
             disabled={!summary}
             className="flex items-center gap-1 px-2.5 py-1 bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs rounded border border-slate-700 transition-colors disabled:opacity-50"
+            title="Copy Markdown diagnostic summary to clipboard"
           >
             {copied ? (
               <span className="text-emerald-400 font-medium">✓ Copied</span>
@@ -216,6 +275,58 @@ export function SummaryHeader({
               </>
             )}
           </button>
+
+          {/* Export JSON Button (Item 10) */}
+          <button
+            type="button"
+            onClick={handleExportJson}
+            disabled={!summary}
+            className="flex items-center gap-1 px-2.5 py-1 bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs rounded border border-slate-700 transition-colors disabled:opacity-50"
+            title="Download full trace diagnosis as JSON"
+          >
+            {jsonExported ? (
+              <span className="text-emerald-400 font-medium">✓ Exported</span>
+            ) : (
+              <>
+                <svg className="w-3.5 h-3.5 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+                </svg>
+                <span>JSON</span>
+              </>
+            )}
+          </button>
+
+          {/* Refresh Diagnostic / Re-import Button */}
+          {summary && onRefreshDiagnostic && (
+            <button
+              type="button"
+              onClick={onRefreshDiagnostic}
+              disabled={isAnalyzing}
+              className="flex items-center gap-1 px-2.5 py-1 bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs rounded border border-slate-700 transition-colors disabled:opacity-50"
+              title="Clear cache database for this trace and re-import diagnostic from scratch"
+            >
+              <svg className={`w-3.5 h-3.5 text-slate-400 ${isAnalyzing ? 'animate-spin' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+              </svg>
+              <span>Refresh Diagnostic</span>
+            </button>
+          )}
+
+          {/* Clean Local Trace Database Button (when no trace open) */}
+          {!summary && onCleanTraceDatabase && (
+            <button
+              type="button"
+              onClick={onCleanTraceDatabase}
+              disabled={isAnalyzing}
+              className="flex items-center gap-1 px-2.5 py-1 bg-slate-800 hover:bg-rose-950/60 hover:text-rose-200 hover:border-rose-700/60 text-slate-300 text-xs rounded border border-slate-700 transition-colors disabled:opacity-50"
+              title="Clear all cached trace databases (original trace files are NOT deleted)"
+            >
+              <svg className="w-3.5 h-3.5 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+              </svg>
+              <span>Clean Trace DB</span>
+            </button>
+          )}
 
           {/* Open in Unreal Insights GUI */}
           <button
