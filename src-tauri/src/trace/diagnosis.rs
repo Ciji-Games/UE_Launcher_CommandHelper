@@ -7,6 +7,10 @@ use crate::trace::store::{DbIssue, DbOccurrence};
 use crate::trace::subsystem::{classify, is_view_counter, load_subsystems, CompiledSubsystem};
 
 pub const CHUNK_SIZE_FRAMES: usize = 512;
+pub const SUSTAINED_WINDOW_S: f64 = 2.0;
+pub const SUSTAINED_HOP_S: f64 = 0.5;
+pub const MIN_WINDOW_DURATION_S: f64 = 0.5;
+pub const ROLLING_MEDIAN_WINDOW_S: f64 = 1.0;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
@@ -791,13 +795,19 @@ pub fn diagnose_chunk(
     let subsystems = load_subsystems();
     let mut raw_occurrences: Vec<EvaluatedOccurrence> = Vec::new();
 
-    // Precompute rolling median over 120 frames (±60 frames)
+    // Precompute rolling median over ±1.0s window using start_s (FR-4)
     let mut rolling_median_map: HashMap<i64, f64> = HashMap::new();
     for f_idx in frame_from..=frame_to {
-        let w_from = (f_idx - 60).max(ctx_from);
-        let w_to = (f_idx + 60).min(ctx_to);
-        let mut window_intervals: Vec<f64> = (w_from..=w_to)
-            .filter_map(|idx| frames_map.get(&idx).map(|f| f.interval_ms))
+        let center_s = frames_map.get(&f_idx).map(|f| f.start_s).unwrap_or(0.0);
+        let mut window_intervals: Vec<f64> = (ctx_from..=ctx_to)
+            .filter_map(|idx| {
+                let f = frames_map.get(&idx)?;
+                if (f.start_s - center_s).abs() <= ROLLING_MEDIAN_WINDOW_S {
+                    Some(f.interval_ms)
+                } else {
+                    None
+                }
+            })
             .collect();
         window_intervals.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
         let med = if !window_intervals.is_empty() {
@@ -860,14 +870,33 @@ pub fn diagnose_chunk(
         );
     }
 
-    // 2. Sustained Analyzer: rolling window of 120 frames, hop of 30 frames (excluding spike frames)
-    let window_size = 120;
-    let hop_size = 30;
+    // 2. Sustained Analyzer: time-based rolling window (2.0s duration, 0.5s hop, min 0.5s) (FR-4)
     let mut w_start = frame_from;
 
     while w_start <= frame_to {
-        let w_end = (w_start + window_size as i64 - 1).min(frame_to);
-        if w_end - w_start + 1 >= 30 {
+        let start_s = match frames_map.get(&w_start) {
+            Some(f) => f.start_s,
+            None => break,
+        };
+
+        // Advance w_end to find the last frame within start_s + SUSTAINED_WINDOW_S
+        let mut w_end = w_start;
+        while w_end + 1 <= frame_to {
+            if let Some(next_f) = frames_map.get(&(w_end + 1)) {
+                if next_f.start_s - start_s <= SUSTAINED_WINDOW_S {
+                    w_end += 1;
+                } else {
+                    break;
+                }
+            } else {
+                break;
+            }
+        }
+
+        let end_s = frames_map.get(&w_end).map(|f| f.start_s + f.interval_ms / 1000.0).unwrap_or(start_s);
+        let window_duration_s = end_s - start_s;
+
+        if window_duration_s >= MIN_WINDOW_DURATION_S {
             let rolling_med = *rolling_median_map.get(&w_start).unwrap_or(&16.6);
             process_sustained_window(
                 w_start,
@@ -885,7 +914,22 @@ pub fn diagnose_chunk(
                 &mut raw_occurrences,
             );
         }
-        w_start += hop_size as i64;
+
+        // Advance w_start by SUSTAINED_HOP_S
+        let target_next_s = start_s + SUSTAINED_HOP_S;
+        let mut next_w_start = w_start + 1;
+        while next_w_start <= frame_to {
+            if let Some(f) = frames_map.get(&next_w_start) {
+                if f.start_s >= target_next_s {
+                    break;
+                }
+            }
+            next_w_start += 1;
+        }
+        if next_w_start <= w_start {
+            next_w_start = w_start + 1;
+        }
+        w_start = next_w_start;
     }
 
     // 3. Merge intra-chunk occurrences with same signature and gap tolerance
@@ -1663,6 +1707,74 @@ mod tests {
         for sp in &detected_spikes {
             assert!(sp.len() <= 6); // Single frame spikes
         }
+    }
+
+    #[test]
+    fn test_framerate_independent_sustained_windows() {
+        let mut conn_30 = Connection::open_in_memory().unwrap();
+        let mut conn_60 = Connection::open_in_memory().unwrap();
+        crate::trace::store::init_db(&conn_30).unwrap();
+        crate::trace::store::init_db(&conn_60).unwrap();
+
+        // 30 FPS: 90 frames (3.0s total), each 33.333 ms
+        for i in 0..90 {
+            conn_30.execute(
+                "INSERT INTO frames (idx, start_s, interval_ms, game_ms, render_ms, gpu_ms) VALUES (?1, ?2, 33.333, 10.0, 10.0, 33.333)",
+                params![i, i as f64 * (1.0 / 30.0)],
+            ).unwrap();
+        }
+
+        // 60 FPS: 180 frames (3.0s total), each 33.333 ms interval, start_s spaced by 1/60s
+        for i in 0..180 {
+            conn_60.execute(
+                "INSERT INTO frames (idx, start_s, interval_ms, game_ms, render_ms, gpu_ms) VALUES (?1, ?2, 33.333, 10.0, 10.0, 33.333)",
+                params![i, i as f64 * (1.0 / 60.0)],
+            ).unwrap();
+        }
+
+        conn_30.execute("INSERT INTO threads (id, name, role) VALUES (1, 'GameThread', 'game'), (3, 'GPU', 'gpu')", []).unwrap();
+        conn_60.execute("INSERT INTO threads (id, name, role) VALUES (1, 'GameThread', 'game'), (3, 'GPU', 'gpu')", []).unwrap();
+
+        conn_30.execute("INSERT INTO timers (id, name, bucket, kind, path) VALUES (10, 'MainPass', 'GPU', 'work', 'SceneRender > MainPass')", []).unwrap();
+        conn_60.execute("INSERT INTO timers (id, name, bucket, kind, path) VALUES (10, 'MainPass', 'GPU', 'work', 'SceneRender > MainPass')", []).unwrap();
+
+        for i in 0..90 {
+            conn_30.execute(
+                "INSERT INTO frame_timer (frame_idx, thread_id, timer_id, excl_ms, calls, max_ms) VALUES (?1, 3, 10, 25.0, 10, 25.0)",
+                params![i],
+            ).unwrap();
+        }
+        for i in 0..180 {
+            conn_60.execute(
+                "INSERT INTO frame_timer (frame_idx, thread_id, timer_id, excl_ms, calls, max_ms) VALUES (?1, 3, 10, 25.0, 10, 25.0)",
+                params![i],
+            ).unwrap();
+        }
+
+        conn_30.execute("INSERT INTO baseline_global (thread_id, timer_id, median_excl_ms, p95_excl_ms, median_calls, samples) VALUES (3, 10, 1.0, 1.0, 1, 90)", []).unwrap();
+        conn_60.execute("INSERT INTO baseline_global (thread_id, timer_id, median_excl_ms, p95_excl_ms, median_calls, samples) VALUES (3, 10, 1.0, 1.0, 1, 180)", []).unwrap();
+
+        init_chunk_states(&mut conn_30, 90).unwrap();
+        init_chunk_states(&mut conn_60, 180).unwrap();
+
+        diagnose_chunk(&mut conn_30, 0, 60.0).unwrap();
+        diagnose_chunk(&mut conn_60, 0, 60.0).unwrap();
+
+        let occ_30: (f64, f64) = conn_30.query_row(
+            "SELECT MIN(o.start_s), MAX(o.end_s) FROM occurrence o JOIN issue i ON i.issue_id = o.issue_id WHERE i.scale = 'sustained'",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        ).unwrap();
+
+        let occ_60: (f64, f64) = conn_60.query_row(
+            "SELECT MIN(o.start_s), MAX(o.end_s) FROM occurrence o JOIN issue i ON i.issue_id = o.issue_id WHERE i.scale = 'sustained'",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        ).unwrap();
+
+        // Both 30 FPS and 60 FPS traces should span the full evaluated time duration (~3.0s)
+        assert!((occ_30.1 - occ_30.0 - 3.0).abs() < 0.2);
+        assert!((occ_60.1 - occ_60.0 - 3.0).abs() < 0.2);
     }
 
     #[test]

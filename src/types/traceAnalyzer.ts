@@ -103,16 +103,29 @@ export interface ChannelSuggestion {
 
 export interface FindingPayload {
   title: string;
+  scale?: 'spike' | 'sustained';
   matchConfidence: Level;
   matchScore: number;
   fixLikelihood: Level;
+  /** In ms/frame for sustained findings, or peak spike ms for hitch findings */
   explainsMs: number;
+  /** In ms/frame excess gap for sustained findings, or peak frame excess ms for hitch findings */
   ofExcessMs: number;
   evidence: Evidence[];
   fixes: FixSuggestion[];
   verify: string;
   caveats: string[];
   episodeIds: number[];
+  occurrences?: Array<{
+    occurrenceId: number;
+    frameFrom: number;
+    frameTo: number;
+    startS: number;
+    endS: number;
+    peakMs: number;
+    excessMs: number;
+    meanExcessMs: number;
+  }>;
   periodS?: number;
   channelSuggestion?: ChannelSuggestion;
 }

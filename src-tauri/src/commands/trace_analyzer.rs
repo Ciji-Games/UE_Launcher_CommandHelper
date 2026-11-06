@@ -1619,19 +1619,73 @@ pub fn compute_range_statistics(
             rule_title
         };
 
-        // Numbers strictly clipped to selection, computed per frame vs baseline (Item 3 & Item 4)
+        // Numbers strictly clipped to selection with exact SQLite aggregations (FR-2)
         let mut selection_excess_sum = 0.0f64;
         let mut selection_frames = 0usize;
+        let mut sub_occurrences: Vec<serde_json::Value> = Vec::new();
 
         for occ in &occs {
             let occ_start = occ.frame_from.max(f_from);
             let occ_end = occ.frame_to.min(f_to);
             if occ_start <= occ_end {
-                let overlap_count = (occ_end - occ_start + 1) as f64;
-                let occ_total_count = (occ.frame_to - occ.frame_from + 1).max(1) as f64;
-                let fraction = (overlap_count / occ_total_count).clamp(0.0, 1.0);
-                selection_excess_sum += occ.sum_excess_ms * fraction;
-                selection_frames += overlap_count as usize;
+                let occ_clipped_frames = (occ_end - occ_start + 1) as usize;
+                let mut occ_excess_ms = 0.0f64;
+                let mut occ_peak_frame_ms = 0.0f64;
+
+                // Query exact timer excess and peak frame time from frame_timer and frames
+                if issue.key_timer_id != 0 {
+                    let exact_query_res: Result<(f64, f64), rusqlite::Error> = conn.query_row(
+                        "SELECT 
+                            COALESCE(SUM(MAX(0.0, ft.excl_ms - COALESCE(b.median_excl_ms, 0.0))), 0.0),
+                            COALESCE(MAX(f.interval_ms), 0.0)
+                         FROM frame_timer ft
+                         JOIN frames f ON f.idx = ft.frame_idx
+                         LEFT JOIN baseline_global b ON b.timer_id = ft.timer_id AND b.thread_id = ft.thread_id
+                         WHERE ft.frame_idx >= ?1 AND ft.frame_idx <= ?2 AND ft.timer_id = ?3",
+                        rusqlite::params![occ_start, occ_end, issue.key_timer_id],
+                        |r| Ok((r.get(0)?, r.get(1)?)),
+                    );
+
+                    if let Ok((exact_sum, peak)) = exact_query_res {
+                        occ_excess_ms = exact_sum;
+                        occ_peak_frame_ms = peak;
+                    }
+                }
+
+                // Fallback to proportional clipping if exact sum produced 0.0
+                if occ_excess_ms <= 0.0 {
+                    let occ_total_count = (occ.frame_to - occ.frame_from + 1).max(1) as f64;
+                    let fraction = (occ_clipped_frames as f64 / occ_total_count).clamp(0.0, 1.0);
+                    occ_excess_ms = occ.sum_excess_ms * fraction;
+                    occ_peak_frame_ms = occ.peak_frame_ms;
+                }
+
+                if occ_peak_frame_ms <= 0.0 {
+                    if let Ok(peak) = conn.query_row(
+                        "SELECT COALESCE(MAX(interval_ms), 0.0) FROM frames WHERE idx >= ?1 AND idx <= ?2",
+                        rusqlite::params![occ_start, occ_end],
+                        |r| r.get(0),
+                    ) {
+                        occ_peak_frame_ms = peak;
+                    }
+                }
+
+                selection_excess_sum += occ_excess_ms;
+                selection_frames += occ_clipped_frames;
+
+                let occ_start_s = frames.iter().find(|f| f.idx == occ_start).map(|f| f.start_s).unwrap_or(occ.start_s);
+                let occ_end_s = frames.iter().find(|f| f.idx == occ_end).map(|f| f.start_s + f.interval_ms / 1000.0).unwrap_or(occ.end_s);
+
+                sub_occurrences.push(serde_json::json!({
+                    "occurrenceId": occ.occurrence_id,
+                    "frameFrom": occ_start,
+                    "frameTo": occ_end,
+                    "startS": occ_start_s,
+                    "endS": occ_end_s,
+                    "peakMs": occ_peak_frame_ms,
+                    "excessMs": occ_excess_ms,
+                    "meanExcessMs": if occ_clipped_frames > 0 { occ_excess_ms / occ_clipped_frames as f64 } else { 0.0 },
+                }));
             }
         }
 
@@ -1714,8 +1768,28 @@ pub fn compute_range_statistics(
             ev_obj["baselineMsPerFrame"] = serde_json::json!(b);
         }
 
+        let mut evidence_arr = vec![ev_obj];
+        for sub in &sub_occurrences {
+            let occ_id = sub["occurrenceId"].as_i64().unwrap_or(0);
+            let f_from = sub["frameFrom"].as_i64().unwrap_or(0);
+            let f_to = sub["frameTo"].as_i64().unwrap_or(0);
+            let exc_ms = sub["excessMs"].as_f64().unwrap_or(0.0);
+            let s_s = sub["startS"].as_f64().unwrap_or(0.0);
+            let e_s = sub["endS"].as_f64().unwrap_or(0.0);
+            let peak_ms = sub["peakMs"].as_f64().unwrap_or(0.0);
+
+            evidence_arr.push(serde_json::json!({
+                "label": format!("Occurrence #{} (Frames {}..{})", occ_id, f_from, f_to),
+                "value": format!("+{:.1} ms", exc_ms),
+                "note": format!("{:.2}s – {:.2}s, Peak: {:.1} ms", s_s, e_s, peak_ms),
+                "thread": issue.thread_role,
+                "isKey": false
+            }));
+        }
+
         let payload_json = serde_json::json!({
             "title": finding_title,
+            "scale": issue.scale,
             "explainsMs": explains_ms_per_frame,
             "ofExcessMs": of_excess_ms_per_frame,
             "matchConfidence": confidence,
@@ -1724,7 +1798,8 @@ pub fn compute_range_statistics(
             "verify": verify,
             "caveats": caveats,
             "episodeIds": occs.iter().map(|o| o.occurrence_id).collect::<Vec<_>>(),
-            "evidence": [ev_obj]
+            "evidence": evidence_arr,
+            "occurrences": sub_occurrences
         }).to_string();
 
         let match_conf_val = if confidence == "high" { 0.9 } else if confidence == "medium" { 0.6 } else { 0.3 };
@@ -2334,6 +2409,7 @@ mod tests {
 
         conn.execute("INSERT INTO threads (id, name, role) VALUES (4, 'GPU', 'gpu')", []).unwrap();
         conn.execute("INSERT INTO timers (id, name, bucket, kind, path) VALUES (20, 'FXSystemPreRender', 'GPU', 'work', 'FXSystemPreRender')", []).unwrap();
+        conn.execute("INSERT INTO baseline_global (thread_id, timer_id, median_excl_ms, p95_excl_ms, median_calls, samples) VALUES (4, 20, 2.0, 2.0, 1, 10)", []).unwrap();
 
         for i in 0..10 {
             conn.execute(
@@ -2365,5 +2441,108 @@ mod tests {
         let explains_ms = p["explainsMs"].as_f64().unwrap();
         // Excess is 28.0 ms/frame
         assert!((explains_ms - 28.0).abs() < 0.5);
+    }
+
+    #[test]
+    fn test_low_explained_share_caps_likelihood() {
+        let conn = Connection::open_in_memory().unwrap();
+        init_db(&conn).unwrap();
+
+        for i in 0..10 {
+            conn.execute(
+                "INSERT INTO frames (idx, start_s, interval_ms, game_ms, render_ms, gpu_ms) VALUES (?1, ?2, 60.0, 10.0, 10.0, 60.0)",
+                rusqlite::params![i, i as f64 * 0.060],
+            ).unwrap();
+        }
+
+        conn.execute("INSERT INTO threads (id, name, role) VALUES (4, 'GPU', 'gpu')", []).unwrap();
+        conn.execute("INSERT INTO timers (id, name, bucket, kind, path) VALUES (20, 'SmallPass', 'GPU', 'work', 'SmallPass')", []).unwrap();
+        conn.execute("INSERT INTO baseline_global (thread_id, timer_id, median_excl_ms, p95_excl_ms, median_calls, samples) VALUES (4, 20, 0.5, 0.5, 1, 10)", []).unwrap();
+
+        for i in 0..10 {
+            // Explains only 2.0 ms of 43.3 ms budget gap (< 5% share)
+            conn.execute(
+                "INSERT INTO frame_timer (frame_idx, thread_id, timer_id, excl_ms, calls, max_ms) VALUES (?1, 4, 20, 2.5, 1, 2.5)",
+                rusqlite::params![i],
+            ).unwrap();
+        }
+
+        conn.execute(
+            "INSERT INTO issue (issue_id, rule_id, key_timer_id, thread_role, scale, first_frame, last_frame, occurrences_count, total_excess_ms, worst_excess_ms) VALUES
+             (1, 'gpu-bound', 20, 'gpu', 'sustained', 0, 9, 1, 20.0, 60.0)",
+            [],
+        ).unwrap();
+
+        let ev_small = r#"{"timer":"SmallPass","path":"SmallPass","excessMs":20.0,"shareOfExcess":0.05,"callsPerFrame":1.0,"observedMsPerFrame":2.5,"baselineMsPerFrame":0.5,"sanityViolation":false}"#;
+        conn.execute(
+            "INSERT INTO occurrence (occurrence_id, issue_id, chunk_id, frame_from, frame_to, start_s, end_s, peak_frame_ms, mean_excess_ms, sum_excess_ms, confidence, evidence_json) VALUES
+             (101, 1, 0, 0, 9, 0.0, 0.6, 60.0, 2.0, 20.0, 'high', ?1)",
+            rusqlite::params![ev_small],
+        ).unwrap();
+
+        let stats = compute_range_statistics(&conn, 0.0, 0.6).unwrap();
+        assert_eq!(stats.findings.len(), 1);
+        let p: serde_json::Value = serde_json::from_str(&stats.findings[0].payload).unwrap();
+
+        // Share of excess is 2.0 / 43.33 = ~4.6% (< 10%)
+        assert_eq!(p["matchConfidence"], "low");
+        assert_eq!(p["fixLikelihood"], "low");
+        assert_eq!(stats.findings[0].fix_likelihood, "low");
+    }
+
+    #[test]
+    fn test_issue_grouped_clipped_occurrences() {
+        let conn = Connection::open_in_memory().unwrap();
+        init_db(&conn).unwrap();
+
+        for i in 0..20 {
+            conn.execute(
+                "INSERT INTO frames (idx, start_s, interval_ms, game_ms, render_ms, gpu_ms) VALUES (?1, ?2, 50.0, 10.0, 10.0, 50.0)",
+                rusqlite::params![i, i as f64 * 0.050],
+            ).unwrap();
+        }
+
+        conn.execute("INSERT INTO threads (id, name, role) VALUES (4, 'GPU', 'gpu')", []).unwrap();
+        conn.execute("INSERT INTO timers (id, name, bucket, kind, path) VALUES (30, 'ShadowDepths', 'GPU', 'work', 'SceneRender > ShadowDepths')", []).unwrap();
+        conn.execute("INSERT INTO baseline_global (thread_id, timer_id, median_excl_ms, p95_excl_ms, median_calls, samples) VALUES (4, 30, 1.0, 1.0, 1, 20)", []).unwrap();
+
+        for i in 0..20 {
+            conn.execute(
+                "INSERT INTO frame_timer (frame_idx, thread_id, timer_id, excl_ms, calls, max_ms) VALUES (?1, 4, 30, 21.0, 6, 21.0)",
+                rusqlite::params![i],
+            ).unwrap();
+        }
+
+        // Single issue 1 with 2 occurrences: frames 0..5 and frames 10..15
+        conn.execute(
+            "INSERT INTO issue (issue_id, rule_id, key_timer_id, thread_role, scale, first_frame, last_frame, occurrences_count, total_excess_ms, worst_excess_ms) VALUES
+             (1, 'gpu-shadow-views', 30, 'gpu', 'sustained', 0, 15, 2, 240.0, 50.0)",
+            [],
+        ).unwrap();
+
+        let ev_shadow = r#"{"timer":"ShadowDepths","path":"SceneRender > ShadowDepths","excessMs":120.0,"shareOfExcess":0.60,"callsPerFrame":6.0,"observedMsPerFrame":21.0,"baselineMsPerFrame":1.0,"sanityViolation":false}"#;
+        conn.execute(
+            "INSERT INTO occurrence (occurrence_id, issue_id, chunk_id, frame_from, frame_to, start_s, end_s, peak_frame_ms, mean_excess_ms, sum_excess_ms, confidence, evidence_json) VALUES
+             (201, 1, 0, 0, 5, 0.0, 0.3, 50.0, 20.0, 120.0, 'high', ?1),
+             (202, 1, 0, 10, 15, 0.5, 0.8, 50.0, 20.0, 120.0, 'high', ?2)",
+            rusqlite::params![ev_shadow, ev_shadow],
+        ).unwrap();
+
+        // Select range covering both occurrences (frames 0..19, 0.0s to 1.0s)
+        let stats = compute_range_statistics(&conn, 0.0, 1.0).unwrap();
+
+        // Must produce exactly 1 finding for issue 1 with both occurrences grouped
+        assert_eq!(stats.findings.len(), 1);
+        assert_eq!(stats.findings[0].id, 1);
+
+        let p: serde_json::Value = serde_json::from_str(&stats.findings[0].payload).unwrap();
+        let occurrences = p["occurrences"].as_array().unwrap();
+        assert_eq!(occurrences.len(), 2);
+        assert_eq!(occurrences[0]["occurrenceId"], 201);
+        assert_eq!(occurrences[1]["occurrenceId"], 202);
+
+        // Sub-occurrence excess is exactly 6 frames * 20.0 ms = 120.0 ms
+        assert_eq!(occurrences[0]["excessMs"], 120.0);
+        assert_eq!(occurrences[1]["excessMs"], 120.0);
     }
 }

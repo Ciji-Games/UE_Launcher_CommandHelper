@@ -190,13 +190,34 @@ export function TraceAnalyzerPanel() {
           } catch {
             // ignore
           }
+
+          if (parsed) {
+            const ofExcess = parsed.ofExcessMs ?? 0;
+            const explains = parsed.explainsMs ?? 0;
+            const shareOfExcess = ofExcess > 0.001 ? Math.min(1.0, explains / ofExcess) : 0.5;
+
+            // Enforce low-share capping rule (<10% share is never high)
+            if (shareOfExcess < 0.10) {
+              parsed.fixLikelihood = 'low';
+              parsed.matchConfidence = 'low';
+            }
+
+            if (!parsed.matchScore || parsed.matchScore === 90 || parsed.matchScore === 75) {
+              const baseScore = parsed.matchConfidence === 'high' ? 80 : parsed.matchConfidence === 'medium' ? 50 : 20;
+              parsed.matchScore = Math.min(100, Math.round(baseScore + Math.min(20, shareOfExcess * 20)));
+            }
+          }
+
+          const effFixLikelihood = parsed?.fixLikelihood || (f.fixLikelihood as Level) || 'low';
+          const effConfidence = parsed?.matchConfidence === 'high' ? 0.9 : parsed?.matchConfidence === 'medium' ? 0.6 : 0.3;
+
           return {
             id: f.id,
             ruleId: f.ruleId,
             rank: f.rank,
-            matchConfidence: f.matchConfidence,
-            fixLikelihood: f.fixLikelihood as Level,
-            payload: f.payload,
+            matchConfidence: effConfidence,
+            fixLikelihood: effFixLikelihood,
+            payload: parsed ? JSON.stringify(parsed) : f.payload,
             episodeIds: f.episodeIds,
             parsedPayload: parsed,
           };
@@ -220,7 +241,7 @@ export function TraceAnalyzerPanel() {
       return parsedRangeFindings;
     }
     
-    // Fallback: Convert diagnosed issues and occurrences overlapping the range into Findings
+    // Fallback: Convert diagnosed issues and occurrences overlapping the range into Findings grouped by issue
     const convertedIssueFindings: Finding[] = [];
     if (issues && issues.length > 0 && summary.durationS > 0) {
       const [minS, maxS] = selectedRange
@@ -229,67 +250,123 @@ export function TraceAnalyzerPanel() {
 
       for (const item of issues) {
         const issue = item.issue;
-        for (const occ of item.occurrences) {
+        const overlappingOccs = item.occurrences.filter((occ) => {
+          const fromS = occ.startS ?? 0;
+          const toS = occ.endS > fromS ? occ.endS : fromS + 0.016;
+          return fromS <= maxS && toS >= minS;
+        });
+
+        if (overlappingOccs.length === 0) continue;
+
+        let primaryTimerName = 'Unprofiled Execution';
+        let primaryPath = '';
+        let primarySanityViolation = false;
+        let totalClippedExcessMs = 0;
+        let totalClippedFrames = 0;
+        let peakFrameMs = 0;
+        const subOccEvidenceList: Array<{ label: string; valueMs: number; thread: string; note: string }> = [];
+        const episodeIds: number[] = [];
+
+        for (const occ of overlappingOccs) {
+          episodeIds.push(occ.occurrenceId);
           const fromS = occ.startS ?? 0;
           const toS = occ.endS > fromS ? occ.endS : fromS + 0.016;
 
-          if (fromS <= maxS && toS >= minS) {
-            let evidenceObj: { timer?: string; excessMs?: number; path?: string } = {};
-            try {
-              evidenceObj = JSON.parse(occ.evidenceJson);
-            } catch {
-              // ignore
-            }
-
-            const timerName = evidenceObj.timer || 'Unprofiled Execution';
-            const isSpike = issue.scale === 'spike';
-            const threadRole = issue.threadRole || 'general';
-
-            const advice = getRemediationAdvice(
-              issue.ruleId,
-              timerName,
-              threadRole,
-              isSpike ? 'spike' : 'sustained'
-            );
-
-            const explainsMs =
-              occ.meanExcessMs > 0
-                ? occ.meanExcessMs
-                : occ.sumExcessMs / Math.max(1, occ.frameTo - occ.frameFrom + 1);
-
-            const parsed: FindingPayload = {
-              title: advice.title,
-              matchConfidence: advice.matchConfidence || ((occ.confidence as Level) || 'medium'),
-              matchScore: occ.confidence === 'high' ? 90 : 75,
-              fixLikelihood: advice.fixLikelihood || 'high',
-              explainsMs,
-              ofExcessMs: occ.sumExcessMs,
-              evidence: [
-                {
-                  label: evidenceObj.path ? `${evidenceObj.path}` : timerName,
-                  valueMs: explainsMs,
-                  thread: threadRole,
-                  note: `Frames ${occ.frameFrom}..${occ.frameTo} (${fromS.toFixed(2)}s – ${toS.toFixed(2)}s), Peak: ${occ.peakFrameMs.toFixed(1)} ms, Total Excess: +${occ.sumExcessMs.toFixed(1)} ms`,
-                },
-              ],
-              fixes: advice.fixes,
-              verify: advice.verify,
-              caveats: advice.caveats || [],
-              episodeIds: [],
-            };
-
-            convertedIssueFindings.push({
-              id: occ.occurrenceId + 100000,
-              ruleId: issue.ruleId,
-              rank: 1,
-              matchConfidence: occ.confidence === 'high' ? 0.9 : 0.7,
-              fixLikelihood: advice.fixLikelihood || 'high',
-              payload: JSON.stringify(parsed),
-              episodeIds: [],
-              parsedPayload: parsed,
-            });
+          let evidenceObj: { timer?: string; excessMs?: number; path?: string; sanityViolation?: boolean; leaves?: Array<{ timer?: string; path?: string }> } = {};
+          try {
+            evidenceObj = JSON.parse(occ.evidenceJson);
+          } catch {
+            // ignore
           }
+
+          if (primaryTimerName === 'Unprofiled Execution' || primaryTimerName === 'Other') {
+            if (evidenceObj.timer) primaryTimerName = evidenceObj.timer;
+            else if (evidenceObj.leaves && evidenceObj.leaves.length > 0 && evidenceObj.leaves[0].timer) {
+              primaryTimerName = evidenceObj.leaves[0].timer;
+            }
+          }
+          if (!primaryPath && evidenceObj.path) primaryPath = evidenceObj.path;
+          if (evidenceObj.sanityViolation) primarySanityViolation = true;
+
+          const occFrames = Math.max(1, occ.frameTo - occ.frameFrom + 1);
+          const occExcess = occ.sumExcessMs > 0 ? occ.sumExcessMs : occ.meanExcessMs * occFrames;
+          totalClippedExcessMs += occExcess;
+          totalClippedFrames += occFrames;
+          peakFrameMs = Math.max(peakFrameMs, occ.peakFrameMs);
+
+          subOccEvidenceList.push({
+            label: evidenceObj.path ? `${evidenceObj.path}` : (evidenceObj.timer || primaryTimerName),
+            valueMs: occ.meanExcessMs > 0 ? occ.meanExcessMs : occExcess / occFrames,
+            thread: issue.threadRole || 'general',
+            note: `Frames ${occ.frameFrom}..${occ.frameTo} (${fromS.toFixed(2)}s – ${toS.toFixed(2)}s), Peak: ${occ.peakFrameMs.toFixed(1)} ms, Excess: +${occExcess.toFixed(1)} ms`,
+          });
         }
+
+        const isSpike = issue.scale === 'spike';
+        const threadRole = issue.threadRole || 'general';
+
+        const advice = getRemediationAdvice(
+          issue.ruleId,
+          primaryTimerName,
+          threadRole,
+          isSpike ? 'spike' : 'sustained'
+        );
+
+        const explainsMs = totalClippedFrames > 0 ? totalClippedExcessMs / totalClippedFrames : 0;
+        const ofExcessMs = rangeStats?.budgetGapMs && rangeStats.budgetGapMs > 0.001
+          ? rangeStats.budgetGapMs
+          : (totalClippedExcessMs > 0 ? explainsMs : 1.0);
+
+        const shareOfExcess = ofExcessMs > 0.001 ? Math.min(1.0, explainsMs / ofExcessMs) : 0.5;
+        const totalSelectedRangeFrames = rangeStats?.frameCount || summary.frameCount || Math.max(1, totalClippedFrames);
+        const fractionOfFramesExceeded = Math.min(1.0, totalClippedFrames / Math.max(1, totalSelectedRangeFrames));
+
+        let fixLikelihood: Level = 'low';
+        let matchConfidence: Level = 'low';
+
+        if (shareOfExcess < 0.10) {
+          fixLikelihood = 'low';
+          matchConfidence = 'low';
+        } else if (shareOfExcess >= 0.40 && fractionOfFramesExceeded >= 0.50 && !primarySanityViolation) {
+          fixLikelihood = 'high';
+          matchConfidence = 'high';
+        } else if (shareOfExcess >= 0.20 || fractionOfFramesExceeded >= 0.30) {
+          fixLikelihood = 'medium';
+          matchConfidence = 'medium';
+        } else {
+          fixLikelihood = 'low';
+          matchConfidence = 'low';
+        }
+
+        const baseScore = matchConfidence === 'high' ? 80 : matchConfidence === 'medium' ? 50 : 20;
+        const matchScore = Math.min(100, Math.round(baseScore + Math.min(20, shareOfExcess * 20)));
+
+        const parsed: FindingPayload = {
+          title: advice.title,
+          matchConfidence,
+          matchScore,
+          fixLikelihood,
+          explainsMs,
+          ofExcessMs,
+          evidence: subOccEvidenceList,
+          fixes: advice.fixes,
+          verify: advice.verify,
+          caveats: advice.caveats || [],
+          episodeIds,
+        };
+
+        const confVal = matchConfidence === 'high' ? 0.9 : matchConfidence === 'medium' ? 0.6 : 0.3;
+
+        convertedIssueFindings.push({
+          id: issue.issueId || (overlappingOccs[0].occurrenceId + 100000),
+          ruleId: issue.ruleId,
+          rank: explainsMs,
+          matchConfidence: confVal,
+          fixLikelihood,
+          payload: JSON.stringify(parsed),
+          episodeIds,
+          parsedPayload: parsed,
+        });
       }
     }
 

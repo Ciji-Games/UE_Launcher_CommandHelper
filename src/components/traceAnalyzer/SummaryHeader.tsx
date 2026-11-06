@@ -111,10 +111,21 @@ export function SummaryHeader({
       md += `### Scoped Findings (${findings.length})\n\n`;
       findings.forEach((f, idx) => {
         const p = f.parsedPayload;
+        const isSustained =
+          p?.scale === 'sustained' ||
+          f.ruleId.includes('sustained') ||
+          (p?.title ? p.title.toLowerCase().includes('sustained') : false) ||
+          (p?.evidence?.[0]?.note ? p.evidence[0].note.includes('/frame') : false) ||
+          (p?.evidence?.[0]?.label ? p.evidence[0].label.includes('ms/frame') : false);
+
         md += `#### ${idx + 1}. ${p?.title || f.ruleId}\n`;
         md += `- **Confidence**: ${p?.matchConfidence || 'N/A'}\n`;
         md += `- **Fix Likelihood**: ${p?.fixLikelihood || f.fixLikelihood}\n`;
-        md += `- **Time Impact**: ${(p?.explainsMs ?? 0).toFixed(1)} ms explained (of ${(p?.ofExcessMs ?? 0).toFixed(1)} ms excess)\n\n`;
+        if (isSustained) {
+          md += `- **Time Impact**: ${(p?.explainsMs ?? 0).toFixed(1)} ms/frame explained (of ${(p?.ofExcessMs ?? 0).toFixed(1)} ms/frame excess gap)\n\n`;
+        } else {
+          md += `- **Time Impact**: ${(p?.explainsMs ?? 0).toFixed(1)} ms explained (of ${(p?.ofExcessMs ?? 0).toFixed(1)} ms peak excess)\n\n`;
+        }
 
         if (p?.fixes && p.fixes.length > 0) {
           md += `**Step 1 Fix**:\n- ${p.fixes[0].text} (Effort: ${p.fixes[0].effort})\n\n`;

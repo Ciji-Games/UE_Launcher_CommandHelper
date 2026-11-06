@@ -23,8 +23,6 @@ export function FindingCard({
   finding,
   episodes = [],
   bookmarks = [],
-  targetFps = 60,
-  budgetGapMs = 0,
   defaultExpanded = true,
   onSelectRange,
   onOpenInInsights,
@@ -79,6 +77,13 @@ export function FindingCard({
   const isInconclusive = finding.ruleId === 'inconclusive';
   const isFrameLimiter = finding.ruleId === 'frame-limiter';
   const isSlowRegion = p?.episodeIds?.some((id) => episodesMap.get(id)?.kind === 'slow_region');
+  const isSustained =
+    p?.scale === 'sustained' ||
+    isSlowRegion ||
+    finding.ruleId.includes('sustained') ||
+    (p?.title ? p.title.toLowerCase().includes('sustained') : false) ||
+    (p?.evidence?.[0]?.note ? p.evidence[0].note.includes('/frame') : false) ||
+    (p?.evidence?.[0]?.label ? p.evidence[0].label.includes('ms/frame') : false);
 
   // Text-only confidence
   const confidenceLabel = isInconclusive
@@ -118,7 +123,7 @@ export function FindingCard({
     ? 'text-sky-400'
     : 'text-amber-400';
 
-  // Formulate single sentence headline with numbers
+  // Formulate single sentence headline with matching units (FR-3)
   const headline = useMemo(() => {
     if (!p) return finding.ruleId;
     if (isInconclusive) {
@@ -127,13 +132,12 @@ export function FindingCard({
     if (isFrameLimiter) {
       return `Frame limiter active: engine is capped at target framerate (${p.explainsMs.toFixed(1)} ms headroom).`;
     }
-    if (isSlowRegion) {
-      const neededSave = budgetGapMs > 0.1 ? `you need to save ${budgetGapMs.toFixed(1)} ms to hit ${targetFps} fps` : `contributing to frame budget`;
-      return `${p.title} costs ${p.explainsMs.toFixed(1)} ms per frame; ${neededSave}.`;
+    if (isSustained) {
+      return `${p.title} costs ${p.explainsMs.toFixed(1)} ms/frame of +${p.ofExcessMs.toFixed(1)} ms/frame excess gap.`;
     }
     // Hitch spike
-    return `${p.title} caused a +${p.explainsMs.toFixed(1)} ms spike (of +${p.ofExcessMs.toFixed(1)} ms excess).`;
-  }, [p, isInconclusive, isFrameLimiter, isSlowRegion, budgetGapMs, targetFps, finding.ruleId]);
+    return `${p.title} caused a +${p.explainsMs.toFixed(1)} ms spike (+${p.ofExcessMs.toFixed(1)} ms frame excess).`;
+  }, [p, isInconclusive, isFrameLimiter, isSustained, finding.ruleId]);
 
   if (!p) return null;
 
@@ -203,7 +207,15 @@ export function FindingCard({
           </span>
           <span className="text-slate-600">•</span>
           <span className="text-slate-300 font-mono text-[11px]">
-            Explains <strong>{(p.explainsMs ?? 0).toFixed(1)} ms</strong> of +{(p.ofExcessMs ?? 0).toFixed(1)} ms
+            {isSustained ? (
+              <>
+                Explains <strong>{(p.explainsMs ?? 0).toFixed(1)} ms/frame</strong> of +{(p.ofExcessMs ?? 0).toFixed(1)} ms/frame excess
+              </>
+            ) : (
+              <>
+                Explains <strong>{(p.explainsMs ?? 0).toFixed(1)} ms</strong> of +{(p.ofExcessMs ?? 0).toFixed(1)} ms peak excess
+              </>
+            )}
           </span>
         </div>
       </div>
