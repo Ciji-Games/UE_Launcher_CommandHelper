@@ -1,0 +1,33 @@
+{
+  "id": "gpu-lumen",
+  "title": "Lumen Global Illumination & Reflections Overhead",
+  "applies_to": ["hitch", "slow_region"],
+  "when": {
+    "timers": [
+      "^Lumen",
+      ".*Lumen.*",
+      "^IndirectLighting",
+      "^ScreenProbeGather",
+      "^DiffuseIndirectComposite",
+      ".*ScreenProbe.*",
+      ".*LumenReflections.*"
+    ],
+    "threads": ["gpu"],
+    "min_excess_ms": 2.0,
+    "min_share_of_excess": 0.15,
+    "expects_periodic": false,
+    "requires_bound_by": "gpu"
+  },
+  "specificity": 0.85,
+  "fix_likelihood": "high",
+  "fix_rationale": "The GPU is heavily loaded by Lumen diffuse indirect illumination, screen probe gathering, or Lumen reflections.",
+  "evidence_template": "{timer} took {ms} ms ({share}% of excess time) computing Lumen dynamic lighting.",
+  "fixes": [
+    { "text": "Tune Lumen Screen Probe Gather downsample factor (r.Lumen.ScreenProbeGather.DownsampleFactor 16).", "effort": "low", "cvarsOrApis": ["r.Lumen.ScreenProbeGather.DownsampleFactor"] },
+    { "text": "Adjust Lumen Diffuse Indirect and Reflection quality or toggle off in lower scalability tiers.", "effort": "low", "cvarsOrApis": ["r.Lumen.DiffuseIndirect.Allow", "r.Lumen.Reflections.Allow"] },
+    { "text": "Lower Lumen max trace distance and scene detail in PostProcessVolume settings.", "effort": "medium", "cvarsOrApis": ["r.Lumen.MaxTraceDistance"] },
+    { "text": "Use Software Ray Tracing rather than Hardware Ray Tracing if high mesh instance counts cause ray tracing BVH build overhead.", "effort": "medium", "cvarsOrApis": ["r.Lumen.HardwareRayTracing"] }
+  ],
+  "verify": "Toggle r.Lumen.DiffuseIndirect.Allow or adjust r.Lumen.ScreenProbeGather.DownsampleFactor and confirm GPU pass times drop.",
+  "caveats": []
+}

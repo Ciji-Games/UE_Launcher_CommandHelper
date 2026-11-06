@@ -1,0 +1,31 @@
+{
+  "id": "gpu-nanite",
+  "title": "Nanite Geometry Rasterization & Shading Overhead",
+  "applies_to": ["hitch", "slow_region"],
+  "when": {
+    "timers": [
+      "^Nanite",
+      ".*Nanite.*",
+      "^Rasterize",
+      "^ShadeBinning",
+      "^ClusterShading",
+      ".*NaniteRasterize.*"
+    ],
+    "threads": ["gpu"],
+    "min_excess_ms": 2.0,
+    "min_share_of_excess": 0.15,
+    "expects_periodic": false,
+    "requires_bound_by": "gpu"
+  },
+  "specificity": 0.85,
+  "fix_likelihood": "high",
+  "fix_rationale": "Nanite cluster rasterization, programmable raster binning, or World Position Offset (WPO) evaluation are causing GPU bottlenecks.",
+  "evidence_template": "{timer} took {ms} ms ({share}% of excess time) during Nanite cluster rasterization.",
+  "fixes": [
+    { "text": "Tune Nanite max pixels per edge (r.Nanite.MaxPixelsPerEdge 1.0 to 1.5) to reduce cluster density.", "effort": "low", "cvarsOrApis": ["r.Nanite.MaxPixelsPerEdge"] },
+    { "text": "Disable World Position Offset (WPO) evaluation on distant Nanite instances (r.Nanite.WPO 1, r.Nanite.WPO.MaxDistance).", "effort": "medium", "cvarsOrApis": ["r.Nanite.WPO", "r.Nanite.WPO.MaxDistance"] },
+    { "text": "Audit programmable raster materials (masked/translucent) on Nanite meshes to minimize shading binning costs.", "effort": "medium", "cvarsOrApis": [] }
+  ],
+  "verify": "Adjust r.Nanite.MaxPixelsPerEdge and verify that Nanite rasterization times decrease.",
+  "caveats": []
+}

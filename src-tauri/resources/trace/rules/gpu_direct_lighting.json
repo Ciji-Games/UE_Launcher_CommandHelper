@@ -1,0 +1,31 @@
+{
+  "id": "gpu-direct-lighting",
+  "title": "Direct Lighting & Clustered Shading Overhead",
+  "applies_to": ["hitch", "slow_region"],
+  "when": {
+    "timers": [
+      "^DirectLighting",
+      ".*DirectLighting.*",
+      "^LightGrid",
+      "^InjectLight",
+      "^ClusteredShading",
+      ".*LightGrid.*"
+    ],
+    "threads": ["gpu"],
+    "min_excess_ms": 2.0,
+    "min_share_of_excess": 0.15,
+    "expects_periodic": false,
+    "requires_bound_by": "gpu"
+  },
+  "specificity": 0.85,
+  "fix_likelihood": "high",
+  "fix_rationale": "Evaluating direct light sources and clustered light grid shading is exceeding the GPU budget due to overlapping local light volumes.",
+  "evidence_template": "{timer} took {ms} ms ({share}% of excess time) calculating direct light illumination.",
+  "fixes": [
+    { "text": "Reduce the radius and attenuation distances of overlapping local point and spot lights.", "effort": "medium", "cvarsOrApis": [] },
+    { "text": "Limit maximum lights per cluster cell (r.LightGrid.MaxLightsPerCell 32).", "effort": "low", "cvarsOrApis": ["r.LightGrid.MaxLightsPerCell"] },
+    { "text": "Disable shadow casting on low-impact fill lights.", "effort": "low", "cvarsOrApis": [] }
+  ],
+  "verify": "Toggle off overlapping local lights or clamp light radii and observe DirectLighting duration drop.",
+  "caveats": []
+}

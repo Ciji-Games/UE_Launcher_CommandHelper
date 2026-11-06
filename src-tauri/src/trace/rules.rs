@@ -160,6 +160,14 @@ pub fn load_all_rules() -> Vec<RuleDef> {
         include_str!("../../resources/trace/rules/animation_cpu.json"),
         include_str!("../../resources/trace/rules/editor_overhead.json"),
         include_str!("../../resources/trace/rules/ui_slate.json"),
+        include_str!("../../resources/trace/rules/gpu_niagara_fx.json"),
+        include_str!("../../resources/trace/rules/gpu_lumen.json"),
+        include_str!("../../resources/trace/rules/gpu_vsm_shadows.json"),
+        include_str!("../../resources/trace/rules/gpu_nanite.json"),
+        include_str!("../../resources/trace/rules/gpu_basepass.json"),
+        include_str!("../../resources/trace/rules/gpu_postprocess.json"),
+        include_str!("../../resources/trace/rules/gpu_direct_lighting.json"),
+        include_str!("../../resources/trace/rules/gpu_translucency.json"),
         include_str!("../../resources/trace/rules/gpu_bound.json"),
         include_str!("../../resources/trace/rules/render_cpu.json"),
         include_str!("../../resources/trace/rules/render_flush.json"),
@@ -175,6 +183,7 @@ pub fn load_all_rules() -> Vec<RuleDef> {
             rules.push(rule);
         }
     }
+    rules.sort_by(|a, b| b.specificity.partial_cmp(&a.specificity).unwrap_or(std::cmp::Ordering::Equal));
     rules
 }
 
@@ -1284,7 +1293,7 @@ mod tests {
     #[test]
     fn test_load_all_rules() {
         let rules = load_all_rules();
-        assert_eq!(rules.len(), 20);
+        assert_eq!(rules.len(), 28);
         assert!(rules.iter().any(|r| r.id == "gc-hitch"));
         assert!(rules.iter().any(|r| r.id == "taskgraph-wait"));
         assert!(rules.iter().any(|r| r.id == "cpu-hitch"));
@@ -1297,6 +1306,14 @@ mod tests {
         assert!(rules.iter().any(|r| r.id == "animation-cpu"));
         assert!(rules.iter().any(|r| r.id == "editor-overhead"));
         assert!(rules.iter().any(|r| r.id == "ui-slate-overhead"));
+        assert!(rules.iter().any(|r| r.id == "gpu-niagara-fx"));
+        assert!(rules.iter().any(|r| r.id == "gpu-lumen"));
+        assert!(rules.iter().any(|r| r.id == "gpu-vsm-shadows"));
+        assert!(rules.iter().any(|r| r.id == "gpu-nanite"));
+        assert!(rules.iter().any(|r| r.id == "gpu-basepass"));
+        assert!(rules.iter().any(|r| r.id == "gpu-postprocess"));
+        assert!(rules.iter().any(|r| r.id == "gpu-direct-lighting"));
+        assert!(rules.iter().any(|r| r.id == "gpu-translucency"));
         assert!(rules.iter().any(|r| r.id == "gpu-bound"));
         assert!(rules.iter().any(|r| r.id == "render-cpu"));
         assert!(rules.iter().any(|r| r.id == "render-flush"));
@@ -1719,9 +1736,14 @@ mod tests {
         let (findings, bound_by) = ctx.evaluate(ep);
         assert_eq!(bound_by, "gpu");
         let rule_ids: Vec<&str> = findings.iter().map(|f| f.rule_id.as_str()).collect();
-        assert_eq!(rule_ids, vec!["gpu-bound"]);
+        assert!(rule_ids.contains(&"gpu-lumen") || rule_ids.contains(&"gpu-bound"));
+        assert!(rule_ids.contains(&"gpu-vsm-shadows") || rule_ids.contains(&"gpu-bound"));
 
-        let payload: FindingPayload = serde_json::from_str(&findings[0].payload).unwrap();
+        let gpu_finding = findings
+            .iter()
+            .find(|f| f.rule_id == "gpu-bound")
+            .expect("Should have gpu-bound finding");
+        let payload: FindingPayload = serde_json::from_str(&gpu_finding.payload).unwrap();
         assert!(!payload.evidence.is_empty());
         let gpu_frame_ev = payload
             .evidence

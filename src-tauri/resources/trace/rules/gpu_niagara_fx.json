@@ -1,0 +1,33 @@
+{
+  "id": "gpu-niagara-fx",
+  "title": "Niagara & GPU Particle Simulation Overhead",
+  "applies_to": ["hitch", "slow_region"],
+  "when": {
+    "timers": [
+      "^FXSystem",
+      "^Niagara",
+      "^Particle",
+      "^Cascade",
+      ".*Niagara.*",
+      ".*FXSystem.*",
+      ".*Particle.*"
+    ],
+    "threads": ["gpu"],
+    "min_excess_ms": 2.0,
+    "min_share_of_excess": 0.15,
+    "expects_periodic": false,
+    "requires_bound_by": "gpu"
+  },
+  "specificity": 0.85,
+  "fix_likelihood": "high",
+  "fix_rationale": "The GPU is spending excessive frame time in FXSystem / Niagara simulation and particle rendering. Tuning GPU particle budgets, distance culling, and emitter instance limits will restore GPU performance.",
+  "evidence_template": "{timer} took {ms} ms ({share}% of excess time) during GPU particle simulation.",
+  "fixes": [
+    { "text": "Set fx.Niagara.GPUComputeBudget to limit maximum particle compute dispatch duration.", "effort": "low", "cvarsOrApis": ["fx.Niagara.GPUComputeBudget"] },
+    { "text": "Set fx.MaxNiagaraGPUParticles to clamp total active GPU particles in the scene.", "effort": "low", "cvarsOrApis": ["fx.MaxNiagaraGPUParticles"] },
+    { "text": "Enable particle system distance culling and reduce emitter spawn rates on distant systems.", "effort": "medium", "cvarsOrApis": ["fx.Niagara.CullDistance"] },
+    { "text": "Audit particle overdraw in Shader Complexity view mode and reduce overlapping translucent particle quads.", "effort": "medium", "cvarsOrApis": [] }
+  ],
+  "verify": "Adjust fx.Niagara.GPUComputeBudget or fx.MaxNiagaraGPUParticles and verify that FXSystemPreRender / Niagara GPU pass times decrease proportionally.",
+  "caveats": []
+}

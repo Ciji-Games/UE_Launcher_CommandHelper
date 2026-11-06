@@ -1,0 +1,29 @@
+{
+  "id": "gpu-translucency",
+  "title": "Translucent Surface & Particle Overdraw Overhead",
+  "applies_to": ["hitch", "slow_region"],
+  "when": {
+    "timers": [
+      "^Translucency",
+      "^Translucent",
+      ".*Translucency.*",
+      ".*Translucent.*"
+    ],
+    "threads": ["gpu"],
+    "min_excess_ms": 2.0,
+    "min_share_of_excess": 0.15,
+    "expects_periodic": false,
+    "requires_bound_by": "gpu"
+  },
+  "specificity": 0.85,
+  "fix_likelihood": "high",
+  "fix_rationale": "Rendering multiple overlapping translucent surfaces, glass, or volumetric effects is creating high GPU fill-rate overhead.",
+  "evidence_template": "{timer} took {ms} ms ({share}% of excess time) rendering translucent surfaces.",
+  "fixes": [
+    { "text": "Enable Separate Translucency Screen Percentage (r.SeparateTranslucencyScreenPercentage 50 to 75).", "effort": "low", "cvarsOrApis": ["r.SeparateTranslucencyScreenPercentage"] },
+    { "text": "Reduce multi-layer translucent material overdraw on particles, smoke, and glass meshes.", "effort": "medium", "cvarsOrApis": [] },
+    { "text": "Disable responsive AA and high-cost refraction on non-essential translucent materials.", "effort": "low", "cvarsOrApis": [] }
+  ],
+  "verify": "Adjust r.SeparateTranslucencyScreenPercentage and verify translucency pass times decrease.",
+  "caveats": []
+}

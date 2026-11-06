@@ -25,10 +25,71 @@ const RULE_COLORS: Record<string, string> = {
   'bp-tick': '#8b5cf6',
   'physics-cpu': '#ec4899',
   'animation-cpu': '#d946ef',
-  'gpu-bound': '#f43f5e',
+  'gpu-niagara-fx': '#f43f5e',
+  'gpu-lumen': '#fb7185',
+  'gpu-vsm-shadows': '#e11d48',
+  'gpu-nanite': '#be123c',
+  'gpu-basepass': '#ff7849',
+  'gpu-postprocess': '#ff4b81',
+  'gpu-direct-lighting': '#f59e0b',
+  'gpu-translucency': '#06b6d4',
+  'gpu-bound': '#e11d48',
   'render-cpu': '#a855f7',
+  'render-flush': '#9333ea',
+  'level-streaming': '#0284c7',
   'unattributed-gap': '#64748b',
 };
+
+function getRuleDisplayLabel(ruleId: string): { label: string; badge: string; badgeColor: string } {
+  switch (ruleId) {
+    case 'gpu-niagara-fx':
+      return { label: 'GPU: Niagara Particles', badge: 'Niagara', badgeColor: 'bg-rose-500/20 text-rose-300 border-rose-500/30' };
+    case 'gpu-lumen':
+      return { label: 'GPU: Lumen GI & Refl', badge: 'Lumen', badgeColor: 'bg-pink-500/20 text-pink-300 border-pink-500/30' };
+    case 'gpu-vsm-shadows':
+      return { label: 'GPU: Virtual Shadows', badge: 'VSM', badgeColor: 'bg-red-500/20 text-red-300 border-red-500/30' };
+    case 'gpu-nanite':
+      return { label: 'GPU: Nanite Raster', badge: 'Nanite', badgeColor: 'bg-rose-600/20 text-rose-300 border-rose-600/30' };
+    case 'gpu-basepass':
+      return { label: 'GPU: BasePass Shading', badge: 'BasePass', badgeColor: 'bg-orange-500/20 text-orange-300 border-orange-500/30' };
+    case 'gpu-postprocess':
+      return { label: 'GPU: PostProcess / TSR', badge: 'TSR/PP', badgeColor: 'bg-fuchsia-500/20 text-fuchsia-300 border-fuchsia-500/30' };
+    case 'gpu-direct-lighting':
+      return { label: 'GPU: Direct Lighting', badge: 'Lights', badgeColor: 'bg-amber-500/20 text-amber-300 border-amber-500/30' };
+    case 'gpu-translucency':
+      return { label: 'GPU: Translucency', badge: 'Translucent', badgeColor: 'bg-cyan-500/20 text-cyan-300 border-cyan-500/30' };
+    case 'gpu-bound':
+      return { label: 'GPU: Rendering Workload', badge: 'GPU', badgeColor: 'bg-rose-500/20 text-rose-300 border-rose-500/30' };
+    case 'gc-hitch':
+      return { label: 'CPU: Garbage Collection', badge: 'GC', badgeColor: 'bg-red-500/20 text-red-300 border-red-500/30' };
+    case 'render-cpu':
+      return { label: 'Render: Scene / Visibility', badge: 'Render CPU', badgeColor: 'bg-purple-500/20 text-purple-300 border-purple-500/30' };
+    case 'render-flush':
+      return { label: 'Render: GPU Flush Stall', badge: 'RHI Flush', badgeColor: 'bg-purple-600/20 text-purple-300 border-purple-600/30' };
+    case 'bp-tick':
+      return { label: 'Game: Blueprint Tick', badge: 'Blueprint', badgeColor: 'bg-violet-500/20 text-violet-300 border-violet-500/30' };
+    case 'animation-cpu':
+      return { label: 'Game: AnimGraph / Pose', badge: 'Animation', badgeColor: 'bg-fuchsia-500/20 text-fuchsia-300 border-fuchsia-500/30' };
+    case 'physics-cpu':
+      return { label: 'Game: Chaos Physics', badge: 'Physics', badgeColor: 'bg-pink-500/20 text-pink-300 border-pink-500/30' };
+    case 'taskgraph-wait':
+      return { label: 'TaskGraph: Worker Stall', badge: 'TaskGraph', badgeColor: 'bg-orange-500/20 text-orange-300 border-orange-500/30' };
+    case 'shader-compile':
+      return { label: 'Async: Shader Compilation', badge: 'Shaders', badgeColor: 'bg-yellow-500/20 text-yellow-300 border-yellow-500/30' };
+    case 'pso-hitch':
+      return { label: 'Pipeline: PSO Creation', badge: 'PSO', badgeColor: 'bg-lime-500/20 text-lime-300 border-lime-500/30' };
+    case 'sync-load':
+      return { label: 'I/O: Sync Asset Load', badge: 'Sync Load', badgeColor: 'bg-cyan-500/20 text-cyan-300 border-cyan-500/30' };
+    case 'async-load-finalization':
+      return { label: 'I/O: PostLoad Finalization', badge: 'Async Load', badgeColor: 'bg-blue-500/20 text-blue-300 border-blue-500/30' };
+    case 'level-streaming':
+      return { label: 'World: Level Streaming', badge: 'Streaming', badgeColor: 'bg-sky-500/20 text-sky-300 border-sky-500/30' };
+    case 'cpu-hitch':
+      return { label: 'Game: CPU Execution Spike', badge: 'CPU Spike', badgeColor: 'bg-amber-500/20 text-amber-300 border-amber-500/30' };
+    default:
+      return { label: ruleId, badge: 'System', badgeColor: 'bg-slate-700/40 text-slate-300 border-slate-600/40' };
+  }
+}
 
 function formatTime(seconds: number | null | undefined): string {
   if (seconds === null || seconds === undefined || Number.isNaN(seconds)) {
@@ -1135,17 +1196,21 @@ export function FrameGraph({
             <div className="flex flex-col gap-1.5 w-full max-h-52 overflow-y-auto pr-0.5">
               {groupedDiagnoses.map((diag) => {
                 const color = RULE_COLORS[diag.ruleId] || '#38bdf8';
+                const { label, badge, badgeColor } = getRuleDisplayLabel(diag.ruleId);
 
                 return (
                   <div key={diag.ruleId} className="flex items-center gap-2 h-4 text-[10px]">
-                    {/* Collapsed Diagnosis Label */}
+                    {/* Collapsed Diagnosis Label with Subsystem Badge */}
                     <div
-                      className="w-36 flex items-center gap-1.5 shrink-0 overflow-hidden"
-                      title={`${diag.ruleId} • ${diag.occurrences.length} occurrence(s), total excess ${diag.totalExcessMs.toFixed(1)}ms`}
+                      className="w-48 flex items-center gap-1.5 shrink-0 overflow-hidden"
+                      title={`${label} (${diag.ruleId}) • ${diag.occurrences.length} occurrence(s), total excess ${diag.totalExcessMs.toFixed(1)}ms`}
                     >
                       <span className="w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: color }} />
-                      <span className="truncate text-slate-300 font-medium">
-                        {diag.ruleId}
+                      <span className={`px-1 py-0.2 rounded text-[8px] font-mono border shrink-0 ${badgeColor}`}>
+                        {badge}
+                      </span>
+                      <span className="truncate text-slate-300 font-medium text-[10px]">
+                        {label}
                       </span>
                     </div>
 
@@ -1177,7 +1242,7 @@ export function FrameGraph({
                               backgroundColor: color,
                               opacity: isSpike ? 1 : 0.85,
                             }}
-                            title={`${diag.ruleId} [${item.issue.scale}] (${threadRole || 'all threads'})\nFrames ${occ.frameFrom}..${occ.frameTo} (${fromSec}s – ${toSec}s)\nPeak: ${occ.peakFrameMs.toFixed(1)} ms | Excess: +${occ.sumExcessMs.toFixed(1)} ms\nClick to select range`}
+                            title={`${label} [${item.issue.scale}] (${threadRole || 'all threads'})\nFrames ${occ.frameFrom}..${occ.frameTo} (${fromSec}s – ${toSec}s)\nPeak: ${occ.peakFrameMs.toFixed(1)} ms | Excess: +${occ.sumExcessMs.toFixed(1)} ms\nClick to select range`}
                           />
                         );
                       })}

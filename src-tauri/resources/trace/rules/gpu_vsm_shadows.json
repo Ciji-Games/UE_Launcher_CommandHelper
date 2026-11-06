@@ -1,0 +1,33 @@
+{
+  "id": "gpu-vsm-shadows",
+  "title": "Virtual Shadow Maps & Shadow Depths Overhead",
+  "applies_to": ["hitch", "slow_region"],
+  "when": {
+    "timers": [
+      "^Shadow",
+      "^ShadowDepths",
+      "^VirtualShadowMap",
+      "^VSM",
+      ".*Shadow.*",
+      ".*VirtualShadowMap.*",
+      ".*ShadowDepths.*"
+    ],
+    "threads": ["gpu"],
+    "min_excess_ms": 2.0,
+    "min_share_of_excess": 0.15,
+    "expects_periodic": false,
+    "requires_bound_by": "gpu"
+  },
+  "specificity": 0.85,
+  "fix_likelihood": "high",
+  "fix_rationale": "Virtual Shadow Maps (VSM) and shadow depth rendering are consuming a significant portion of GPU frame time. High-frequency mesh invalidations, high physical page counts, or unoptimized light counts force heavy shadow projection passes.",
+  "evidence_template": "{timer} took {ms} ms ({share}% of excess time) rendering shadow depth maps.",
+  "fixes": [
+    { "text": "Adjust Virtual Shadow Map resolution LOD bias (r.Shadow.Virtual.ResolutionLodBias -1.0 to 1.0).", "effort": "low", "cvarsOrApis": ["r.Shadow.Virtual.ResolutionLodBias"] },
+    { "text": "Limit maximum physical shadow pages pool size (r.Shadow.Virtual.MaxPhysicalPages 2048).", "effort": "low", "cvarsOrApis": ["r.Shadow.Virtual.MaxPhysicalPages"] },
+    { "text": "Disable dynamic shadow casting on small foliage, prop meshes, or non-critical local lights.", "effort": "medium", "cvarsOrApis": [] },
+    { "text": "Enable r.Shadow.Virtual.Cache to preserve static page caching across frames.", "effort": "low", "cvarsOrApis": ["r.Shadow.Virtual.Cache"] }
+  ],
+  "verify": "Adjust r.Shadow.Virtual.ResolutionLodBias and verify that ShadowDepths / VirtualShadowMap pass durations drop.",
+  "caveats": []
+}

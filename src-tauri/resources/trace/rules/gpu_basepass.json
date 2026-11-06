@@ -1,0 +1,31 @@
+{
+  "id": "gpu-basepass",
+  "title": "BasePass G-Buffer & Material Shader Complexity",
+  "applies_to": ["hitch", "slow_region"],
+  "when": {
+    "timers": [
+      "^BasePass",
+      ".*BasePass.*",
+      "^PrePass",
+      "^EarlyZ",
+      "^GBuffer",
+      ".*GBuffer.*"
+    ],
+    "threads": ["gpu"],
+    "min_excess_ms": 2.0,
+    "min_share_of_excess": 0.15,
+    "expects_periodic": false,
+    "requires_bound_by": "gpu"
+  },
+  "specificity": 0.85,
+  "fix_likelihood": "high",
+  "fix_rationale": "BasePass geometry and material shading are consuming excessive GPU time due to high instruction counts, texture fetches, or quad overdraw.",
+  "evidence_template": "{timer} took {ms} ms ({share}% of excess time) in BasePass material shading.",
+  "fixes": [
+    { "text": "Simplify material shader instruction counts and minimize expensive texture sample lookups.", "effort": "medium", "cvarsOrApis": [] },
+    { "text": "Enable Early-Z PrePass (r.EarlyZPass 2) to eliminate masked material pixel overdraw.", "effort": "low", "cvarsOrApis": ["r.EarlyZPass"] },
+    { "text": "Use Masked Material optimization (r.EarlyZPassMovable 1) to avoid redundant pixel shader executions.", "effort": "low", "cvarsOrApis": ["r.EarlyZPassMovable"] }
+  ],
+  "verify": "Test with simplified materials or EarlyZPass enabled and check BasePass pass times.",
+  "caveats": []
+}

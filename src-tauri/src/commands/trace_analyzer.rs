@@ -1550,6 +1550,22 @@ pub fn compute_range_statistics(
                 }
             } else if issue.rule_id == "render-cpu" {
                 format!("Render Thread CPU Bottleneck: {}", culprit_timer)
+            } else if issue.rule_id == "gpu-niagara-fx" {
+                format!("GPU Niagara & Particle Simulation: {}", culprit_timer)
+            } else if issue.rule_id == "gpu-lumen" {
+                format!("GPU Lumen GI & Reflections: {}", culprit_timer)
+            } else if issue.rule_id == "gpu-vsm-shadows" {
+                format!("GPU Virtual Shadow Maps (VSM): {}", culprit_timer)
+            } else if issue.rule_id == "gpu-nanite" {
+                format!("GPU Nanite Rasterization: {}", culprit_timer)
+            } else if issue.rule_id == "gpu-basepass" {
+                format!("GPU BasePass & G-Buffer Shading: {}", culprit_timer)
+            } else if issue.rule_id == "gpu-postprocess" {
+                format!("GPU Post-Processing & Upscaling: {}", culprit_timer)
+            } else if issue.rule_id == "gpu-direct-lighting" {
+                format!("GPU Direct Lighting: {}", culprit_timer)
+            } else if issue.rule_id == "gpu-translucency" {
+                format!("GPU Translucent Surface Rendering: {}", culprit_timer)
             } else if issue.rule_id == "gpu-bound" {
                 let lower = culprit_timer.to_lowercase();
                 if lower.contains("fxsystem") || lower.contains("niagara") || lower.contains("compute") {
@@ -2188,5 +2204,80 @@ mod tests {
         assert_eq!(stats.frame_count, 3);
         assert!(stats.median_ms < 16.7);
         assert_eq!(stats.findings.len(), 0);
+    }
+
+    #[test]
+    fn test_gpu_bound_range_selection_with_reflex_wait() {
+        let conn = Connection::open_in_memory().unwrap();
+        init_db(&conn).unwrap();
+
+        // 10 frames of 50ms (GPU bound at 50ms, Game Thread 45ms is mostly ReflexSleep wait)
+        for i in 0..10 {
+            conn.execute(
+                "INSERT INTO frames (idx, start_s, interval_ms, game_ms, render_ms, gpu_ms) VALUES (?1, ?2, 50.0, 48.0, 10.0, 50.0)",
+                rusqlite::params![i, 20.0 + (i as f64 * 0.050)],
+            ).unwrap();
+        }
+
+        // Insert threads: GameThread (id=1, role='game'), GPU (id=4, role='gpu')
+        conn.execute("INSERT INTO threads (id, name, role) VALUES (1, 'GameThread', 'game'), (4, 'GPU', 'gpu')", []).unwrap();
+
+        // Insert timers:
+        // 10: ReflexSleep (kind='wait')
+        // 20: FXSystemPreRender (kind='work', bucket='GPU')
+        // 21: VirtualShadowMap (kind='work', bucket='GPU')
+        conn.execute(
+            "INSERT INTO timers (id, name, bucket, kind, path) VALUES
+             (10, 'ReflexSleep', 'Synchronization', 'wait', 'ReflexSleep'),
+             (20, 'FXSystemPreRender', 'GPU', 'work', 'SceneRender > FXSystemPreRender'),
+             (21, 'VirtualShadowMap', 'GPU', 'work', 'SceneRender > VirtualShadowMap')",
+            [],
+        ).unwrap();
+
+        for i in 0..10 {
+            // GameThread: 40ms ReflexSleep + 8ms Game Work
+            conn.execute(
+                "INSERT INTO frame_timer (frame_idx, thread_id, timer_id, excl_ms, calls, max_ms) VALUES (?1, 1, 10, 40.0, 1, 40.0)",
+                rusqlite::params![i],
+            ).unwrap();
+            // GPU: 30ms Niagara FX + 15ms VSM Shadows + 5ms BasePass
+            conn.execute(
+                "INSERT INTO frame_timer (frame_idx, thread_id, timer_id, excl_ms, calls, max_ms) VALUES
+                 (?1, 4, 20, 30.0, 1, 30.0),
+                 (?1, 4, 21, 15.0, 1, 15.0)",
+                rusqlite::params![i],
+            ).unwrap();
+        }
+
+        // Insert issues and occurrences for Niagara and Shadows
+        conn.execute(
+            "INSERT INTO issue (issue_id, rule_id, key_timer_id, thread_role, scale, first_frame, last_frame, occurrences_count, total_excess_ms, worst_excess_ms) VALUES
+             (1, 'gpu-niagara-fx', 20, 'gpu', 'sustained', 0, 9, 1, 280.0, 50.0),
+             (2, 'gpu-vsm-shadows', 21, 'gpu', 'sustained', 0, 9, 1, 130.0, 50.0)",
+            [],
+        ).unwrap();
+
+        let ev_niagara = r#"{"timer":"FXSystemPreRender","path":"SceneRender > FXSystemPreRender","excessMs":280.0,"shareOfExcess":0.60,"callsPerFrame":1.0,"observedMsPerFrame":30.0,"baselineMsPerFrame":2.0,"sanityViolation":false}"#;
+        let ev_vsm = r#"{"timer":"VirtualShadowMap","path":"SceneRender > VirtualShadowMap","excessMs":130.0,"shareOfExcess":0.30,"callsPerFrame":1.0,"observedMsPerFrame":15.0,"baselineMsPerFrame":2.0,"sanityViolation":false}"#;
+
+        conn.execute(
+            "INSERT INTO occurrence (occurrence_id, issue_id, chunk_id, frame_from, frame_to, start_s, end_s, peak_frame_ms, mean_excess_ms, sum_excess_ms, confidence, evidence_json) VALUES
+             (101, 1, 0, 0, 9, 20.0, 20.5, 50.0, 28.0, 280.0, 'high', ?1),
+             (102, 2, 0, 0, 9, 20.0, 20.5, 50.0, 13.0, 130.0, 'high', ?2)",
+            rusqlite::params![ev_niagara, ev_vsm],
+        ).unwrap();
+
+        let stats = compute_range_statistics(&conn, 20.0, 20.5).unwrap();
+        assert_eq!(stats.frame_count, 10);
+        assert_eq!(stats.thread_medians.limiting_thread, "gpu", "Must attribute bottleneck to GPU despite ReflexSleep on GameThread");
+        assert_eq!(stats.findings.len(), 2);
+
+        let titles: Vec<String> = stats.findings.iter().map(|f| {
+            let p: serde_json::Value = serde_json::from_str(&f.payload).unwrap();
+            p["title"].as_str().unwrap().to_string()
+        }).collect();
+
+        assert!(titles.contains(&"GPU Niagara & Particle Simulation: FXSystemPreRender".to_string()));
+        assert!(titles.contains(&"GPU Virtual Shadow Maps (VSM): VirtualShadowMap".to_string()));
     }
 }

@@ -34,7 +34,7 @@
     "expects_periodic": false,
     "requires_bound_by": "gpu"
   },
-  "specificity": 0.8,
+  "specificity": 0.5,
   "fix_likelihood": "high",
   "fix_rationale": "The trace shows the GPU frame duration exceeded CPU thread workloads. Inspecting resolution scaling, Lumen GI, Virtual Shadow Maps, and Nanite pass times with the GPU profiler helps identify the heaviest rendering stages.",
   "evidence_template": "{timer} took {ms} ms ({share}% of excess time), outlasting CPU thread workloads.",

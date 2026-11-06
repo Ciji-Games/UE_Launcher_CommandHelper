@@ -19,122 +19,277 @@ export function getRemediationAdvice(
   const isGpu = threadRole === 'gpu' || ruleId === 'gpu-bound';
 
   // 1. GPU Bottlenecks
-  if (isGpu || ruleId === 'gpu-bound') {
-    if (tLower.includes('fxsystem') || tLower.includes('niagara') || tLower.includes('particle') || tLower.includes('cascade')) {
+  if (
+    isGpu ||
+    ruleId.startsWith('gpu-')
+  ) {
+    if (
+      ruleId === 'gpu-niagara-fx' ||
+      tLower.includes('fxsystem') ||
+      tLower.includes('niagara') ||
+      tLower.includes('particle') ||
+      tLower.includes('cascade')
+    ) {
       return {
         title: `GPU Particle & Niagara Simulation: ${timerName}`,
         fixes: [
           {
-            text: 'Reduce active Niagara emitter particle counts, clamp max spawn bursts, and enable GPU particle simulation budgeting (fx.Niagara.GPUComputeBudget).',
-            effort: 'medium',
-            cvarsOrApis: ['fx.Niagara.GPUComputeBudget', 'fx.MaxNiagaraGPUParticles'],
-          },
-          {
-            text: 'Set distance-based culling thresholds or disable offscreen simulation on non-essential particle emitters.',
+            text: 'Set fx.Niagara.GPUComputeBudget to limit maximum particle compute dispatch duration.',
             effort: 'low',
+            cvarsOrApis: ['fx.Niagara.GPUComputeBudget'],
           },
           {
-            text: 'Convert CPU Niagara systems to GPU compute emitters or reduce collision complexity on GPU particles.',
+            text: 'Clamp total active GPU particles in the scene using fx.MaxNiagaraGPUParticles.',
+            effort: 'low',
+            cvarsOrApis: ['fx.MaxNiagaraGPUParticles'],
+          },
+          {
+            text: 'Enable particle distance culling and reduce emitter spawn rates on distant/off-screen emitters.',
+            effort: 'medium',
+            cvarsOrApis: ['fx.Niagara.CullDistance'],
+          },
+          {
+            text: 'Audit particle overdraw in Shader Complexity view mode to eliminate dense overlapping translucent sprite quads.',
             effort: 'medium',
           },
         ],
-        verify: 'Profile with stat Niagara or toggle particle systems off to confirm GPU frame time reduction.',
+        verify: 'Adjust fx.Niagara.GPUComputeBudget and verify that FXSystemPreRender / Niagara GPU pass times decrease.',
         fixLikelihood: 'high',
         matchConfidence: 'high',
       };
     }
 
-    if (tLower.includes('lumen') || tLower.includes('indirectlighting') || tLower.includes('lightgrid')) {
+    if (
+      ruleId === 'gpu-lumen' ||
+      tLower.includes('lumen') ||
+      tLower.includes('indirectlighting') ||
+      tLower.includes('screenprobegather') ||
+      tLower.includes('diffuseindirect')
+    ) {
       return {
         title: `Lumen Global Illumination & Reflections: ${timerName}`,
         fixes: [
           {
-            text: 'Lower Lumen Global Illumination and Reflection scalability presets in Project Settings or adjust resolution scale bias.',
-            effort: 'medium',
+            text: 'Tune Lumen Screen Probe Gather downsample factor (r.Lumen.ScreenProbeGather.DownsampleFactor 16).',
+            effort: 'low',
+            cvarsOrApis: ['r.Lumen.ScreenProbeGather.DownsampleFactor'],
+          },
+          {
+            text: 'Adjust Lumen Diffuse Indirect and Reflection quality or toggle off in lower scalability tiers.',
+            effort: 'low',
             cvarsOrApis: ['r.Lumen.DiffuseIndirect.Allow', 'r.Lumen.Reflections.Allow'],
           },
           {
-            text: 'Reduce the rate of active Lumen surface cache updates and clamp max reflection ray-tracing distance.',
+            text: 'Lower Lumen max trace distance and scene detail in PostProcessVolume / scalability presets.',
             effort: 'medium',
+            cvarsOrApis: ['r.Lumen.MaxTraceDistance'],
           },
           {
-            text: 'Enable Software Ray Tracing or lower Lumen detail trace distance for complex geometry.',
-            effort: 'low',
+            text: 'Switch from Hardware Ray Tracing to Software Ray Tracing if high mesh instance counts cause ray tracing BVH update overhead.',
+            effort: 'medium',
+            cvarsOrApis: ['r.Lumen.HardwareRayTracing'],
           },
         ],
-        verify: 'Toggle Lumen quality presets and verify GPU pass duration decreases.',
+        verify: 'Toggle r.Lumen.DiffuseIndirect.Allow or adjust r.Lumen.ScreenProbeGather.DownsampleFactor and confirm GPU pass times drop.',
         fixLikelihood: 'high',
         matchConfidence: 'high',
       };
     }
 
-    if (tLower.includes('shadow') || tLower.includes('vsm') || tLower.includes('virtualshadowmap')) {
+    if (
+      ruleId === 'gpu-vsm-shadows' ||
+      tLower.includes('shadow') ||
+      tLower.includes('vsm') ||
+      tLower.includes('virtualshadowmap')
+    ) {
       return {
         title: `Shadow Depths & Virtual Shadow Maps: ${timerName}`,
         fixes: [
           {
-            text: 'Optimize Virtual Shadow Map (VSM) resolution bias or clamp local shadow-casting lights.',
-            effort: 'medium',
-            cvarsOrApis: ['r.Shadow.Virtual.ResolutionLodBias', 'r.Shadow.Virtual.MaxPhysicalPages'],
-          },
-          {
-            text: 'Disable dynamic shadow casting on small decorative props and foliage instances.',
+            text: 'Adjust Virtual Shadow Map resolution LOD bias (r.Shadow.Virtual.ResolutionLodBias -1.0 to 1.0).',
             effort: 'low',
+            cvarsOrApis: ['r.Shadow.Virtual.ResolutionLodBias'],
           },
           {
-            text: 'Enable shadow map caching for static lights and distant geometry.',
+            text: 'Limit maximum physical shadow pages pool size (r.Shadow.Virtual.MaxPhysicalPages 2048).',
+            effort: 'low',
+            cvarsOrApis: ['r.Shadow.Virtual.MaxPhysicalPages'],
+          },
+          {
+            text: 'Disable dynamic shadow casting on small foliage, prop meshes, or non-critical local lights.',
             effort: 'medium',
+          },
+          {
+            text: 'Enable r.Shadow.Virtual.Cache to preserve static shadow page caching across frames.',
+            effort: 'low',
+            cvarsOrApis: ['r.Shadow.Virtual.Cache'],
           },
         ],
-        verify: 'Adjust r.Shadow.Virtual.ResolutionLodBias and verify GPU shadow depth pass time decreases.',
+        verify: 'Adjust r.Shadow.Virtual.ResolutionLodBias and verify that ShadowDepths / VirtualShadowMap pass times drop.',
         fixLikelihood: 'high',
         matchConfidence: 'high',
       };
     }
 
-    if (tLower.includes('nanite') || tLower.includes('rasterize')) {
+    if (
+      ruleId === 'gpu-nanite' ||
+      tLower.includes('nanite') ||
+      tLower.includes('rasterize') ||
+      tLower.includes('shadebinning')
+    ) {
       return {
         title: `Nanite Geometry Rasterization: ${timerName}`,
         fixes: [
           {
-            text: 'Adjust Nanite edge resolution bias (r.Nanite.MaxPixelsPerEdge) or audit over-dense mesh clusters.',
+            text: 'Tune Nanite max pixels per edge (r.Nanite.MaxPixelsPerEdge 1.0 to 1.5) to reduce triangle and cluster density.',
             effort: 'low',
             cvarsOrApis: ['r.Nanite.MaxPixelsPerEdge'],
           },
           {
-            text: 'Ensure materials on Nanite meshes do not use expensive programmable rasterizer features (e.g. World Position Offset or Masked opacity) where unnecessary.',
+            text: 'Disable World Position Offset (WPO) evaluation on distant Nanite instances (r.Nanite.WPO 1, r.Nanite.WPO.MaxDistance).',
             effort: 'medium',
-            cvarsOrApis: ['r.Nanite.WPO'],
+            cvarsOrApis: ['r.Nanite.WPO', 'r.Nanite.WPO.MaxDistance'],
+          },
+          {
+            text: 'Audit programmable raster materials (masked / translucent opacity) on Nanite meshes to minimize shading binning costs.',
+            effort: 'medium',
           },
         ],
-        verify: 'Audit with Nanite visualization modes and check rasterization pass time.',
+        verify: 'Adjust r.Nanite.MaxPixelsPerEdge and verify that Nanite rasterization pass duration decreases.',
         fixLikelihood: 'high',
         matchConfidence: 'high',
       };
     }
 
-    if (tLower.includes('postprocess') || tLower.includes('tsr') || tLower.includes('dlss') || tLower.includes('tonemap')) {
+    if (
+      ruleId === 'gpu-basepass' ||
+      tLower.includes('basepass') ||
+      tLower.includes('prepass') ||
+      tLower.includes('earlyz') ||
+      tLower.includes('gbuffer')
+    ) {
       return {
-        title: `Post-Processing & Super Resolution: ${timerName}`,
+        title: `BasePass G-Buffer & Material Complexity: ${timerName}`,
         fixes: [
           {
-            text: 'Tune Dynamic Resolution / Temporal Super Resolution screen percentage (r.ScreenPercentage).',
-            effort: 'low',
-            cvarsOrApis: ['r.ScreenPercentage'],
+            text: 'Simplify material shader instruction counts and minimize expensive texture sample lookups in heavy shaders.',
+            effort: 'medium',
           },
           {
-            text: 'Lower Bloom, Motion Blur, or Depth of Field scalability quality in Post Process Volumes.',
+            text: 'Enable Early-Z PrePass (r.EarlyZPass 2) to eliminate masked material pixel overdraw.',
+            effort: 'low',
+            cvarsOrApis: ['r.EarlyZPass'],
+          },
+          {
+            text: 'Use Masked Material optimization (r.EarlyZPassMovable 1) to avoid redundant pixel shader executions.',
+            effort: 'low',
+            cvarsOrApis: ['r.EarlyZPassMovable'],
+          },
+        ],
+        verify: 'Test with simplified materials or EarlyZPass enabled and check BasePass pass times.',
+        fixLikelihood: 'high',
+        matchConfidence: 'high',
+      };
+    }
+
+    if (
+      ruleId === 'gpu-postprocess' ||
+      tLower.includes('postprocess') ||
+      tLower.includes('temporalsuperresolution') ||
+      tLower.includes('tsr') ||
+      tLower.includes('taa') ||
+      tLower.includes('dlss') ||
+      tLower.includes('xess') ||
+      tLower.includes('fsr') ||
+      tLower.includes('tonemap') ||
+      tLower.includes('bloom') ||
+      tLower.includes('depthoffield')
+    ) {
+      return {
+        title: `Post-Processing & TSR / Upscaling: ${timerName}`,
+        fixes: [
+          {
+            text: 'Tune Dynamic Resolution / Temporal Super Resolution (r.ScreenPercentage, r.TSR.History.ScreenPercentage).',
+            effort: 'low',
+            cvarsOrApis: ['r.ScreenPercentage', 'r.TSR.History.ScreenPercentage'],
+          },
+          {
+            text: 'Lower Depth of Field and Motion Blur quality in scalability settings (r.DepthOfFieldQuality 0, r.MotionBlurQuality 0).',
+            effort: 'low',
+            cvarsOrApis: ['r.DepthOfFieldQuality', 'r.MotionBlurQuality'],
+          },
+          {
+            text: 'Lower Bloom quality or switch to standard Gaussian bloom (r.BloomQuality).',
+            effort: 'low',
+            cvarsOrApis: ['r.BloomQuality'],
+          },
+        ],
+        verify: 'Adjust r.ScreenPercentage or r.TSR.History.ScreenPercentage and confirm post-processing duration drops.',
+        fixLikelihood: 'high',
+        matchConfidence: 'high',
+      };
+    }
+
+    if (
+      ruleId === 'gpu-direct-lighting' ||
+      tLower.includes('directlighting') ||
+      tLower.includes('lightgrid') ||
+      tLower.includes('injectlight') ||
+      tLower.includes('clusteredshading')
+    ) {
+      return {
+        title: `Direct Lighting & Clustered Shading: ${timerName}`,
+        fixes: [
+          {
+            text: 'Reduce the radius and attenuation distances of overlapping local point and spot lights.',
+            effort: 'medium',
+          },
+          {
+            text: 'Limit maximum lights per clustered grid cell (r.LightGrid.MaxLightsPerCell 32).',
+            effort: 'low',
+            cvarsOrApis: ['r.LightGrid.MaxLightsPerCell'],
+          },
+          {
+            text: 'Disable shadow casting on low-impact fill and accent lights.',
             effort: 'low',
           },
         ],
-        verify: 'Adjust r.ScreenPercentage and confirm GPU frame duration drops.',
+        verify: 'Toggle off overlapping local lights or clamp light radii and observe DirectLighting duration.',
+        fixLikelihood: 'high',
+        matchConfidence: 'high',
+      };
+    }
+
+    if (
+      ruleId === 'gpu-translucency' ||
+      tLower.includes('translucency') ||
+      tLower.includes('translucent')
+    ) {
+      return {
+        title: `Translucent Surface & Overdraw: ${timerName}`,
+        fixes: [
+          {
+            text: 'Enable Separate Translucency Screen Percentage (r.SeparateTranslucencyScreenPercentage 50 to 75).',
+            effort: 'low',
+            cvarsOrApis: ['r.SeparateTranslucencyScreenPercentage'],
+          },
+          {
+            text: 'Reduce multi-layer translucent material overdraw on particles, smoke, and glass meshes.',
+            effort: 'medium',
+          },
+          {
+            text: 'Disable responsive AA and high-cost refraction on non-essential translucent materials.',
+            effort: 'low',
+          },
+        ],
+        verify: 'Adjust r.SeparateTranslucencyScreenPercentage and verify translucency pass times decrease.',
         fixLikelihood: 'high',
         matchConfidence: 'high',
       };
     }
 
     return {
-      title: `GPU Rendering Bottleneck: ${timerName}`,
+      title: `GPU Rendering Throughput Bottleneck: ${timerName}`,
       fixes: [
         {
           text: 'Enable or tune Dynamic Resolution / Temporal Super Resolution (r.ScreenPercentage) for your target framerate.',
@@ -149,7 +304,12 @@ export function getRemediationAdvice(
         {
           text: 'Review Lumen Global Illumination and Reflection scalability presets in Project Settings.',
           effort: 'medium',
-          cvarsOrApis: ['r.Lumen.DiffuseIndirect.Allow'],
+          cvarsOrApis: ['r.Lumen.DiffuseIndirect.Allow', 'r.Lumen.Reflections.Allow'],
+        },
+        {
+          text: 'For heavy particle passes, budget GPU emitter counts and enable Niagara compute culling.',
+          effort: 'medium',
+          cvarsOrApis: ['fx.Niagara.GPUComputeBudget'],
         },
       ],
       verify: 'Adjust r.ScreenPercentage or shadow quality presets and confirm GPU frame duration decreases.',

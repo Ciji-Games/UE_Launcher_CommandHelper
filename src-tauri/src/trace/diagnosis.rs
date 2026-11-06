@@ -1130,4 +1130,50 @@ mod tests {
         assert_eq!(to, 530);
         assert_eq!(peak, 30.0);
     }
+
+    #[test]
+    fn test_granular_gpu_pass_attribution_and_separation() {
+        let rules = load_compiled_rules();
+        let mut frames_map = HashMap::new();
+        let mut frame_timers = HashMap::new();
+        let mut baselines = HashMap::new();
+        let mut timer_meta = HashMap::new();
+        let mut thread_roles = HashMap::new();
+
+        // GPU thread ID: 4
+        thread_roles.insert(4, "gpu".to_string());
+
+        // Timers:
+        // 101: FXSystemPreRender (Niagara)
+        // 102: VirtualShadowMap (Shadows)
+        // 103: LumenScreenProbeGather (Lumen)
+        timer_meta.insert(101, ("FXSystemPreRender".to_string(), "GPU".to_string(), "work".to_string(), "SceneRender > FXSystemPreRender".to_string()));
+        timer_meta.insert(102, ("VirtualShadowMap".to_string(), "GPU".to_string(), "work".to_string(), "SceneRender > VirtualShadowMap".to_string()));
+        timer_meta.insert(103, ("LumenScreenProbeGather".to_string(), "GPU".to_string(), "work".to_string(), "SceneRender > LumenScreenProbeGather".to_string()));
+
+        // Baselines: 1.0 ms each
+        baselines.insert((4, 101), (1.0, 1.0, 1.0));
+        baselines.insert((4, 102), (1.0, 1.0, 1.0));
+        baselines.insert((4, 103), (1.0, 1.0, 1.0));
+
+        // 10 frames of heavy GPU workload (50ms frames: 25ms Niagara, 15ms Shadows, 8ms Lumen)
+        for f in 100..=109 {
+            frames_map.insert(f, FrameItem { idx: f, start_s: f as f64 * 0.050, interval_ms: 50.0, game_ms: 10.0, render_ms: 8.0, gpu_ms: 50.0 });
+            frame_timers.insert(f, vec![
+                TimerItem { thread_id: 4, timer_id: 101, excl_ms: 25.0, calls: 1, max_ms: 25.0 },
+                TimerItem { thread_id: 4, timer_id: 102, excl_ms: 15.0, calls: 1, max_ms: 15.0 },
+                TimerItem { thread_id: 4, timer_id: 103, excl_ms: 8.0, calls: 1, max_ms: 8.0 },
+            ]);
+        }
+
+        let mut output = Vec::new();
+        let spike_frames = (100..=109).collect::<Vec<i64>>();
+        process_spike_episode(&spike_frames, &frames_map, &frame_timers, &baselines, &timer_meta, &thread_roles, &rules, &mut output);
+
+        let rule_ids: Vec<String> = output.iter().map(|o| o.rule_id.clone()).collect();
+        assert!(rule_ids.contains(&"gpu-niagara-fx".to_string()), "Must detect Niagara pass as gpu-niagara-fx");
+        assert!(rule_ids.contains(&"gpu-vsm-shadows".to_string()), "Must detect VSM pass as gpu-vsm-shadows");
+        assert!(rule_ids.contains(&"gpu-lumen".to_string()), "Must detect Lumen pass as gpu-lumen");
+        assert!(!rule_ids.contains(&"gpu-bound".to_string()), "Specialized rules must take precedence over generic gpu-bound fallback");
+    }
 }
