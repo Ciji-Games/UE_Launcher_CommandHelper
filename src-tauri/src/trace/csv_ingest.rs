@@ -48,12 +48,14 @@ pub fn determine_thread_role(name: &str, group: &str) -> &'static str {
     let lower_name = name.to_lowercase();
     let lower_group = group.to_lowercase();
 
-    if lower_name.contains("gamethread") || lower_name == "game" {
+    if lower_name.contains("rhithread") || lower_name == "rhi" {
+        "rhi"
+    } else if lower_name.contains("audiomixer") || lower_name.contains("rtheartbeat") || lower_name.contains("audio") {
+        "other"
+    } else if lower_name.contains("gamethread") || lower_name == "game" {
         "game"
     } else if lower_name.contains("renderthread") || lower_group == "render" {
         "render"
-    } else if lower_name.contains("rhithread") || lower_name == "rhi" {
-        "rhi"
     } else if lower_name.starts_with("gpu") || lower_group == "gpu" {
         "gpu"
     } else if lower_name.contains("worker") || lower_name.contains("task") {
@@ -274,29 +276,45 @@ pub fn process_and_ingest_frames(
     events: &[FrameEvent],
 ) -> Result<Vec<ProcessedFrame>, String> {
     let mut thread_roles = HashMap::new();
+    let mut thread_names = HashMap::new();
     for t in threads {
         thread_roles.insert(t.id, t.role.as_str());
+        thread_names.insert(t.id, t.name.as_str());
     }
 
     // Separate events by role
     let mut game_events = Vec::new();
     let mut render_events = Vec::new();
     let mut gpu_events = Vec::new();
+    let mut gpu_graphics_events = Vec::new();
 
     for ev in events {
         let role = thread_roles.get(&ev.thread_id).copied().unwrap_or("other");
+        let name = thread_names.get(&ev.thread_id).copied().unwrap_or("");
         match role {
             "game" => game_events.push(ev),
             "render" => render_events.push(ev),
-            "gpu" => gpu_events.push(ev),
+            "gpu" => {
+                let lower = name.to_lowercase();
+                if lower.contains("graphics") || lower.contains("3d") {
+                    gpu_graphics_events.push(ev);
+                }
+                gpu_events.push(ev);
+            }
             _ => {}
         }
     }
 
+    let mut selected_gpu_events = if !gpu_graphics_events.is_empty() {
+        gpu_graphics_events
+    } else {
+        gpu_events
+    };
+
     // Sort by start_s
     game_events.sort_by(|a, b| a.start_s.partial_cmp(&b.start_s).unwrap_or(std::cmp::Ordering::Equal));
     render_events.sort_by(|a, b| a.start_s.partial_cmp(&b.start_s).unwrap_or(std::cmp::Ordering::Equal));
-    gpu_events.sort_by(|a, b| a.start_s.partial_cmp(&b.start_s).unwrap_or(std::cmp::Ordering::Equal));
+    selected_gpu_events.sort_by(|a, b| a.start_s.partial_cmp(&b.start_s).unwrap_or(std::cmp::Ordering::Equal));
 
     if game_events.is_empty() {
         return Err("No GameThread frame events found in trace export".to_string());
@@ -337,11 +355,11 @@ pub fn process_and_ingest_frames(
 
         // Align GPU frame
         let mut gpu_ms = None;
-        while gpu_idx < gpu_events.len() && gpu_events[gpu_idx].end_s < curr.start_s {
+        while gpu_idx < selected_gpu_events.len() && selected_gpu_events[gpu_idx].end_s < curr.start_s {
             gpu_idx += 1;
         }
-        if gpu_idx < gpu_events.len() {
-            let g_ev = gpu_events[gpu_idx];
+        if gpu_idx < selected_gpu_events.len() {
+            let g_ev = selected_gpu_events[gpu_idx];
             if (g_ev.start_s - curr.start_s).abs() < 0.2 {
                 gpu_ms = Some((g_ev.end_s - g_ev.start_s) * 1000.0);
             }
@@ -651,6 +669,20 @@ mod tests {
     use crate::trace::store::init_db;
     use std::io::Write;
     use std::fs::File;
+
+    #[test]
+    fn test_determine_thread_roles() {
+        assert_eq!(determine_thread_role("RHIThread", "Render"), "rhi");
+        assert_eq!(determine_thread_role("rhi", "Render"), "rhi");
+        assert_eq!(determine_thread_role("AudioMixerRenderThread(1)", "Render"), "other");
+        assert_eq!(determine_thread_role("RTHeartBeat 0", "Render"), "other");
+        assert_eq!(determine_thread_role("RenderThread 0", "Render"), "render");
+        assert_eq!(determine_thread_role("RenderThread", ""), "render");
+        assert_eq!(determine_thread_role("GameThread", "Game"), "game");
+        assert_eq!(determine_thread_role("GPU0-Graphics0", "GPU"), "gpu");
+        assert_eq!(determine_thread_role("GPU0-Compute0", "GPU"), "gpu");
+        assert_eq!(determine_thread_role("TaskGraphWorkerHigh0", "Worker"), "worker");
+    }
 
     #[test]
     fn test_clean_bookmark_name() {

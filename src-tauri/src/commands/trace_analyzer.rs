@@ -17,8 +17,8 @@ use crate::trace::csv_ingest::{
 use crate::trace::diagnosis::{diagnose_chunk, init_chunk_states, IssueWithOccurrences};
 use crate::trace::exclusive::ingest_slice_timing_events_stream;
 use crate::trace::frames::{
-    assemble_range_timer_sums, build_block_pyramid, calculate_robust_stats, detect_episodes,
-    save_episodes_to_db, AnalysisOptions,
+    build_block_pyramid, calculate_robust_stats, detect_episodes, save_episodes_to_db,
+    AnalysisOptions,
 };
 use crate::trace::insights_cli::{InsightsCliSource, TraceCandidate};
 use crate::trace::rules::{evaluate_and_save_findings, generate_verdict};
@@ -75,11 +75,27 @@ pub struct ThreadMedians {
 pub struct RangeTopTimer {
     pub name: String,
     pub bucket: String,
+    pub subsystem: String,
+    pub path: String,
     pub thread_role: String,
     pub avg_ms_per_frame: f64,
     pub total_ms: f64,
+    pub baseline_ms_per_frame: f64,
     pub call_count: usize,
+    pub baseline_calls_per_frame: f64,
+    pub is_wait: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub queue: Option<String>,
+    pub share_of_thread_excess_pct: Option<f64>,
     pub share_of_budget_gap_pct: Option<f64>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct RangeWaitEntry {
+    pub thread: String,
+    pub timer: String,
+    pub avg_ms_per_frame: f64,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -109,6 +125,7 @@ pub struct RangeStatisticsResponse {
     pub budget_gap_ms: f64,
     pub thread_medians: ThreadMedians,
     pub top_timers: Vec<RangeTopTimer>,
+    pub waiting_on: Vec<RangeWaitEntry>,
     pub findings: Vec<DbFinding>,
     pub regime_changes: Vec<RegimeChange>,
     pub sanity_flags: Vec<String>,
@@ -352,7 +369,7 @@ fn run_trace_analysis_pipeline_sync(
             let status = get_meta(&conn, "status").ok().flatten();
             let cached_index_ver: Option<i32> = get_meta(&conn, "index_version").ok().flatten().and_then(|s| s.parse().ok());
             if status.as_deref() == Some("done") && cached_index_ver == Some(SCHEMA_VERSION) {
-                let current_analysis_ver = format!("rules_v3_fps_{:.1}", opts.target_fps);
+                let current_analysis_ver = format!("rules_v4_fps_{:.1}", opts.target_fps);
                 let cached_analysis_ver = get_meta(&conn, "analysis_version").ok().flatten();
                 if cached_analysis_ver.as_deref() != Some(&current_analysis_ver) {
                     let _ = conn.execute("DELETE FROM issue", []);
@@ -544,7 +561,7 @@ fn run_trace_analysis_pipeline_sync(
     let (detected_channels, missing_channels) = crate::trace::rules::detect_trace_channels(&conn);
     set_meta(&conn, "status", "done").map_err(|e| e.to_string())?;
     set_meta(&conn, "index_version", &SCHEMA_VERSION.to_string()).map_err(|e| e.to_string())?;
-    set_meta(&conn, "analysis_version", &format!("rules_v3_fps_{:.1}", opts.target_fps)).map_err(|e| e.to_string())?;
+    set_meta(&conn, "analysis_version", &format!("rules_v4_fps_{:.1}", opts.target_fps)).map_err(|e| e.to_string())?;
     set_meta(&conn, "trace_path", &trace_path_str).map_err(|e| e.to_string())?;
     set_meta(&conn, "engine_version", eng_ver).map_err(|e| e.to_string())?;
     set_meta(&conn, "verdict", &verdict).map_err(|e| e.to_string())?;
@@ -1239,155 +1256,139 @@ pub fn compute_range_statistics(
     gpu_times.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
     let median_gpu_ms = if gpu_times.is_empty() { 0.0 } else { calculate_percentile(&gpu_times, 0.5) };
 
-    // 3. Top Timers Aggregation via Block Summary Pyramid & Edge Frames
+    // 3. Top Timers Aggregation & Wait Separation
     let mut top_timers = Vec::new();
+    let mut waiting_on = Vec::new();
     let mut thread_wait_sums: std::collections::HashMap<String, f64> = std::collections::HashMap::new();
+    let mut thread_work_excess: std::collections::HashMap<String, f64> = std::collections::HashMap::new();
 
-    let frame_bounds: Option<(i64, i64)> = conn
-        .query_row(
-            "SELECT MIN(idx), MAX(idx) FROM frames WHERE start_s >= ?1 AND start_s <= ?2",
-            rusqlite::params![start_s, end_s],
-            |row| {
-                let min_idx: Option<i64> = row.get(0)?;
-                let max_idx: Option<i64> = row.get(1)?;
-                Ok(min_idx.zip(max_idx))
-            },
-        )
-        .ok()
-        .flatten();
+    let subsystems = crate::trace::subsystem::load_subsystems();
 
-    if let Some((f_from, f_to)) = frame_bounds {
-        let assembled_sums = assemble_range_timer_sums(conn, f_from, f_to).unwrap_or_default();
+    if let Ok(mut stmt) = conn.prepare(
+        "SELECT 
+            CASE WHEN ft.timer_id = 0 THEN 'Other' ELSE COALESCE(t.name, 'Other') END as timer_name,
+            CASE WHEN ft.timer_id = 0 THEN 'Other' ELSE COALESCE(t.bucket, 'Other') END as bucket_name,
+            CASE WHEN ft.timer_id = 0 THEN 'work' ELSE COALESCE(t.kind, 'work') END as timer_kind,
+            CASE WHEN ft.timer_id = 0 THEN 'Other' ELSE COALESCE(t.path, t.name, 'Other') END as timer_path,
+            COALESCE(th.name, 'GameThread') as thread_name,
+            COALESCE(th.role, 'game') as thread_role,
+            SUM(ft.excl_ms) as total_excl,
+            SUM(ft.calls) as call_count,
+            COALESCE(b.median_excl_ms, 0.0) as base_ms,
+            COALESCE(b.median_calls, 0.0) as base_calls
+         FROM frame_timer ft
+         JOIN frames f ON f.idx = ft.frame_idx
+         LEFT JOIN timers t ON t.id = ft.timer_id
+         LEFT JOIN threads th ON th.id = ft.thread_id
+         LEFT JOIN baseline_global b ON b.thread_id = ft.thread_id AND b.timer_id = ft.timer_id
+         WHERE f.start_s >= ?1 AND f.start_s <= ?2
+         GROUP BY ft.timer_id, ft.thread_id
+         ORDER BY total_excl DESC",
+    ) {
+        if let Ok(rows) = stmt.query_map(rusqlite::params![start_s, end_s], |row| {
+            let name: String = row.get(0)?;
+            let bucket: String = row.get(1)?;
+            let kind: String = row.get(2)?;
+            let path: String = row.get(3)?;
+            let thread_name: String = row.get(4)?;
+            let thread_role: String = row.get(5)?;
+            let total_excl: f64 = row.get(6)?;
+            let call_count: i64 = row.get(7)?;
+            let base_ms: f64 = row.get(8)?;
+            let base_calls: f64 = row.get(9)?;
+            Ok((name, bucket, kind, path, thread_name, thread_role, total_excl, call_count as usize, base_ms, base_calls))
+        }) {
+            let mut raw_work_timers = Vec::new();
 
-        if !assembled_sums.is_empty() {
-            // Load timers metadata
-            let mut timer_meta: std::collections::HashMap<i64, (String, String, String)> = std::collections::HashMap::new();
-            if let Ok(mut stmt) = conn.prepare("SELECT id, name, bucket, kind FROM timers") {
-                if let Ok(rows) = stmt.query_map([], |r| {
-                    Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?, r.get::<_, String>(3)?))
-                }) {
-                    for r in rows.flatten() {
-                        timer_meta.insert(r.0, (r.1, r.2, r.3));
+            for r in rows.flatten() {
+                let (name, bucket, kind, path, thread_name, thread_role, total_excl, call_count, base_ms, base_calls) = r;
+                let is_wait = crate::trace::diagnosis::is_wait_timer(&name, &kind);
+                let avg_ms_per_frame = if frame_count > 0 { total_excl / (frame_count as f64) } else { 0.0 };
+                let excess_ms = (avg_ms_per_frame - base_ms).max(0.0);
+                let subsystem = crate::trace::subsystem::classify(&subsystems, &name, &path);
+
+                let queue = if thread_role == "gpu" {
+                    let lower = thread_name.to_lowercase();
+                    if lower.contains("compute") {
+                        Some("compute".to_string())
+                    } else {
+                        Some("graphics".to_string())
                     }
-                }
-            }
-
-            // Load thread metadata
-            let mut thread_meta: std::collections::HashMap<i64, String> = std::collections::HashMap::new();
-            if let Ok(mut stmt) = conn.prepare("SELECT id, role FROM threads") {
-                if let Ok(rows) = stmt.query_map([], |r| {
-                    Ok((r.get::<_, i64>(0)?, r.get::<_, Option<String>>(1)?))
-                }) {
-                    for r in rows.flatten() {
-                        thread_meta.insert(r.0, r.1.unwrap_or_else(|| "game".to_string()));
-                    }
-                }
-            }
-
-            let mut timer_entries = Vec::new();
-            for ((th_id, timer_id), (sum_excl_ms, sum_calls)) in assembled_sums {
-                let (name, bucket, kind) = if timer_id == 0 {
-                    ("Other".to_string(), "Other".to_string(), "work".to_string())
-                } else if let Some(meta) = timer_meta.get(&timer_id) {
-                    meta.clone()
-                } else {
-                    ("Other".to_string(), "Other".to_string(), "work".to_string())
-                };
-
-                let thread_role = thread_meta.get(&th_id).cloned().unwrap_or_else(|| "game".to_string());
-
-                if kind == "wait" || kind == "idle" {
-                    *thread_wait_sums.entry(thread_role.clone()).or_insert(0.0) += sum_excl_ms;
-                }
-
-                let avg_ms_per_frame = if frame_count > 0 {
-                    sum_excl_ms / (frame_count as f64)
-                } else {
-                    0.0
-                };
-
-                let share_of_budget_gap_pct = if budget_gap_ms > 0.001 {
-                    Some(((avg_ms_per_frame / budget_gap_ms) * 100.0).clamp(0.0, 100.0))
                 } else {
                     None
                 };
 
-                timer_entries.push(RangeTopTimer {
+                if is_wait {
+                    *thread_wait_sums.entry(thread_role.clone()).or_insert(0.0) += total_excl;
+                    if avg_ms_per_frame >= 0.1 {
+                        waiting_on.push(RangeWaitEntry {
+                            thread: thread_role.clone(),
+                            timer: name,
+                            avg_ms_per_frame,
+                        });
+                    }
+                } else {
+                    *thread_work_excess.entry(thread_role.clone()).or_insert(0.0) += excess_ms;
+                    raw_work_timers.push((name, bucket, subsystem, path, thread_role, avg_ms_per_frame, total_excl, base_ms, call_count, base_calls, queue, excess_ms));
+                }
+            }
+
+            waiting_on.sort_by(|a, b| b.avg_ms_per_frame.partial_cmp(&a.avg_ms_per_frame).unwrap_or(std::cmp::Ordering::Equal));
+            waiting_on.truncate(10);
+
+            // Active compute for thread limiting determination
+            let avg_game_wait = thread_wait_sums.get("game").copied().unwrap_or(0.0) / (frame_count as f64).max(1.0);
+            let avg_render_wait = thread_wait_sums.get("render").copied().unwrap_or(0.0) / (frame_count as f64).max(1.0);
+            let active_game_ms = (median_game_ms - avg_game_wait).max(0.0);
+            let active_render_ms = (median_render_ms - avg_render_wait).max(0.0);
+            let active_gpu_ms = median_gpu_ms;
+
+            let limiting_thread_str = if active_gpu_ms >= active_game_ms && active_gpu_ms >= active_render_ms && active_gpu_ms > 0.0 {
+                "gpu"
+            } else if active_game_ms >= active_render_ms && active_game_ms > 0.0 {
+                "game"
+            } else if active_render_ms > 0.0 {
+                "render"
+            } else if median_ms > 0.0 && active_gpu_ms == 0.0 && active_game_ms == 0.0 && active_render_ms == 0.0 {
+                "idle"
+            } else {
+                "game"
+            };
+
+            let limiting_work_excess = thread_work_excess.get(limiting_thread_str).copied().unwrap_or(0.0);
+
+            for (name, bucket, subsystem, path, thread_role, avg_ms_per_frame, total_excl, base_ms, call_count, base_calls, queue, excess_ms) in raw_work_timers {
+                let share_of_thread_excess_pct = if limiting_work_excess > 0.001 {
+                    Some(((excess_ms / limiting_work_excess) * 100.0).clamp(0.0, 999.0))
+                } else {
+                    None
+                };
+                let share_of_budget_gap_pct = if budget_gap_ms > 0.001 {
+                    Some(((avg_ms_per_frame / budget_gap_ms) * 100.0).clamp(0.0, 999.0))
+                } else {
+                    None
+                };
+
+                top_timers.push(RangeTopTimer {
                     name,
                     bucket,
+                    subsystem,
+                    path,
                     thread_role,
                     avg_ms_per_frame,
-                    total_ms: sum_excl_ms,
-                    call_count: sum_calls as usize,
+                    total_ms: total_excl,
+                    baseline_ms_per_frame: base_ms,
+                    call_count,
+                    baseline_calls_per_frame: base_calls,
+                    is_wait: false,
+                    queue,
+                    share_of_thread_excess_pct,
                     share_of_budget_gap_pct,
                 });
             }
 
-            timer_entries.sort_by(|a, b| b.total_ms.partial_cmp(&a.total_ms).unwrap_or(std::cmp::Ordering::Equal));
-            timer_entries.truncate(25);
-            top_timers = timer_entries;
-        }
-    }
-
-    if top_timers.is_empty() {
-        if let Ok(mut stmt) = conn.prepare(
-            "SELECT 
-                CASE WHEN ft.timer_id = 0 THEN 'Other' ELSE COALESCE(t.name, 'Other') END as timer_name,
-                CASE WHEN ft.timer_id = 0 THEN 'Other' ELSE COALESCE(t.bucket, 'Other') END as bucket_name,
-                CASE WHEN ft.timer_id = 0 THEN 'work' ELSE COALESCE(t.kind, 'work') END as timer_kind,
-                COALESCE(th.role, 'game') as thread_role,
-                SUM(ft.excl_ms) as total_excl,
-                SUM(ft.calls) as call_count
-             FROM frame_timer ft
-             JOIN frames f ON f.idx = ft.frame_idx
-             LEFT JOIN timers t ON t.id = ft.timer_id
-             LEFT JOIN threads th ON th.id = ft.thread_id
-             WHERE f.start_s >= ?1 AND f.start_s <= ?2
-             GROUP BY ft.timer_id, ft.thread_id
-             ORDER BY total_excl DESC",
-        ) {
-            let rows = stmt.query_map(rusqlite::params![start_s, end_s], |row| {
-                let name: String = row.get(0)?;
-                let bucket: String = row.get(1)?;
-                let kind: String = row.get(2)?;
-                let thread_role: String = row.get(3)?;
-                let total_excl: f64 = row.get(4)?;
-                let call_count: i64 = row.get(5)?;
-                Ok((name, bucket, kind, thread_role, total_excl, call_count as usize))
-            });
-
-            if let Ok(mapped_rows) = rows {
-                for r in mapped_rows.flatten() {
-                    let (name, bucket, kind, thread_role, total_excl, call_count) = r;
-                    if kind == "wait" || kind == "idle" {
-                        *thread_wait_sums.entry(thread_role.clone()).or_insert(0.0) += total_excl;
-                    }
-
-                    let avg_ms_per_frame = if frame_count > 0 {
-                        total_excl / (frame_count as f64)
-                    } else {
-                        0.0
-                    };
-
-                    let share_of_budget_gap_pct = if budget_gap_ms > 0.001 {
-                        Some(((avg_ms_per_frame / budget_gap_ms) * 100.0).clamp(0.0, 100.0))
-                    } else {
-                        None
-                    };
-
-                    if top_timers.len() < 25 {
-                        top_timers.push(RangeTopTimer {
-                            name,
-                            bucket,
-                            thread_role,
-                            avg_ms_per_frame,
-                            total_ms: total_excl,
-                            call_count,
-                            share_of_budget_gap_pct,
-                        });
-                    }
-                }
-            }
+            top_timers.sort_by(|a, b| b.total_ms.partial_cmp(&a.total_ms).unwrap_or(std::cmp::Ordering::Equal));
+            top_timers.truncate(30);
         }
     }
 
@@ -1510,19 +1511,38 @@ pub fn compute_range_statistics(
         let mut calls_per_frame_opt: Option<f64> = None;
         let mut observed_ms_opt: Option<f64> = None;
         let mut base_ms_opt: Option<f64> = None;
+        let mut views_per_frame_opt: Option<f64> = None;
+        let mut base_views_per_frame_opt: Option<f64> = None;
 
         // Try extracting from the occurrence with the largest sum_excess_ms
         if let Some(best_occ) = occs.iter().max_by(|a, b| a.sum_excess_ms.partial_cmp(&b.sum_excess_ms).unwrap_or(std::cmp::Ordering::Equal)) {
             if let Ok(ev) = serde_json::from_str::<serde_json::Value>(&best_occ.evidence_json) {
-                if let Some(t) = ev.get("timer").and_then(|v| v.as_str()) {
-                    culprit_timer = t.to_string();
+                if let Some(leaves) = ev.get("leaves").and_then(|v| v.as_array()) {
+                    if let Some(first_leaf) = leaves.first() {
+                        if let Some(t) = first_leaf.get("timer").and_then(|v| v.as_str()) {
+                            culprit_timer = t.to_string();
+                        }
+                        if let Some(p) = first_leaf.get("path").and_then(|v| v.as_str()) {
+                            culprit_path = p.to_string();
+                        }
+                        calls_per_frame_opt = first_leaf.get("callsPerFrame").and_then(|v| v.as_f64());
+                        observed_ms_opt = first_leaf.get("msPerFrame").and_then(|v| v.as_f64());
+                        base_ms_opt = first_leaf.get("baselineMsPerFrame").and_then(|v| v.as_f64());
+                    }
+                } else {
+                    if let Some(t) = ev.get("timer").and_then(|v| v.as_str()) {
+                        culprit_timer = t.to_string();
+                    }
+                    if let Some(p) = ev.get("path").and_then(|v| v.as_str()) {
+                        culprit_path = p.to_string();
+                    }
+                    calls_per_frame_opt = ev.get("callsPerFrame").and_then(|v| v.as_f64());
+                    observed_ms_opt = ev.get("observedMsPerFrame").and_then(|v| v.as_f64());
+                    base_ms_opt = ev.get("baselineMsPerFrame").and_then(|v| v.as_f64());
                 }
-                if let Some(p) = ev.get("path").and_then(|v| v.as_str()) {
-                    culprit_path = p.to_string();
-                }
-                calls_per_frame_opt = ev.get("callsPerFrame").and_then(|v| v.as_f64());
-                observed_ms_opt = ev.get("observedMsPerFrame").and_then(|v| v.as_f64());
-                base_ms_opt = ev.get("baselineMsPerFrame").and_then(|v| v.as_f64());
+
+                views_per_frame_opt = ev.get("viewsPerFrame").and_then(|v| v.as_f64());
+                base_views_per_frame_opt = ev.get("baselineViewsPerFrame").and_then(|v| v.as_f64());
             }
         }
 
@@ -1542,22 +1562,27 @@ pub fn compute_range_statistics(
 
         // Formulate dynamic culprit title
         let finding_title = if !culprit_timer.is_empty() && culprit_timer != "Other" && culprit_timer != "Unprofiled Execution" {
-            if issue.rule_id == "cpu-hitch" {
-                if issue.scale == "spike" {
-                    format!("CPU Execution Spike: {} ({})", culprit_timer, issue.thread_role)
+            let views = views_per_frame_opt.unwrap_or(0.0);
+            let base_views = base_views_per_frame_opt.unwrap_or(0.0);
+
+            if issue.rule_id == "gpu-shadow-views" {
+                if views > 0.0 {
+                    format!("GPU Shadow Views: {:.0} views/frame (baseline {:.0}) — {}", views, base_views, culprit_timer)
                 } else {
-                    format!("Sustained CPU Overhead: {} ({})", culprit_timer, issue.thread_role)
+                    format!("GPU Shadow Views: {}", culprit_timer)
                 }
-            } else if issue.rule_id == "render-cpu" {
-                format!("Render Thread CPU Bottleneck: {}", culprit_timer)
+            } else if issue.rule_id == "gpu-nanite" {
+                if views >= 3.0 && views >= 3.0 * base_views.max(1.0) {
+                    format!("GPU Nanite Rasterization: {:.0} views/frame (baseline {:.0}) — {}", views, base_views, culprit_timer)
+                } else {
+                    format!("GPU Nanite Rasterization: {}", culprit_timer)
+                }
             } else if issue.rule_id == "gpu-niagara-fx" {
                 format!("GPU Niagara & Particle Simulation: {}", culprit_timer)
             } else if issue.rule_id == "gpu-lumen" {
                 format!("GPU Lumen GI & Reflections: {}", culprit_timer)
             } else if issue.rule_id == "gpu-vsm-shadows" {
                 format!("GPU Virtual Shadow Maps (VSM): {}", culprit_timer)
-            } else if issue.rule_id == "gpu-nanite" {
-                format!("GPU Nanite Rasterization: {}", culprit_timer)
             } else if issue.rule_id == "gpu-basepass" {
                 format!("GPU BasePass & G-Buffer Shading: {}", culprit_timer)
             } else if issue.rule_id == "gpu-postprocess" {
@@ -1572,6 +1597,18 @@ pub fn compute_range_statistics(
                     format!("GPU Compute Pass: {}", culprit_timer)
                 } else {
                     format!("GPU Rendering Pass: {}", culprit_timer)
+                }
+            } else if issue.rule_id == "render-cpu" {
+                if views >= 3.0 {
+                    format!("Render Thread issuing {:.0} views/frame: {}", views, culprit_timer)
+                } else {
+                    format!("Render Thread CPU Bottleneck: {}", culprit_timer)
+                }
+            } else if issue.rule_id == "cpu-hitch" {
+                if issue.scale == "spike" {
+                    format!("CPU Execution Spike: {} ({})", culprit_timer, issue.thread_role)
+                } else {
+                    format!("Sustained CPU Overhead: {} ({})", culprit_timer, issue.thread_role)
                 }
             } else if issue.rule_id == "taskgraph-wait" {
                 format!("TaskGraph Worker Stall: {}", culprit_timer)
@@ -1757,6 +1794,7 @@ pub fn compute_range_statistics(
         budget_gap_ms,
         thread_medians,
         top_timers,
+        waiting_on,
         findings,
         regime_changes,
         sanity_flags,
@@ -2279,5 +2317,53 @@ mod tests {
 
         assert!(titles.contains(&"GPU Niagara & Particle Simulation: FXSystemPreRender".to_string()));
         assert!(titles.contains(&"GPU Virtual Shadow Maps (VSM): VirtualShadowMap".to_string()));
+    }
+
+    #[test]
+    fn test_range_clipping_recomputes_evidence_metrics() {
+        let conn = Connection::open_in_memory().unwrap();
+        init_db(&conn).unwrap();
+
+        // 10 frames (0.0s to 0.5s, 50ms each)
+        for i in 0..10 {
+            conn.execute(
+                "INSERT INTO frames (idx, start_s, interval_ms, game_ms, render_ms, gpu_ms) VALUES (?1, ?2, 50.0, 10.0, 10.0, 50.0)",
+                rusqlite::params![i, i as f64 * 0.050],
+            ).unwrap();
+        }
+
+        conn.execute("INSERT INTO threads (id, name, role) VALUES (4, 'GPU', 'gpu')", []).unwrap();
+        conn.execute("INSERT INTO timers (id, name, bucket, kind, path) VALUES (20, 'FXSystemPreRender', 'GPU', 'work', 'FXSystemPreRender')", []).unwrap();
+
+        for i in 0..10 {
+            conn.execute(
+                "INSERT INTO frame_timer (frame_idx, thread_id, timer_id, excl_ms, calls, max_ms) VALUES (?1, 4, 20, 30.0, 1, 30.0)",
+                rusqlite::params![i],
+            ).unwrap();
+        }
+
+        conn.execute(
+            "INSERT INTO issue (issue_id, rule_id, key_timer_id, thread_role, scale, first_frame, last_frame, occurrences_count, total_excess_ms, worst_excess_ms) VALUES
+             (1, 'gpu-niagara-fx', 20, 'gpu', 'sustained', 0, 9, 1, 280.0, 50.0)",
+            [],
+        ).unwrap();
+
+        let ev_niagara = r#"{"timer":"FXSystemPreRender","path":"FXSystemPreRender","excessMs":280.0,"shareOfExcess":0.60,"callsPerFrame":1.0,"observedMsPerFrame":30.0,"baselineMsPerFrame":2.0,"sanityViolation":false}"#;
+        conn.execute(
+            "INSERT INTO occurrence (occurrence_id, issue_id, chunk_id, frame_from, frame_to, start_s, end_s, peak_frame_ms, mean_excess_ms, sum_excess_ms, confidence, evidence_json) VALUES
+             (101, 1, 0, 0, 9, 0.0, 0.5, 50.0, 28.0, 280.0, 'high', ?1)",
+            rusqlite::params![ev_niagara],
+        ).unwrap();
+
+        // Select half of the range: 0.0s to 0.24s (frames 0..4, 5 frames)
+        let stats = compute_range_statistics(&conn, 0.0, 0.24).unwrap();
+        assert_eq!(stats.frame_count, 5);
+        assert_eq!(stats.findings.len(), 1);
+
+        let p: serde_json::Value = serde_json::from_str(&stats.findings[0].payload).unwrap();
+        assert_eq!(p["matchConfidence"], "high");
+        let explains_ms = p["explainsMs"].as_f64().unwrap();
+        // Excess is 28.0 ms/frame
+        assert!((explains_ms - 28.0).abs() < 0.5);
     }
 }

@@ -3,6 +3,7 @@
   "title": "Virtual Shadow Maps & Shadow Depths Overhead",
   "applies_to": ["hitch", "slow_region"],
   "when": {
+    "subsystems": ["vsm"],
     "timers": [
       "^Shadow",
       "^ShadowDepths",

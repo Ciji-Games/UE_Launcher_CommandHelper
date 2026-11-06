@@ -15,6 +15,10 @@ pub struct FixSuggestionDef {
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct RuleWhen {
     pub timers: Vec<String>,
+    #[serde(default)]
+    pub paths: Vec<String>,
+    #[serde(default)]
+    pub subsystems: Vec<String>,
     pub threads: Vec<String>,
     pub min_excess_ms: f64,
     pub min_share_of_excess: f64,
@@ -168,6 +172,7 @@ pub fn load_all_rules() -> Vec<RuleDef> {
         include_str!("../../resources/trace/rules/gpu_postprocess.json"),
         include_str!("../../resources/trace/rules/gpu_direct_lighting.json"),
         include_str!("../../resources/trace/rules/gpu_translucency.json"),
+        include_str!("../../resources/trace/rules/gpu_shadow_views.json"),
         include_str!("../../resources/trace/rules/gpu_bound.json"),
         include_str!("../../resources/trace/rules/render_cpu.json"),
         include_str!("../../resources/trace/rules/render_flush.json"),
@@ -190,6 +195,7 @@ pub fn load_all_rules() -> Vec<RuleDef> {
 pub struct CompiledRule {
     pub def: RuleDef,
     pub regexes: Vec<Regex>,
+    pub path_regexes: Vec<Regex>,
 }
 
 pub fn load_compiled_rules() -> Vec<CompiledRule> {
@@ -202,7 +208,17 @@ pub fn load_compiled_rules() -> Vec<CompiledRule> {
                 regexes.push(re);
             }
         }
-        compiled.push(CompiledRule { def: r, regexes });
+        let mut path_regexes = Vec::new();
+        for p in &r.when.paths {
+            if let Ok(re) = Regex::new(p) {
+                path_regexes.push(re);
+            }
+        }
+        compiled.push(CompiledRule {
+            def: r,
+            regexes,
+            path_regexes,
+        });
     }
     compiled
 }
@@ -1293,7 +1309,7 @@ mod tests {
     #[test]
     fn test_load_all_rules() {
         let rules = load_all_rules();
-        assert_eq!(rules.len(), 28);
+        assert_eq!(rules.len(), 29);
         assert!(rules.iter().any(|r| r.id == "gc-hitch"));
         assert!(rules.iter().any(|r| r.id == "taskgraph-wait"));
         assert!(rules.iter().any(|r| r.id == "cpu-hitch"));
@@ -1314,6 +1330,7 @@ mod tests {
         assert!(rules.iter().any(|r| r.id == "gpu-postprocess"));
         assert!(rules.iter().any(|r| r.id == "gpu-direct-lighting"));
         assert!(rules.iter().any(|r| r.id == "gpu-translucency"));
+        assert!(rules.iter().any(|r| r.id == "gpu-shadow-views"));
         assert!(rules.iter().any(|r| r.id == "gpu-bound"));
         assert!(rules.iter().any(|r| r.id == "render-cpu"));
         assert!(rules.iter().any(|r| r.id == "render-flush"));

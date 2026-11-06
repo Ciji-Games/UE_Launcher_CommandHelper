@@ -3,6 +3,7 @@
   "title": "Nanite Geometry Rasterization & Shading Overhead",
   "applies_to": ["hitch", "slow_region"],
   "when": {
+    "subsystems": ["nanite", "hzb"],
     "timers": [
       "^Nanite",
       ".*Nanite.*",

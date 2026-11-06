@@ -28,6 +28,7 @@ const RULE_COLORS: Record<string, string> = {
   'gpu-niagara-fx': '#f43f5e',
   'gpu-lumen': '#fb7185',
   'gpu-vsm-shadows': '#e11d48',
+  'gpu-shadow-views': '#dc2626',
   'gpu-nanite': '#be123c',
   'gpu-basepass': '#ff7849',
   'gpu-postprocess': '#ff4b81',
@@ -48,6 +49,8 @@ function getRuleDisplayLabel(ruleId: string): { label: string; badge: string; ba
       return { label: 'GPU: Lumen GI & Refl', badge: 'Lumen', badgeColor: 'bg-pink-500/20 text-pink-300 border-pink-500/30' };
     case 'gpu-vsm-shadows':
       return { label: 'GPU: Virtual Shadows', badge: 'VSM', badgeColor: 'bg-red-500/20 text-red-300 border-red-500/30' };
+    case 'gpu-shadow-views':
+      return { label: 'GPU: Shadow Views', badge: 'Shadows', badgeColor: 'bg-red-600/20 text-red-300 border-red-600/30' };
     case 'gpu-nanite':
       return { label: 'GPU: Nanite Raster', badge: 'Nanite', badgeColor: 'bg-rose-600/20 text-rose-300 border-rose-600/30' };
     case 'gpu-basepass':

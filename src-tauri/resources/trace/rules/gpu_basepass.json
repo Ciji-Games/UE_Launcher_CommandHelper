@@ -3,6 +3,7 @@
   "title": "BasePass G-Buffer & Material Shader Complexity",
   "applies_to": ["hitch", "slow_region"],
   "when": {
+    "subsystems": ["basepass"],
     "timers": [
       "^BasePass",
       ".*BasePass.*",

@@ -1,0 +1,39 @@
+{
+  "id": "gpu-shadow-views",
+  "title": "Excessive Shadow Views & Cubemap Shadow Pass Overhead",
+  "applies_to": ["hitch", "slow_region"],
+  "when": {
+    "subsystems": ["shadow-depths"],
+    "timers": [
+      "^ShadowDepths$",
+      "^Cubemap",
+      "^Nanite Cubemap",
+      "^RenderDepthForLight",
+      "^Atlas$",
+      "^Face$"
+    ],
+    "paths": [
+      ".*ShadowDepths.*",
+      ".*Cubemap.*"
+    ],
+    "threads": ["gpu", "render"],
+    "min_excess_ms": 2.0,
+    "min_share_of_excess": 0.15,
+    "expects_periodic": false,
+    "requires_bound_by": "gpu"
+  },
+  "specificity": 0.9,
+  "fix_likelihood": "high",
+  "fix_rationale": "The GPU is repeatedly rendering scene geometry across multiple shadow views per frame (e.g. 6 faces per point-light cubemap). Caching static shadow depths, disabling shadows on fill lights, or switching to Virtual Shadow Maps will eliminate redundant passes.",
+  "evidence_template": "{timer} took {ms} ms ({share}% of excess time) executing multiple shadow projection passes.",
+  "fixes": [
+    { "text": "Audit local point and spot lights: disable Cast Shadows on non-critical fill and ambient lights.", "effort": "low", "cvarsOrApis": [] },
+    { "text": "Enable Virtual Shadow Maps (r.Shadow.Virtual.Enable 1) to replace traditional cubemap shadow projections with clipmap caching.", "effort": "low", "cvarsOrApis": ["r.Shadow.Virtual.Enable"] },
+    { "text": "Enable whole-scene shadow caching (r.Shadow.CacheWholeSceneShadows 1, r.Shadow.CachedShadowsCastFromMovablePrimitives 0).", "effort": "low", "cvarsOrApis": ["r.Shadow.CacheWholeSceneShadows", "r.Shadow.CachedShadowsCastFromMovablePrimitives"] },
+    { "text": "Increase shadow radius culling threshold (r.Shadow.RadiusThreshold 0.03 to 0.06) to cull distant local light shadows.", "effort": "low", "cvarsOrApis": ["r.Shadow.RadiusThreshold"] },
+    { "text": "Clamp maximum Cascaded/Cubemap shadow resolution (r.Shadow.MaxCSMResolution 1024 or 512).", "effort": "low", "cvarsOrApis": ["r.Shadow.MaxCSMResolution"] },
+    { "text": "Reduce light attenuation radius to prevent large overlapping shadow projection volumes.", "effort": "medium", "cvarsOrApis": [] }
+  ],
+  "verify": "Verify in the trace that Nanite::DrawGeometry and ShadowDepths Face calls/frame drop toward baseline (e.g. under 6 views/frame).",
+  "caveats": []
+}

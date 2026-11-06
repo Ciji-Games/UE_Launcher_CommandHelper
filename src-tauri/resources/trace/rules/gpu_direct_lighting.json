@@ -3,6 +3,7 @@
   "title": "Direct Lighting & Clustered Shading Overhead",
   "applies_to": ["hitch", "slow_region"],
   "when": {
+    "subsystems": ["lighting"],
     "timers": [
       "^DirectLighting",
       ".*DirectLighting.*",

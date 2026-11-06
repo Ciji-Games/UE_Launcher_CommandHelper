@@ -1,0 +1,94 @@
+[
+  {
+    "id": "shadow-depths",
+    "label": "Shadow depth rendering",
+    "match": ["^ShadowDepths$", "^Cubemap", "^Nanite Cubemap", "^RenderDepthForLight", "^Atlas$"],
+    "viewCounter": ["^Face$", "^RenderDepthForLight$"]
+  },
+  {
+    "id": "nanite",
+    "label": "Nanite culling & rasterization",
+    "match": ["^Nanite", "^NodeAndClusterCull$", "^PatchSplit$", "^InstanceCulling$", "^MainPass$", "^PostPass$", "^NoOcclusionPass$", "^AddPass_Rasterize$"],
+    "viewCounter": ["^Nanite::DrawGeometry$"]
+  },
+  {
+    "id": "niagara",
+    "label": "Niagara & FX simulation",
+    "match": ["^FXSystem", "Niagara", "Particle", "Cascade"]
+  },
+  {
+    "id": "vsm",
+    "label": "Virtual Shadow Maps",
+    "match": ["VirtualShadowMap", "^VSM"]
+  },
+  {
+    "id": "lumen",
+    "label": "Lumen dynamic GI & reflections",
+    "match": ["Lumen", "ScreenProbe", "DiffuseIndirectComposite", "IndirectLighting"]
+  },
+  {
+    "id": "hzb",
+    "label": "Hierarchical Z-Buffer",
+    "match": ["^BuildHZB$", "^HZB$"]
+  },
+  {
+    "id": "basepass",
+    "label": "BasePass geometry & shading",
+    "match": ["^BasePass", "^PrePass", "^EarlyZ", "^GBuffer"]
+  },
+  {
+    "id": "lighting",
+    "label": "Direct & clustered lighting",
+    "match": ["DirectLighting", "LightGrid", "InjectLight", "ClusteredShading"]
+  },
+  {
+    "id": "postprocess",
+    "label": "Post-processing & upscaling",
+    "match": ["PostProcess", "^DLSS$", "^TSR", "^TAA$", "^FSR", "Tonemap", "Bloom", "DepthOfField"]
+  },
+  {
+    "id": "translucency",
+    "label": "Translucent rendering",
+    "match": ["Translucency", "Translucent"]
+  },
+  {
+    "id": "rdg",
+    "label": "Render graph execution",
+    "match": ["^RenderGraphExecute$", "^FRDGBuilder"]
+  },
+  {
+    "id": "gc",
+    "label": "Garbage collection",
+    "match": ["CollectGarbage", "GarbageCollection", "PurgePendingKill", "IncrementalPurge"]
+  },
+  {
+    "id": "animation",
+    "label": "Animation & skeletal mesh",
+    "match": ["TickPose", "AnimGraph", "EvaluateAnimation", "ParallelAnimation", "UpdateAnimation"]
+  },
+  {
+    "id": "physics",
+    "label": "Physics simulation",
+    "match": ["Chaos", "Physics", "PhysX", "SubstepMultiplier"]
+  },
+  {
+    "id": "blueprint",
+    "label": "Blueprint execution",
+    "match": ["^Blueprint", "ExecuteUbergraph", "_C::Tick", "_C::ReceiveTick"]
+  },
+  {
+    "id": "slate",
+    "label": "Slate & UI rendering",
+    "match": ["Slate", "SWidget", "FSlateDrawElement"]
+  },
+  {
+    "id": "streaming",
+    "label": "Texture & level streaming",
+    "match": ["Streaming", "UpdateStreaming", "StreamLevel"]
+  },
+  {
+    "id": "other",
+    "label": "Other engine work",
+    "match": []
+  }
+]

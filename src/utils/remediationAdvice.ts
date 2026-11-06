@@ -97,6 +97,49 @@ export function getRemediationAdvice(
     }
 
     if (
+      ruleId === 'gpu-shadow-views' ||
+      tLower.includes('cubemap') ||
+      tLower.includes('renderdepthforlight')
+    ) {
+      return {
+        title: `Shadow Views & Cubemap Shadow Pass Overhead: ${timerName}`,
+        fixes: [
+          {
+            text: 'Audit local point and spot lights: disable Cast Shadows on non-critical fill and ambient lights.',
+            effort: 'low',
+          },
+          {
+            text: 'Enable Virtual Shadow Maps (r.Shadow.Virtual.Enable 1) to replace traditional cubemap shadow projections with clipmap caching.',
+            effort: 'low',
+            cvarsOrApis: ['r.Shadow.Virtual.Enable'],
+          },
+          {
+            text: 'Enable whole-scene shadow caching (r.Shadow.CacheWholeSceneShadows 1, r.Shadow.CachedShadowsCastFromMovablePrimitives 0).',
+            effort: 'low',
+            cvarsOrApis: ['r.Shadow.CacheWholeSceneShadows', 'r.Shadow.CachedShadowsCastFromMovablePrimitives'],
+          },
+          {
+            text: 'Increase shadow radius culling threshold (r.Shadow.RadiusThreshold 0.03 to 0.06) to cull distant local light shadows.',
+            effort: 'low',
+            cvarsOrApis: ['r.Shadow.RadiusThreshold'],
+          },
+          {
+            text: 'Clamp maximum Cascaded/Cubemap shadow resolution (r.Shadow.MaxCSMResolution 1024 or 512).',
+            effort: 'low',
+            cvarsOrApis: ['r.Shadow.MaxCSMResolution'],
+          },
+          {
+            text: 'Reduce light attenuation radius to prevent large overlapping shadow projection volumes.',
+            effort: 'medium',
+          },
+        ],
+        verify: 'Verify in the trace that Nanite::DrawGeometry and ShadowDepths Face calls/frame drop toward baseline (e.g. under 6 views/frame).',
+        fixLikelihood: 'high',
+        matchConfidence: 'high',
+      };
+    }
+
+    if (
       ruleId === 'gpu-vsm-shadows' ||
       tLower.includes('shadow') ||
       tLower.includes('vsm') ||

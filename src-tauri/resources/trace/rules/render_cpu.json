@@ -3,6 +3,7 @@
   "title": "Render thread CPU bottleneck (visibility / mesh draw calls)",
   "applies_to": ["hitch", "slow_region"],
   "when": {
+    "subsystems": ["nanite", "rdg", "shadow-depths"],
     "timers": ["^InitViews$", "^ComputeVisibility$", "^GatherDynamicMeshElements$", "^FRelevancePacket$", "^ShadowSetup$", "^Render_BeginFrame$", "^Render_EndFrame$", "^FrameRenderFinish$"],
     "threads": ["render"],
     "min_excess_ms": 4.0,

@@ -85,20 +85,50 @@ Each trace is cached in a standalone SQLite database located in `%APPDATA%/com.c
 
 ---
 
-## 4. Trace Channels & Diagnostic Precision
+## 5. Subsystem Attribution, Rules & Diagnostic Precision
 
-The Trace Analyzer detects which profiling channels are present in the `.utrace` file:
-- `cpu`: CPU timing scopes and thread execution
-- `gpu`: GPU pipeline and rendering stages
-- `frame`: Engine frame start/end boundaries
-- `loadtime`: Synchronous and asynchronous asset loading
-- `memory`: Low Level Memory (LLM) and allocations
-- `counters`: Performance and stats counters (draw calls, visible primitives)
-- `bookmark`: User and system bookmarks
-- `log`: Engine logging messages
+### Subsystem Roll-Up & Path Matching
+Performance timers are classified into distinct engine subsystems (Nanite, Shadow Depths, Niagara/FX, Lumen, VSM, HZB, BasePass, Lighting, PostProcess, Translucency, RDG, GC, Animation, Physics, Blueprint, Slate, Streaming, Other) at analysis time using an ordered regex matching table (`subsystems.json`):
+1. The timer's own name is tested against subsystem match rules.
+2. If unmatched, the full ancestor call chain (`timers.path`) is evaluated from the nearest parent to the root.
+3. Call counts and view counts (e.g. `Nanite::DrawGeometry`, `ShadowDepths Face`, `RenderDepthForLight`) are extracted to distinguish view count explosions from heavy individual passes.
 
-### Granular Scope Attribution & Channel Insights
-The diagnostic engine extracts granular asset and system attribution:
-- **Blueprint & Widget Disambiguation**: Identifies Blueprint classes and UMG widget names from `ExecuteUbergraph_*`, `*_C::Function`, and `Function /Game/...` scopes (enabled by `-cpuprofilertrace` and Blueprint CPU Profiling).
-- **Package & Asset Association**: When `loadtime` channels are recorded, parses specific package paths (`/Game/...`, `LoadPackage`, `Serialize`, `PostLoad`) to pinpoint synchronous asset loading stalls.
-- **"Need More Details?" Diagnostic Guidance**: When a diagnostic finding is limited by missing channels (e.g., unattributed CPU gaps or generic GPU passes), the tool presents an actionable badge with recommended flags (`-trace=...`, `-cpuprofilertrace`) to reveal exact asset identities on subsequent captures.
+*Known Limitation*: As attribution is performed at analysis time from first-seen paths in SQLite, shared leaf timers under multiple parents reflect their primary call path; view count metrics disambiguate redundant shadow view invocations.
+
+### Limiting-Thread Denominator & Hardware Wait Separation
+- **Active Work Attribution**: Thread execution is separated into active work and synchronization waits (`ReflexSleep`, `NvLowLatencySleep`, `WaitForTasks`, `GameThreadWaitForTask`, `FRenderCommandFence`).
+- **Limiting Thread Selection**: The bottleneck thread is determined by active execution time (thread wall time minus idle wait).
+- **Culprit Excess Share**: Subsystem and timer excess percentages are computed strictly against the limiting thread's active work excess, eliminating cross-thread wait timer skew.
+
+### Spike vs. Sustained Plateau Separation
+- **Spike Criterion**: Frames are classified as hitch spikes if `interval_ms > max(target_ms * 1.5, 1.8 * rolling_median_120)` or `interval_ms > 100 ms`.
+- **Sustained Windows**: Steady over-budget stretches (e.g., 50 ms plateau) are evaluated by the sustained analyzer over rolling 120-frame windows (excluding spike frames), preventing plateaus from shattering into hundreds of repetitive spike episodes.
+
+### Evidence JSON Schema
+Each diagnostic occurrence persists a structured evidence payload:
+```json
+{
+  "subsystem": "nanite",
+  "subsystemMsPerFrame": 28.4,
+  "subsystemBaselineMsPerFrame": 1.1,
+  "shareOfThreadExcess": 0.71,
+  "viewsPerFrame": 33.0,
+  "baselineViewsPerFrame": 3.0,
+  "leaves": [
+    {
+      "timer": "MainPass",
+      "path": "Frame > SceneRender > Nanite::VisBuffer > Nanite::DrawGeometry > MainPass",
+      "msPerFrame": 10.3,
+      "baselineMsPerFrame": 0.4,
+      "callsPerFrame": 30.0,
+      "baselineCallsPerFrame": 2.0
+    }
+  ],
+  "waitingOn": [
+    {"thread": "rhi", "timer": "WaitForTasks", "msPerFrame": 41.3},
+    {"thread": "game", "timer": "ReflexSleep", "msPerFrame": 21.4}
+  ],
+  "queue": "graphics",
+  "sanityViolation": false
+}
+```

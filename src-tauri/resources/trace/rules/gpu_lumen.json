@@ -3,6 +3,7 @@
   "title": "Lumen Global Illumination & Reflections Overhead",
   "applies_to": ["hitch", "slow_region"],
   "when": {
+    "subsystems": ["lumen"],
     "timers": [
       "^Lumen",
       ".*Lumen.*",

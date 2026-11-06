@@ -3,6 +3,7 @@
   "title": "Niagara & GPU Particle Simulation Overhead",
   "applies_to": ["hitch", "slow_region"],
   "when": {
+    "subsystems": ["niagara"],
     "timers": [
       "^FXSystem",
       "^Niagara",

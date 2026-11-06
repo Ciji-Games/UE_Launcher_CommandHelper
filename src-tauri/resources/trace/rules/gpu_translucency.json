@@ -3,6 +3,7 @@
   "title": "Translucent Surface & Particle Overdraw Overhead",
   "applies_to": ["hitch", "slow_region"],
   "when": {
+    "subsystems": ["translucency"],
     "timers": [
       "^Translucency",
       "^Translucent",

@@ -3,6 +3,7 @@
   "title": "Post-Processing & Upscaling / TSR Overhead",
   "applies_to": ["hitch", "slow_region"],
   "when": {
+    "subsystems": ["postprocess"],
     "timers": [
       "^PostProcess",
       ".*PostProcess.*",

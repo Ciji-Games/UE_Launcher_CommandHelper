@@ -144,11 +144,24 @@ export interface ThreadMedians {
 export interface RangeTopTimer {
   name: string;
   bucket: string;
+  subsystem?: string;
+  path?: string;
   threadRole: string;
   avgMsPerFrame: number;
   totalMs: number;
+  baselineMsPerFrame?: number;
   callCount: number;
+  baselineCallsPerFrame?: number;
+  isWait?: boolean;
+  queue?: string;
+  shareOfThreadExcessPct?: number | null;
   shareOfBudgetGapPct?: number | null;
+}
+
+export interface RangeWaitEntry {
+  thread: string;
+  timer: string;
+  avgMsPerFrame: number;
 }
 
 export interface RangeCategoryBreakdown {
@@ -188,6 +201,7 @@ export interface RangeStatisticsResponse {
   budgetGapMs: number;
   threadMedians: ThreadMedians;
   topTimers: RangeTopTimer[];
+  waitingOn?: RangeWaitEntry[];
   findings?: Finding[];
   regimeChanges?: RegimeChange[];
   sanityFlags?: string[];
