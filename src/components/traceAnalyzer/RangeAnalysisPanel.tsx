@@ -1,15 +1,20 @@
-import { useMemo, useState } from 'react';
-import type { RangeStatisticsResponse, RangeTopTimer } from '../../types/traceAnalyzer';
-import { describeRange } from '../../utils/traceClassifier';
+import { useEffect, useMemo, useState } from 'react';
+import { invoke } from '@tauri-apps/api/core';
+import type { CacheInfo, Finding, RangeStatisticsResponse, RangeTopTimer, TraceSummary } from '../../types/traceAnalyzer';
 
 interface RangeAnalysisPanelProps {
   stats: RangeStatisticsResponse | null;
+  summary: TraceSummary | null;
   targetMs: number;
+  topFinding?: Finding | null;
   hitchCount?: number;
   maxHitchMs?: number;
   isLoading?: boolean;
   selectedTimerName?: string | null;
   onSelectTimer?: (timerName: string | null) => void;
+  onSeeDetails?: () => void;
+  onRefreshDiagnostic?: () => void;
+  onCleanAllCaches?: () => void;
 }
 
 const CATEGORY_COLORS: Record<string, { bg: string; text: string; border: string }> = {
@@ -19,7 +24,6 @@ const CATEGORY_COLORS: Record<string, { bg: string; text: string; border: string
   'Blueprints & Script': { bg: 'bg-emerald-950/60', text: 'text-emerald-300', border: 'border-emerald-500/40' },
   'Blueprint': { bg: 'bg-emerald-950/60', text: 'text-emerald-300', border: 'border-emerald-500/40' },
   'UI & Slate': { bg: 'bg-sky-950/60', text: 'text-sky-300', border: 'border-sky-500/40' },
-  'UI / Slate': { bg: 'bg-sky-950/60', text: 'text-sky-300', border: 'border-sky-500/40' },
   'Garbage Collection': { bg: 'bg-rose-950/60', text: 'text-rose-300', border: 'border-rose-500/40' },
   'GC': { bg: 'bg-rose-950/60', text: 'text-rose-300', border: 'border-rose-500/40' },
   'Animation & Physics': { bg: 'bg-indigo-950/60', text: 'text-indigo-300', border: 'border-indigo-500/40' },
@@ -27,25 +31,11 @@ const CATEGORY_COLORS: Record<string, { bg: string; text: string; border: string
   'Physics': { bg: 'bg-indigo-950/60', text: 'text-indigo-300', border: 'border-indigo-500/40' },
   'Asset Loading & Streaming': { bg: 'bg-amber-950/60', text: 'text-amber-300', border: 'border-amber-500/40' },
   'Loading': { bg: 'bg-amber-950/60', text: 'text-amber-300', border: 'border-amber-500/40' },
-  'Streaming': { bg: 'bg-amber-950/60', text: 'text-amber-300', border: 'border-amber-500/40' },
-  'nanite': { bg: 'bg-rose-950/60', text: 'text-rose-300', border: 'border-rose-500/40' },
-  'shadow-depths': { bg: 'bg-red-950/60', text: 'text-red-300', border: 'border-red-500/40' },
-  'niagara': { bg: 'bg-pink-950/60', text: 'text-pink-300', border: 'border-pink-500/40' },
-  'vsm': { bg: 'bg-red-950/60', text: 'text-red-300', border: 'border-red-500/40' },
-  'lumen': { bg: 'bg-pink-950/60', text: 'text-pink-300', border: 'border-pink-500/40' },
-  'hzb': { bg: 'bg-amber-950/60', text: 'text-amber-300', border: 'border-amber-500/40' },
-  'basepass': { bg: 'bg-orange-950/60', text: 'text-orange-300', border: 'border-orange-500/40' },
-  'lighting': { bg: 'bg-yellow-950/60', text: 'text-yellow-300', border: 'border-yellow-500/40' },
-  'postprocess': { bg: 'bg-fuchsia-950/60', text: 'text-fuchsia-300', border: 'border-fuchsia-500/40' },
-  'translucency': { bg: 'bg-cyan-950/60', text: 'text-cyan-300', border: 'border-cyan-500/40' },
+  'Other': { bg: 'bg-slate-800', text: 'text-slate-300', border: 'border-slate-700' },
 };
 
 function getCategoryBadge(bucketOrCategory: string) {
-  const c = CATEGORY_COLORS[bucketOrCategory] || {
-    bg: 'bg-slate-800',
-    text: 'text-slate-300',
-    border: 'border-slate-700',
-  };
+  const c = CATEGORY_COLORS[bucketOrCategory] || CATEGORY_COLORS.Other;
   return (
     <span
       className={`inline-flex items-center px-1.5 py-0.5 rounded text-[11px] font-medium border ${c.bg} ${c.text} ${c.border}`}
@@ -55,43 +45,64 @@ function getCategoryBadge(bucketOrCategory: string) {
   );
 }
 
-function getThreadBadge(role: string) {
-  const r = role.toLowerCase();
-  let bg = 'bg-slate-800 text-slate-300 border-slate-700';
-  let label = role.toUpperCase();
-
-  if (r.includes('rhi')) {
-    bg = 'bg-purple-900/60 text-purple-300 border-purple-500/40';
-    label = 'RHI';
-  } else if (r.includes('gpu')) {
-    bg = 'bg-orange-950/60 text-orange-300 border-orange-500/40';
-    label = 'GPU';
-  } else if (r.includes('render')) {
-    bg = 'bg-fuchsia-950/60 text-fuchsia-300 border-fuchsia-500/40';
-    label = 'RENDER';
-  } else if (r.includes('game')) {
-    bg = 'bg-emerald-950/60 text-emerald-300 border-emerald-500/40';
-    label = 'GAME';
+function normalizeSubsystemName(rawName: string, threadRole: string = 'game'): string {
+  const lower = rawName.toLowerCase();
+  if (lower.includes('rdg') || lower.includes('rendergraph') || lower.includes('gpu') || lower.includes('shading') || lower.includes('lighting') || lower.includes('shadow') || lower.includes('nanite') || lower.includes('lumen')) {
+    return 'Rendering & GPU';
   }
-
-  return (
-    <span className={`inline-flex items-center px-1.5 py-0.2 rounded text-[10px] font-mono border ${bg}`}>
-      {label}
-    </span>
-  );
+  if (lower.includes('render') || lower.includes('rhi') || lower.includes('initview') || threadRole.toLowerCase().includes('render')) {
+    return 'Render CPU';
+  }
+  if (lower.includes('blueprint') || lower.includes('script') || lower.includes('bp')) {
+    return 'Blueprints & Script';
+  }
+  if (lower.includes('ui') || lower.includes('slate')) {
+    return 'UI & Slate';
+  }
+  if (lower.includes('gc') || lower.includes('garbage')) {
+    return 'Garbage Collection';
+  }
+  if (lower.includes('anim') || lower.includes('physics') || lower.includes('chaos')) {
+    return 'Animation & Physics';
+  }
+  if (lower.includes('load') || lower.includes('stream') || lower.includes('io')) {
+    return 'Asset Loading & Streaming';
+  }
+  if (lower === 'other' || lower === 'unclassified' || lower === 'unknown' || lower === 'misc') {
+    return 'Other';
+  }
+  return rawName.charAt(0).toUpperCase() + rawName.slice(1);
 }
 
 export function RangeAnalysisPanel({
   stats,
+  summary,
   targetMs,
+  topFinding,
   hitchCount = 0,
   maxHitchMs,
   isLoading = false,
   selectedTimerName,
   onSelectTimer,
+  onSeeDetails,
+  onRefreshDiagnostic,
+  onCleanAllCaches,
 }: RangeAnalysisPanelProps) {
   const [threadFilter, setThreadFilter] = useState<'all' | 'gpu' | 'game' | 'render'>('all');
   const [expandedSubsystems, setExpandedSubsystems] = useState<Record<string, boolean>>({});
+  const [showAllSubsystems, setShowAllSubsystems] = useState(false);
+  const [isDetailsOpen, setIsDetailsOpen] = useState(false);
+  const [cacheInfo, setCacheInfo] = useState<CacheInfo | null>(null);
+
+  useEffect(() => {
+    if (isDetailsOpen && !cacheInfo) {
+      invoke<CacheInfo>('trace_cache_info')
+        .then(setCacheInfo)
+        .catch(() => {
+          // Ignore cache fetch failure in non-Tauri mode
+        });
+    }
+  }, [isDetailsOpen, cacheInfo]);
 
   const toggleSubsystem = (sub: string) => {
     setExpandedSubsystems((prev) => ({
@@ -100,11 +111,66 @@ export function RangeAnalysisPanel({
     }));
   };
 
-  const rangeDesc = useMemo(() => {
+  // 1. Verdict (2 Sentences: State & Bottleneck with waiting folded in)
+  const verdict = useMemo(() => {
     if (!stats) return null;
-    return describeRange(stats, targetMs, hitchCount, maxHitchMs);
+    const { medianMs, overBudgetPct, threadMedians, waitingOn } = stats;
+    const isOverBudget = medianMs > targetMs || overBudgetPct > 15 || hitchCount > 0;
+    const worstMs = maxHitchMs !== undefined && maxHitchMs > 0 ? maxHitchMs : stats.maxMs;
+    const { gameMs = 0, renderMs = 0, gpuMs = 0, limitingThread = 'game' } = threadMedians || {};
+
+    const hasGpuWait =
+      waitingOn?.some(
+        (w) =>
+          w.timer.toLowerCase().includes('reflex') ||
+          w.timer.toLowerCase().includes('gpu') ||
+          w.timer.toLowerCase().includes('waitforgpu')
+      ) || (gameMs > gpuMs && gpuMs > targetMs);
+
+    const hasWorkerWait = waitingOn?.some(
+      (w) =>
+        w.timer.toLowerCase().includes('waitfortask') ||
+        w.timer.toLowerCase().includes('taskgraph')
+    );
+
+    let stateSentence = '';
+    if (!isOverBudget) {
+      stateSentence = `Smooth: frames average ${medianMs.toFixed(1)} ms per frame, within the ${targetMs.toFixed(1)} ms budget.`;
+    } else if (hitchCount > 0 && medianMs <= targetMs) {
+      stateSentence = `Spiky: frames average ${medianMs.toFixed(1)} ms per frame, but ${hitchCount} hitch spike${hitchCount === 1 ? '' : 's'} (up to ${worstMs.toFixed(0)} ms) break smoothness.`;
+    } else if (hitchCount > 0) {
+      stateSentence = `Steady over budget: ${overBudgetPct.toFixed(0)}% of frames exceed the ${targetMs.toFixed(1)} ms budget (median ${medianMs.toFixed(1)} ms per frame), with ${hitchCount} hitch spike${hitchCount === 1 ? '' : 's'}.`;
+    } else {
+      stateSentence = `Steady over budget: ${overBudgetPct.toFixed(0)}% of frames exceed the ${targetMs.toFixed(1)} ms budget with a median of ${medianMs.toFixed(1)} ms per frame.`;
+    }
+
+    let bottleneckSentence = '';
+    if (!isOverBudget) {
+      bottleneckSentence = `Balanced: all threads (Game, Render, GPU) are running within budget.`;
+    } else if (limitingThread === 'gpu' || (gpuMs >= gameMs && gpuMs >= renderMs && gpuMs > 0)) {
+      if (hasGpuWait) {
+        bottleneckSentence = `GPU-bound: ${gpuMs.toFixed(1)} ms per frame against a ${targetMs.toFixed(1)} ms budget; the game thread is waiting on it.`;
+      } else {
+        bottleneckSentence = `GPU-bound: ${gpuMs.toFixed(1)} ms per frame against a ${targetMs.toFixed(1)} ms budget.`;
+      }
+    } else if (limitingThread === 'game' || (gameMs >= renderMs && gameMs > 0)) {
+      if (hasWorkerWait) {
+        bottleneckSentence = `Game-bound: ${gameMs.toFixed(1)} ms per frame against a ${targetMs.toFixed(1)} ms budget; the game thread is stalled waiting on worker tasks.`;
+      } else {
+        bottleneckSentence = `Game-bound: ${gameMs.toFixed(1)} ms per frame against a ${targetMs.toFixed(1)} ms budget.`;
+      }
+    } else if (limitingThread === 'render' || renderMs > 0) {
+      bottleneckSentence = `Render-bound: ${renderMs.toFixed(1)} ms per frame against a ${targetMs.toFixed(1)} ms budget.`;
+    } else if (limitingThread === 'idle') {
+      bottleneckSentence = `V-Sync limited: frames are waiting on display refresh rate.`;
+    } else {
+      bottleneckSentence = `Unattributed: frame execution is distributed across threads.`;
+    }
+
+    return { isOverBudget, stateSentence, bottleneckSentence };
   }, [stats, targetMs, hitchCount, maxHitchMs]);
 
+  // 2. Filtered Timers and Subsystem Grouping
   const filteredTimers = useMemo(() => {
     if (!stats?.topTimers) return [];
     if (threadFilter === 'all') return stats.topTimers;
@@ -117,11 +183,10 @@ export function RangeAnalysisPanel({
     });
   }, [stats, threadFilter]);
 
-  // Group work timers by subsystem
   const groupedSubsystems = useMemo(() => {
     const map = new Map<string, { subsystem: string; totalMs: number; timers: RangeTopTimer[] }>();
     for (const t of filteredTimers) {
-      const sub = t.subsystem || t.bucket || 'other';
+      const sub = normalizeSubsystemName(t.subsystem || t.bucket || 'Other', t.threadRole);
       if (!map.has(sub)) {
         map.set(sub, { subsystem: sub, totalMs: 0, timers: [] });
       }
@@ -129,102 +194,216 @@ export function RangeAnalysisPanel({
       entry.totalMs += t.avgMsPerFrame;
       entry.timers.push(t);
     }
-    return Array.from(map.values()).sort((a, b) => b.totalMs - a.totalMs);
+
+    const all = Array.from(map.values());
+    const otherGroup = all.find((g) => g.subsystem === 'Other');
+    const mainGroups = all.filter((g) => g.subsystem !== 'Other').sort((a, b) => b.totalMs - a.totalMs);
+
+    if (otherGroup) {
+      return [...mainGroups, otherGroup];
+    }
+    return mainGroups;
   }, [filteredTimers]);
 
   if (isLoading) {
     return (
-      <div className="p-6 rounded-xl bg-slate-900/60 border border-slate-800 text-center animate-pulse">
-        <div className="text-xs text-slate-400">Computing selected range metrics...</div>
+      <div className="p-4 rounded-xl bg-slate-900/60 border border-slate-800 text-center animate-pulse text-xs text-slate-400">
+        Computing selected range metrics...
       </div>
     );
   }
 
-  if (!stats || !rangeDesc) {
+  if (!stats || !verdict) {
     return (
-      <div className="p-6 rounded-xl bg-slate-900/40 border border-slate-800 text-center text-xs text-slate-500">
-        Select a range on the timeline to inspect frame health, bottleneck threads, and top timer costs.
+      <div className="p-4 rounded-xl bg-slate-900/40 border border-slate-800 text-center text-xs text-slate-500">
+        Select a range on the timeline to inspect performance metrics and bottleneck attribution.
       </div>
     );
   }
 
-  const {
-    medianMs,
-    p95Ms,
-    maxMs,
-    overBudgetPct,
-    budgetGapMs,
-    threadMedians,
-    waitingOn,
-  } = stats;
+  const { medianMs, p95Ms, overBudgetPct, threadMedians, waitingOn } = stats;
+  const { gameMs = 0, renderMs = 0, gpuMs = 0 } = threadMedians || {};
+  const isOverBudget = verdict.isOverBudget;
 
-  const isSteadyOverBudget = budgetGapMs > 0.001;
-  const showGapShare = isSteadyOverBudget;
-  const maxScaleMs = Math.max(targetMs * 1.5, medianMs * 1.3, maxMs * 0.5, 20.0);
+  // Active hardware time bars scaling: max(value, budget) * 1.1, clamp fill to 100%, budget marker at true position
+  const maxThreadVal = Math.max(gpuMs, gameMs, renderMs, targetMs);
+  const axisMax = Math.max(maxThreadVal, targetMs) * 1.1;
+  const budgetMarkerPct = Math.min(100, Math.max(0, (targetMs / axisMax) * 100));
 
-  const stateBadgeStyle =
-    rangeDesc.stateLabel === 'Smooth'
-      ? 'bg-emerald-950/80 text-emerald-300 border-emerald-500/50'
-      : rangeDesc.stateLabel === 'Steady Over Budget'
-      ? 'bg-amber-950/80 text-amber-300 border-amber-500/50'
-      : 'bg-rose-950/80 text-rose-300 border-rose-500/50';
+  // Waiting condition: shown inline ONLY when waits are >= 30% of the frame AND frame is over budget
+  const totalWaitMs = (waitingOn || []).reduce((sum, w) => sum + w.avgMsPerFrame, 0);
+  const isSignificantWait = totalWaitMs >= medianMs * 0.30;
+  const showInlineWaiting = isSignificantWait && isOverBudget && (waitingOn && waitingOn.length > 0);
+
+  // First thing to try (first step of top finding)
+  const firstFix = topFinding?.parsedPayload?.fixes?.[0];
+
+  const displayedSubsystems = showAllSubsystems ? groupedSubsystems : groupedSubsystems.slice(0, 5);
+
+  const renderThreadBar = (label: string, ms: number, role: 'gpu' | 'game' | 'render') => {
+    const isThreadOver = ms > targetMs;
+    const isExtreme = ms > targetMs * 3.0;
+    const fillPct = Math.min(100, Math.max(0, (ms / axisMax) * 100));
+    const multiple = (ms / targetMs).toFixed(1);
+
+    let barColor = 'bg-emerald-500';
+    let textColor = 'text-emerald-400 font-mono';
+    if (isThreadOver) {
+      if (role === 'gpu') {
+        barColor = 'bg-orange-500';
+        textColor = 'text-orange-400 font-bold font-mono';
+      } else if (role === 'game') {
+        barColor = 'bg-amber-500';
+        textColor = 'text-amber-400 font-bold font-mono';
+      } else {
+        barColor = 'bg-purple-500';
+        textColor = 'text-purple-400 font-bold font-mono';
+      }
+    }
+
+    return (
+      <div className="flex flex-col gap-1 flex-1 min-w-[180px]">
+        <div className="flex items-center justify-between text-xs">
+          <span className="text-slate-300 font-medium">{label}</span>
+          <div className="flex items-center gap-1.5">
+            <span className={textColor}>{ms.toFixed(1)} ms/frame</span>
+            {isExtreme && (
+              <span className="text-[10px] px-1 py-0.2 rounded bg-rose-950/80 text-rose-300 border border-rose-500/40 font-mono">
+                x {multiple} over budget
+              </span>
+            )}
+          </div>
+        </div>
+        <div className="h-2 rounded bg-slate-800/80 overflow-hidden relative">
+          {/* Target Budget Marker */}
+          <div
+            className="absolute top-0 bottom-0 w-0.5 bg-sky-300/90 z-10"
+            style={{ left: `${budgetMarkerPct}%` }}
+            title={`Target budget: ${targetMs.toFixed(1)} ms/frame`}
+          />
+          {/* Fill bar clamped to 100% */}
+          <div
+            className={`h-full ${barColor} rounded transition-all duration-300`}
+            style={{ width: `${fillPct}%` }}
+          />
+        </div>
+      </div>
+    );
+  };
 
   return (
-    <div className="flex flex-col gap-4 p-4 rounded-xl bg-slate-900/40 border border-slate-800">
-      {/* Section A: Headline & Diagnosis (FR-7 Verdict) */}
-      <div className="flex flex-col gap-2 pb-3 border-b border-slate-800">
-        <div className="flex flex-wrap items-center justify-between gap-2">
-          <div className="flex items-center gap-2">
-            <span
-              className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-semibold border ${stateBadgeStyle}`}
-            >
-              {rangeDesc.stateLabel}
-            </span>
-            <span className="text-xs text-slate-400">
-              {stats.frameCount} frames ({stats.durationS.toFixed(2)}s window)
-            </span>
+    <div className="flex flex-col gap-3">
+      {/* 5. Range Card */}
+      <div
+        className={`flex flex-col gap-3 p-4 rounded-xl border shadow-md transition-all ${
+          isOverBudget
+            ? 'bg-slate-900/80 border-slate-800'
+            : 'bg-slate-900/50 border-slate-800'
+        }`}
+      >
+        {/* Top: 2-Sentence Verdict & 3 Core Numbers */}
+        <div className="flex flex-col md:flex-row md:items-start justify-between gap-4 pb-3 border-b border-slate-800/80">
+          {/* Left: Verdict (2 Sentences) */}
+          <div className="flex-1 flex flex-col gap-1 text-xs leading-relaxed">
+            <div className="flex items-center gap-2">
+              <span
+                className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-semibold border ${
+                  isOverBudget
+                    ? 'bg-amber-950/60 text-amber-300 border-amber-500/40'
+                    : 'bg-emerald-950/60 text-emerald-300 border-emerald-500/40'
+                }`}
+              >
+                {isOverBudget ? 'Over Budget' : 'Within Budget'}
+              </span>
+              <span className="text-slate-400 font-mono text-[11px]">
+                {stats.frameCount.toLocaleString()} frames ({stats.durationS.toFixed(2)}s)
+              </span>
+            </div>
+
+            <p className="font-semibold text-slate-100 mt-0.5">{verdict.stateSentence}</p>
+            <p className="text-slate-300">{verdict.bottleneckSentence}</p>
           </div>
 
-          <div className="flex items-center gap-3 text-xs font-mono">
-            <div>
-              <span className="text-slate-400">Median: </span>
-              <span className="font-bold text-slate-200">{medianMs.toFixed(1)} ms</span>
+          {/* Right: Three Numbers (ms per frame) */}
+          <div className="flex items-center gap-4 bg-slate-950/60 border border-slate-800 rounded-lg p-2.5 shrink-0 text-xs font-mono">
+            <div className="flex flex-col">
+              <span className="text-[10px] text-slate-400 font-sans uppercase">Median</span>
+              <span className="font-bold text-slate-100">{medianMs.toFixed(1)} ms/frame</span>
             </div>
-            <div>
-              <span className="text-slate-400">p95: </span>
-              <span className="font-bold text-slate-200">{p95Ms.toFixed(1)} ms</span>
+            <div className="w-px h-7 bg-slate-800" />
+            <div className="flex flex-col">
+              <span className="text-[10px] text-slate-400 font-sans uppercase">p95</span>
+              <span className={`font-bold ${p95Ms > targetMs ? 'text-amber-300' : 'text-slate-100'}`}>
+                {p95Ms.toFixed(1)} ms/frame
+              </span>
             </div>
-            <div>
-              <span className="text-slate-400">Max: </span>
-              <span className="font-bold text-slate-200">{maxMs.toFixed(1)} ms</span>
+            <div className="w-px h-7 bg-slate-800" />
+            <div className="flex flex-col">
+              <span className="text-[10px] text-slate-400 font-sans uppercase">Over Budget</span>
+              <span className={`font-bold ${overBudgetPct > 0 ? 'text-amber-300' : 'text-emerald-400'}`}>
+                {overBudgetPct.toFixed(0)}%
+              </span>
             </div>
           </div>
         </div>
 
-        {/* Verdict Line */}
-        <div className="text-xs leading-relaxed text-slate-300 bg-slate-950/40 p-2.5 rounded-lg border border-slate-800/80">
-          <p className="font-medium text-slate-200">{rangeDesc.stateSummary}</p>
-          <p className="mt-1 text-slate-300">{rangeDesc.bottleneckSummary}</p>
-          {isSteadyOverBudget && (
-            <p className="mt-1 text-[11px] text-amber-300/90 font-mono">
-              Over Budget gap: +{budgetGapMs.toFixed(1)} ms/frame vs {targetMs.toFixed(1)} ms budget ({overBudgetPct.toFixed(0)}% frames over).
-            </p>
-          )}
+        {/* Middle: Active Hardware Times Bars */}
+        <div className="flex flex-col gap-2">
+          <div className="flex items-center justify-between text-[11px] text-slate-400">
+            <span className="font-semibold text-slate-300 uppercase tracking-wider">
+              Active Hardware Times
+            </span>
+            <span className="font-mono">
+              Target: <strong className="text-sky-300">{targetMs.toFixed(1)} ms/frame</strong>
+            </span>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-3">
+            {renderThreadBar('GPU', gpuMs, 'gpu')}
+            {renderThreadBar('Game Thread', gameMs, 'game')}
+            {renderThreadBar('Render Thread', renderMs, 'render')}
+          </div>
         </div>
 
-        {/* Waiting on Section (FR-7) */}
-        {waitingOn && waitingOn.length > 0 && (
-          <div className="p-2.5 rounded-lg bg-slate-950/60 border border-slate-800/80 flex items-start gap-2.5 text-xs">
-            <div className="w-2 h-2 rounded-full bg-amber-400 mt-1 shrink-0" />
+        {/* Bottom: "First thing to try" (first step of top finding) */}
+        <div className="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-slate-800/80 text-xs">
+          <div className="flex items-center gap-2 flex-1">
+            <span className="text-sky-400 font-bold shrink-0">First thing to try:</span>
+            {isOverBudget && firstFix ? (
+              <span className="text-slate-200 leading-snug">
+                {firstFix.text}
+                {onSeeDetails && (
+                  <button
+                    type="button"
+                    onClick={onSeeDetails}
+                    className="ml-2 text-sky-400 hover:text-sky-300 font-medium underline inline-flex items-center gap-0.5"
+                  >
+                    <span>see details</span>
+                    <span className="text-[10px]">↓</span>
+                  </button>
+                )}
+              </span>
+            ) : (
+              <span className="text-emerald-300 font-medium">
+                No performance bottlenecks detected in this range (all frames within the {targetMs.toFixed(1)} ms budget).
+              </span>
+            )}
+          </div>
+        </div>
+
+        {/* Inline Waiting & Sync (Shown ONLY when waits >= 30% of frame AND frame is over budget) */}
+        {showInlineWaiting && (
+          <div className="p-2.5 rounded-lg bg-amber-950/20 border border-amber-600/30 flex items-start gap-2.5 text-xs mt-1">
+            <span className="text-amber-400 font-bold shrink-0 mt-0.5">⚠️</span>
             <div className="flex flex-col gap-1 text-slate-300 w-full">
-              <span className="font-semibold text-slate-200 text-[11px]">CPU Synchronization & Waiting on Hardware:</span>
-              <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-slate-400">
+              <span className="font-semibold text-amber-300 text-[11px]">
+                High CPU Synchronization &amp; Waiting on Hardware (≥30% of frame time):
+              </span>
+              <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-slate-300 font-mono text-[11px]">
                 {waitingOn.map((w, idx) => (
-                  <span key={idx} className="font-mono text-[11px]">
-                    <span className="text-slate-300 font-medium uppercase px-1 py-0.2 rounded bg-slate-800 text-[10px] mr-1">
-                      {w.thread}
-                    </span>
-                    <span className="text-amber-300 font-semibold">{w.timer}</span>: {w.avgMsPerFrame.toFixed(1)} ms/frame
+                  <span key={idx}>
+                    <span className="text-slate-400 uppercase mr-1">{w.thread}:</span>
+                    <strong className="text-amber-300">{w.timer}</strong> ({w.avgMsPerFrame.toFixed(1)} ms/frame)
                   </span>
                 ))}
               </div>
@@ -233,259 +412,263 @@ export function RangeAnalysisPanel({
         )}
       </div>
 
-      {/* Section B: Thread Active Time Bars */}
-      <div className="flex flex-col gap-2 pb-3 border-b border-slate-800">
-        <div className="flex items-center justify-between text-xs">
-          <span className="font-semibold text-slate-300 uppercase tracking-wider text-[11px]">
-            Active Hardware Times (Excl. Idle Waits)
-          </span>
-          <span className="text-slate-400 text-[11px]">
-            Target: <span className="font-mono text-sky-400 font-semibold">{targetMs.toFixed(1)} ms</span>
-          </span>
-        </div>
-
-        <div className="flex flex-col gap-2">
-          {/* GPU Bar */}
-          <div className="flex flex-col gap-0.5">
-            <div className="flex justify-between text-xs">
-              <span className="text-slate-300 font-medium">GPU Rendering (Graphics)</span>
-              <span className="text-orange-400 font-mono font-bold">
-                {threadMedians.gpuMs > 0 ? `${threadMedians.gpuMs.toFixed(1)} ms` : '0.0 ms'}
-              </span>
-            </div>
-            <div className="h-2.5 rounded bg-slate-800/80 overflow-hidden relative">
-              <div
-                className="absolute top-0 bottom-0 w-0.5 bg-sky-400/80 z-10"
-                style={{ left: `${Math.min(100, (targetMs / maxScaleMs) * 100)}%` }}
-                title={`Target budget: ${targetMs.toFixed(1)} ms`}
-              />
-              <div
-                className="h-full bg-gradient-to-r from-orange-600 to-orange-400 rounded transition-all duration-300"
-                style={{ width: `${Math.min(100, (threadMedians.gpuMs / maxScaleMs) * 100)}%` }}
-              />
-            </div>
-          </div>
-
-          {/* Game Thread Bar */}
-          <div className="flex flex-col gap-0.5">
-            <div className="flex justify-between text-xs">
-              <span className="text-slate-300 font-medium">Game Thread</span>
-              <span className="text-emerald-400 font-mono font-bold">
-                {threadMedians.gameMs > 0 ? `${threadMedians.gameMs.toFixed(1)} ms` : '0.0 ms'}
-              </span>
-            </div>
-            <div className="h-2.5 rounded bg-slate-800/80 overflow-hidden relative">
-              <div
-                className="absolute top-0 bottom-0 w-0.5 bg-sky-400/80 z-10"
-                style={{ left: `${Math.min(100, (targetMs / maxScaleMs) * 100)}%` }}
-                title={`Target budget: ${targetMs.toFixed(1)} ms`}
-              />
-              <div
-                className="h-full bg-gradient-to-r from-emerald-600 to-emerald-400 rounded transition-all duration-300"
-                style={{ width: `${Math.min(100, (threadMedians.gameMs / maxScaleMs) * 100)}%` }}
-              />
-            </div>
-          </div>
-
-          {/* Render Thread Bar */}
-          <div className="flex flex-col gap-0.5">
-            <div className="flex justify-between text-xs">
-              <span className="text-slate-300 font-medium">Render Thread</span>
-              <span className="text-purple-400 font-mono font-bold">
-                {threadMedians.renderMs > 0 ? `${threadMedians.renderMs.toFixed(1)} ms` : '0.0 ms'}
-              </span>
-            </div>
-            <div className="h-2.5 rounded bg-slate-800/80 overflow-hidden relative">
-              <div
-                className="absolute top-0 bottom-0 w-0.5 bg-sky-400/80 z-10"
-                style={{ left: `${Math.min(100, (targetMs / maxScaleMs) * 100)}%` }}
-                title={`Target budget: ${targetMs.toFixed(1)} ms`}
-              />
-              <div
-                className="h-full bg-gradient-to-r from-purple-600 to-purple-400 rounded transition-all duration-300"
-                style={{ width: `${Math.min(100, (threadMedians.renderMs / maxScaleMs) * 100)}%` }}
-              />
-            </div>
-          </div>
-        </div>
-      </div>
-
-      {/* Section C: Subsystem-Grouped Top Timers Table (FR-7) */}
-      <div className="flex flex-col gap-2 pt-1">
-        <div className="flex flex-wrap items-center justify-between gap-2">
+      {/* 7. "Details" Accordion (Collapsed by Default) */}
+      <div className="flex flex-col border border-slate-800 rounded-xl overflow-hidden bg-slate-900/60">
+        <button
+          type="button"
+          onClick={() => setIsDetailsOpen(!isDetailsOpen)}
+          className="flex items-center justify-between p-3 bg-slate-900/80 hover:bg-slate-800/80 text-xs font-semibold text-slate-300 transition-colors"
+        >
           <div className="flex items-center gap-2">
-            <span className="text-xs font-semibold text-slate-300 uppercase tracking-wider">
-              Profiled Work by Subsystem ({groupedSubsystems.length})
-            </span>
-            {selectedTimerName && (
-              <button
-                type="button"
-                onClick={() => onSelectTimer?.(null)}
-                className="text-[11px] text-sky-400 hover:text-sky-300 underline"
-              >
-                Clear filter ({selectedTimerName})
-              </button>
+            <svg
+              className={`w-4 h-4 text-slate-400 transition-transform duration-200 ${isDetailsOpen ? 'rotate-90' : ''}`}
+              fill="none"
+              stroke="currentColor"
+              viewBox="0 0 24 24"
+            >
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+            </svg>
+            <span>Details &amp; Subsystem Breakdown</span>
+          </div>
+          <span className="text-[11px] font-normal text-slate-400 font-mono">
+            {groupedSubsystems.length} subsystems • {stats.topTimers?.length || 0} work timers
+          </span>
+        </button>
+
+        {isDetailsOpen && (
+          <div className="flex flex-col gap-4 p-4 border-t border-slate-800 bg-slate-950/60 text-xs">
+            {/* Section 1: Waiting and Synchronization (Neutral style when not shown inline) */}
+            {!showInlineWaiting && waitingOn && waitingOn.length > 0 && (
+              <div className="flex flex-col gap-1.5 p-3 rounded-lg bg-slate-900/60 border border-slate-800">
+                <span className="font-semibold text-slate-300 uppercase tracking-wider text-[11px]">
+                  CPU Synchronization &amp; Wait Timers
+                </span>
+                <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-slate-300 font-mono text-[11px]">
+                  {waitingOn.map((w, idx) => (
+                    <span key={idx}>
+                      <span className="text-slate-400 uppercase mr-1">{w.thread}:</span>
+                      <span className="text-slate-200">{w.timer}</span> ({w.avgMsPerFrame.toFixed(1)} ms/frame)
+                    </span>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Section 2: Where the time goes by system (Subsystem Table) */}
+            <div className="flex flex-col gap-2">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div className="flex items-center gap-2">
+                  <span className="font-semibold text-slate-300 uppercase tracking-wider text-[11px]">
+                    Where the Time Goes by System
+                  </span>
+                  {selectedTimerName && (
+                    <button
+                      type="button"
+                      onClick={() => onSelectTimer?.(null)}
+                      className="text-[11px] text-sky-400 hover:text-sky-300 underline font-mono"
+                    >
+                      Clear filter ({selectedTimerName})
+                    </button>
+                  )}
+                </div>
+
+                {/* Thread Filters */}
+                <div className="flex items-center gap-1">
+                  {(['all', 'gpu', 'game', 'render'] as const).map((mode) => (
+                    <button
+                      key={mode}
+                      type="button"
+                      onClick={() => setThreadFilter(mode)}
+                      className={`px-2 py-0.5 rounded text-[11px] font-medium transition-colors ${
+                        threadFilter === mode
+                          ? 'bg-sky-600 text-white font-semibold'
+                          : 'bg-slate-800 text-slate-400 hover:text-slate-200'
+                      }`}
+                    >
+                      {mode === 'all' ? 'All' : mode.toUpperCase()}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {/* Subsystems Table */}
+              <div className="overflow-x-auto rounded-lg border border-slate-800 bg-slate-900/40">
+                <table className="w-full text-left text-xs text-slate-300">
+                  <thead className="bg-slate-900/90 text-slate-400 font-semibold border-b border-slate-800 text-[11px]">
+                    <tr>
+                      <th className="py-2 px-3">Subsystem / Function</th>
+                      <th className="py-2 px-2.5">Thread</th>
+                      <th className="py-2 px-2.5 text-right">ms / Frame</th>
+                      <th className="py-2 px-2.5 text-right">Calls / Frame</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-800/60 font-mono text-[11px]">
+                    {displayedSubsystems.length === 0 ? (
+                      <tr>
+                        <td colSpan={4} className="py-4 text-center text-slate-500 font-sans">
+                          No profiled work timers found for this selection.
+                        </td>
+                      </tr>
+                    ) : (
+                      displayedSubsystems.map((grp) => {
+                        const isExpanded = expandedSubsystems[grp.subsystem] ?? false;
+
+                        return (
+                          <div key={grp.subsystem} className="contents">
+                            {/* Group Header Row */}
+                            <tr
+                              onClick={() => toggleSubsystem(grp.subsystem)}
+                              className="bg-slate-900/80 hover:bg-slate-800/80 cursor-pointer font-sans transition-colors border-t border-slate-800"
+                            >
+                              <td className="py-2 px-3 font-semibold text-slate-200 flex items-center gap-2">
+                                <span className="text-slate-400 text-[10px]">
+                                  {isExpanded ? '▼' : '▶'}
+                                </span>
+                                {getCategoryBadge(grp.subsystem)}
+                                <span className="text-xs font-medium text-slate-200">
+                                  {grp.subsystem}
+                                </span>
+                                <span className="text-[11px] text-slate-500 font-normal">
+                                  ({grp.timers.length} timer{grp.timers.length === 1 ? '' : 's'})
+                                </span>
+                              </td>
+                              <td className="py-2 px-2.5 text-slate-400 font-mono text-[11px]">
+                                {grp.timers[0]?.threadRole ? grp.timers[0].threadRole.toUpperCase() : '—'}
+                              </td>
+                              <td className="py-2 px-2.5 text-right font-bold text-slate-100 font-mono">
+                                {grp.totalMs.toFixed(1)} ms
+                              </td>
+                              <td className="py-2 px-2.5 text-right text-slate-400 font-mono text-[11px]">
+                                —
+                              </td>
+                            </tr>
+
+                            {/* Leaf Rows */}
+                            {isExpanded &&
+                              grp.timers.map((timer: RangeTopTimer) => {
+                                const isSelected = selectedTimerName === timer.name;
+
+                                return (
+                                  <tr
+                                    key={`${timer.threadRole}-${timer.name}-${timer.path}`}
+                                    onClick={() => onSelectTimer?.(isSelected ? null : timer.name)}
+                                    className={`cursor-pointer transition-colors ${
+                                      isSelected
+                                        ? 'bg-sky-950/60 hover:bg-sky-900/60'
+                                        : 'bg-slate-950/30 hover:bg-slate-900/50'
+                                    }`}
+                                  >
+                                    <td className="py-1.5 pl-8 pr-3 font-mono font-medium text-slate-300 text-xs">
+                                      <div className="flex flex-col">
+                                        <span className="text-slate-200">{timer.name}</span>
+                                        {timer.path && timer.path !== timer.name && (
+                                          <span className="text-[10px] text-slate-500 font-sans truncate max-w-md" title={timer.path}>
+                                            {timer.path}
+                                          </span>
+                                        )}
+                                      </div>
+                                    </td>
+                                    <td className="py-1.5 px-2.5 text-slate-400 text-[10px] font-mono">
+                                      {timer.threadRole.toUpperCase()}
+                                    </td>
+                                    <td className="py-1.5 px-2.5 text-right font-bold text-slate-200 font-mono">
+                                      {timer.avgMsPerFrame.toFixed(1)} ms
+                                    </td>
+                                    <td className="py-1.5 px-2.5 text-right text-slate-400 font-mono text-[11px]">
+                                      {timer.callCount && stats.frameCount > 0
+                                        ? (timer.callCount / stats.frameCount).toFixed(1)
+                                        : timer.baselineCallsPerFrame
+                                        ? timer.baselineCallsPerFrame.toFixed(1)
+                                        : '—'}
+                                    </td>
+                                  </tr>
+                                );
+                              })}
+                          </div>
+                        );
+                      })
+                    )}
+                  </tbody>
+                </table>
+              </div>
+
+              {groupedSubsystems.length > 5 && (
+                <button
+                  type="button"
+                  onClick={() => setShowAllSubsystems(!showAllSubsystems)}
+                  className="text-xs text-sky-400 hover:text-sky-300 font-medium self-start mt-1 transition-colors"
+                >
+                  {showAllSubsystems ? 'Show top 5 only' : `Show all (${groupedSubsystems.length}) subsystems...`}
+                </button>
+              )}
+            </div>
+
+            {/* Section 3: Engine Metadata & Channels */}
+            {summary && (
+              <div className="flex flex-col gap-2 pt-2 border-t border-slate-800/80">
+                <span className="font-semibold text-slate-300 uppercase tracking-wider text-[11px]">
+                  Engine Channels &amp; Metadata
+                </span>
+
+                <div className="flex flex-wrap gap-1.5">
+                  {summary.detectedChannels?.map((ch) => (
+                    <span
+                      key={ch}
+                      className="px-2 py-0.5 rounded bg-emerald-950/60 text-emerald-300 border border-emerald-500/30 text-[11px] font-mono"
+                    >
+                      ✓ {ch}
+                    </span>
+                  ))}
+                  {summary.missingChannels?.map((ch) => (
+                    <span
+                      key={ch}
+                      className="px-2 py-0.5 rounded bg-slate-900 text-slate-500 border border-slate-800 text-[11px] font-mono"
+                    >
+                      ✕ {ch} (missing)
+                    </span>
+                  ))}
+                </div>
+
+                {summary.isEditorBuild && (
+                  <div className="p-2.5 rounded bg-amber-950/30 border border-amber-600/30 text-amber-200/90 text-xs leading-relaxed mt-1">
+                    <strong>Editor Session Notice:</strong> Slate UI rendering and editor background tasks contribute to frame duration.
+                  </div>
+                )}
+
+                <div className="flex flex-wrap items-center justify-between gap-2 pt-2 text-[11px] text-slate-400">
+                  <div>
+                    Trace Path: <code className="text-slate-300 bg-slate-900 px-1 py-0.5 rounded font-mono">{summary.path || 'Unknown'}</code>
+                  </div>
+                  <div className="flex items-center gap-2 font-mono">
+                    {cacheInfo && (
+                      <span className="text-slate-300">
+                        Cache: {cacheInfo.totalFiles} files ({((cacheInfo.totalSizeBytes || 0) / 1024 / 1024).toFixed(1)} MB)
+                      </span>
+                    )}
+                    {onRefreshDiagnostic && (
+                      <button
+                        type="button"
+                        onClick={onRefreshDiagnostic}
+                        className="px-2 py-0.5 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 text-[10px] font-sans border border-slate-700 transition-colors"
+                      >
+                        Refresh Diagnostic
+                      </button>
+                    )}
+                    {onCleanAllCaches && (
+                      <button
+                        type="button"
+                        onClick={onCleanAllCaches}
+                        className="px-2 py-0.5 rounded bg-slate-800 hover:bg-rose-950/60 hover:text-rose-200 text-slate-400 text-[10px] font-sans border border-slate-700 transition-colors"
+                      >
+                        Clean DB
+                      </button>
+                    )}
+                  </div>
+                </div>
+              </div>
             )}
           </div>
-
-          {/* Thread Filter Chips */}
-          <div className="flex items-center gap-1 text-xs">
-            {(['all', 'gpu', 'game', 'render'] as const).map((mode) => (
-              <button
-                key={mode}
-                type="button"
-                onClick={() => setThreadFilter(mode)}
-                className={`px-2 py-0.5 rounded text-[11px] font-medium transition-colors ${
-                  threadFilter === mode
-                    ? 'bg-sky-600 text-white font-semibold'
-                    : 'bg-slate-800 text-slate-400 hover:text-slate-200'
-                }`}
-              >
-                {mode === 'all' ? 'All Threads' : mode.toUpperCase()}
-              </button>
-            ))}
-          </div>
-        </div>
-
-        {/* Grouped Table */}
-        <div className="overflow-x-auto rounded-lg border border-slate-800 bg-slate-950/40">
-          <table className="w-full text-left text-xs text-slate-300">
-            <thead className="bg-slate-900/80 text-slate-400 font-semibold border-b border-slate-800">
-              <tr>
-                <th className="py-2 px-3">Subsystem / Function</th>
-                <th className="py-2 px-2.5">Thread / Queue</th>
-                <th className="py-2 px-2.5 text-right">ms / Frame (vs Base)</th>
-                <th className="py-2 px-2.5 text-right">Calls / Frame</th>
-                {showGapShare && (
-                  <th className="py-2 px-3 text-right">Share of Excess</th>
-                )}
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-slate-800/60 font-mono">
-              {groupedSubsystems.length === 0 ? (
-                <tr>
-                  <td
-                    colSpan={showGapShare ? 5 : 4}
-                    className="py-4 text-center text-xs text-slate-500 font-sans"
-                  >
-                    No profiled work timers found in this window.
-                  </td>
-                </tr>
-              ) : (
-                groupedSubsystems.map((grp) => {
-                  const isExpanded = expandedSubsystems[grp.subsystem] ?? true;
-
-                  return (
-                    <div key={grp.subsystem} className="contents">
-                      {/* Subsystem Group Header Row */}
-                      <tr
-                        onClick={() => toggleSubsystem(grp.subsystem)}
-                        className="bg-slate-900/70 hover:bg-slate-800/70 cursor-pointer font-sans transition-colors border-t border-slate-800"
-                      >
-                        <td className="py-2 px-3 font-semibold text-slate-200 flex items-center gap-2">
-                          <span className="text-slate-400 text-[10px]">
-                            {isExpanded ? '▼' : '▶'}
-                          </span>
-                          {getCategoryBadge(grp.subsystem)}
-                          <span className="text-xs font-medium text-slate-200 capitalize">
-                            {grp.subsystem}
-                          </span>
-                          <span className="text-[11px] text-slate-400 font-normal">
-                            ({grp.timers.length} leaves)
-                          </span>
-                        </td>
-                        <td className="py-2 px-2.5 text-slate-400 text-[11px] font-mono">
-                          {grp.timers[0]?.threadRole ? grp.timers[0].threadRole.toUpperCase() : '—'}
-                        </td>
-                        <td className="py-2 px-2.5 text-right font-bold text-slate-100 font-mono">
-                          {grp.totalMs.toFixed(1)} ms
-                        </td>
-                        <td className="py-2 px-2.5 text-right text-slate-400 font-mono text-[11px]">
-                          —
-                        </td>
-                        {showGapShare && (
-                          <td className="py-2 px-3 text-right font-bold text-amber-300 font-mono">
-                            {grp.timers[0]?.shareOfThreadExcessPct !== undefined && grp.timers[0]?.shareOfThreadExcessPct !== null
-                              ? `${grp.timers[0].shareOfThreadExcessPct.toFixed(0)}%`
-                              : '—'}
-                          </td>
-                        )}
-                      </tr>
-
-                      {/* Leaf Rows */}
-                      {isExpanded &&
-                        grp.timers.map((timer: RangeTopTimer) => {
-                          const isSelected = selectedTimerName === timer.name;
-                          const baseMs = timer.baselineMsPerFrame || 0;
-                          const baseCalls = timer.baselineCallsPerFrame || 0;
-
-                          return (
-                            <tr
-                              key={`${timer.threadRole}-${timer.name}-${timer.path}`}
-                              onClick={() => onSelectTimer?.(isSelected ? null : timer.name)}
-                              className={`cursor-pointer transition-colors ${
-                                isSelected
-                                  ? 'bg-sky-950/60 hover:bg-sky-900/60'
-                                  : 'bg-slate-950/20 hover:bg-slate-900/40'
-                              }`}
-                            >
-                              <td className="py-1.5 pl-8 pr-3 font-mono font-medium text-slate-300 text-xs">
-                                <div className="flex flex-col">
-                                  <span className="text-slate-200">{timer.name}</span>
-                                  {timer.path && timer.path !== timer.name && (
-                                    <span className="text-[10px] text-slate-500 font-sans truncate max-w-md" title={timer.path}>
-                                      {timer.path}
-                                    </span>
-                                  )}
-                                </div>
-                              </td>
-                              <td className="py-1.5 px-2.5">
-                                <div className="flex items-center gap-1.5">
-                                  {getThreadBadge(timer.threadRole)}
-                                  {timer.queue === 'compute' && (
-                                    <span className="px-1 py-0.2 rounded text-[9px] font-sans bg-amber-950/50 text-amber-300 border border-amber-600/30">
-                                      async compute
-                                    </span>
-                                  )}
-                                </div>
-                              </td>
-                              <td className="py-1.5 px-2.5 text-right text-slate-200">
-                                {timer.avgMsPerFrame.toFixed(2)} ms
-                                {baseMs > 0 && (
-                                  <span className="text-[10px] text-slate-500 ml-1">
-                                    (base {baseMs.toFixed(1)})
-                                  </span>
-                                )}
-                              </td>
-                              <td className="py-1.5 px-2.5 text-right text-slate-400 text-[11px]">
-                                {timer.callCount}
-                                {baseCalls > 0 && (
-                                  <span className="text-[10px] text-slate-500 ml-1">
-                                    (base {baseCalls.toFixed(0)})
-                                  </span>
-                                )}
-                              </td>
-                              {showGapShare && (
-                                <td className="py-1.5 px-3 text-right">
-                                  {timer.shareOfThreadExcessPct !== undefined && timer.shareOfThreadExcessPct !== null ? (
-                                    <span className="text-amber-400 font-semibold">
-                                      {timer.shareOfThreadExcessPct.toFixed(0)}%
-                                    </span>
-                                  ) : (
-                                    <span className="text-slate-500">—</span>
-                                  )}
-                                </td>
-                              )}
-                            </tr>
-                          );
-                        })}
-                    </div>
-                  );
-                })
-              )}
-            </tbody>
-          </table>
-        </div>
+        )}
       </div>
     </div>
   );

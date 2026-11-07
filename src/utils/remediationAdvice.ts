@@ -34,14 +34,9 @@ export function getRemediationAdvice(
         title: `GPU Particle & Niagara Simulation: ${timerName}`,
         fixes: [
           {
-            text: 'Set fx.Niagara.GPUComputeBudget to limit maximum particle compute dispatch duration.',
+            text: 'Clamp total active GPU particles in the scene and configure particle distance culling.',
             effort: 'low',
-            cvarsOrApis: ['fx.Niagara.GPUComputeBudget'],
-          },
-          {
-            text: 'Clamp total active GPU particles in the scene using fx.MaxNiagaraGPUParticles.',
-            effort: 'low',
-            cvarsOrApis: ['fx.MaxNiagaraGPUParticles'],
+            cvarsOrApis: ['fx.MaxNiagaraGPUParticles', 'fx.Niagara.CullDistance'],
           },
           {
             text: 'Enable particle distance culling and reduce emitter spawn rates on distant/off-screen emitters.',
@@ -53,7 +48,7 @@ export function getRemediationAdvice(
             effort: 'medium',
           },
         ],
-        verify: 'Adjust fx.Niagara.GPUComputeBudget and verify that FXSystemPreRender / Niagara GPU pass times decrease.',
+        verify: 'Adjust particle emitter counts/culling and verify that FXSystemPreRender / Niagara GPU pass times decrease.',
         fixLikelihood: 'high',
         matchConfidence: 'high',
       };
@@ -350,9 +345,9 @@ export function getRemediationAdvice(
           cvarsOrApis: ['r.Lumen.DiffuseIndirect.Allow', 'r.Lumen.Reflections.Allow'],
         },
         {
-          text: 'For heavy particle passes, budget GPU emitter counts and enable Niagara compute culling.',
+          text: 'For heavy particle passes, clamp GPU emitter counts and enable Niagara compute culling.',
           effort: 'medium',
-          cvarsOrApis: ['fx.Niagara.GPUComputeBudget'],
+          cvarsOrApis: ['fx.MaxNiagaraGPUParticles', 'fx.Niagara.CullDistance'],
         },
       ],
       verify: 'Adjust r.ScreenPercentage or shadow quality presets and confirm GPU frame duration decreases.',

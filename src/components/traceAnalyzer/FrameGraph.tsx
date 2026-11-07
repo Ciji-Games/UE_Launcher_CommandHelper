@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import type { ChunkState, Episode, FrameSeriesResponse, Issue, IssueWithOccurrences, Occurrence, TraceBookmark } from '../../types/traceAnalyzer';
+import type { ChunkState, Episode, FrameSeriesResponse, Issue, IssueWithOccurrences, Occurrence, TraceBookmark, TraceSummary } from '../../types/traceAnalyzer';
+import { RULE_COLORS, getRuleDisplayLabel } from '../../utils/ruleDisplay';
 
 interface FrameGraphProps {
+  summary?: TraceSummary | null;
   durationS: number;
   targetMs: number;
   episodes?: Episode[];
@@ -14,85 +16,6 @@ interface FrameGraphProps {
   fetchFrameSeries: (startS: number, endS: number, maxItems?: number) => Promise<FrameSeriesResponse | null>;
 }
 
-const RULE_COLORS: Record<string, string> = {
-  'gc-hitch': '#ef4444',
-  'taskgraph-wait': '#f97316',
-  'cpu-hitch': '#f59e0b',
-  'shader-compile': '#eab308',
-  'pso-hitch': '#84cc16',
-  'sync-load': '#06b6d4',
-  'async-load-finalization': '#3b82f6',
-  'bp-tick': '#8b5cf6',
-  'physics-cpu': '#ec4899',
-  'animation-cpu': '#d946ef',
-  'gpu-niagara-fx': '#f43f5e',
-  'gpu-lumen': '#fb7185',
-  'gpu-vsm-shadows': '#e11d48',
-  'gpu-shadow-views': '#dc2626',
-  'gpu-nanite': '#be123c',
-  'gpu-basepass': '#ff7849',
-  'gpu-postprocess': '#ff4b81',
-  'gpu-direct-lighting': '#f59e0b',
-  'gpu-translucency': '#06b6d4',
-  'gpu-bound': '#e11d48',
-  'render-cpu': '#a855f7',
-  'render-flush': '#9333ea',
-  'level-streaming': '#0284c7',
-  'unattributed-gap': '#64748b',
-};
-
-function getRuleDisplayLabel(ruleId: string): { label: string; badge: string; badgeColor: string } {
-  switch (ruleId) {
-    case 'gpu-niagara-fx':
-      return { label: 'GPU: Niagara Particles', badge: 'Niagara', badgeColor: 'bg-rose-500/20 text-rose-300 border-rose-500/30' };
-    case 'gpu-lumen':
-      return { label: 'GPU: Lumen GI & Refl', badge: 'Lumen', badgeColor: 'bg-pink-500/20 text-pink-300 border-pink-500/30' };
-    case 'gpu-vsm-shadows':
-      return { label: 'GPU: Virtual Shadows', badge: 'VSM', badgeColor: 'bg-red-500/20 text-red-300 border-red-500/30' };
-    case 'gpu-shadow-views':
-      return { label: 'GPU: Shadow Views', badge: 'Shadows', badgeColor: 'bg-red-600/20 text-red-300 border-red-600/30' };
-    case 'gpu-nanite':
-      return { label: 'GPU: Nanite Raster', badge: 'Nanite', badgeColor: 'bg-rose-600/20 text-rose-300 border-rose-600/30' };
-    case 'gpu-basepass':
-      return { label: 'GPU: BasePass Shading', badge: 'BasePass', badgeColor: 'bg-orange-500/20 text-orange-300 border-orange-500/30' };
-    case 'gpu-postprocess':
-      return { label: 'GPU: PostProcess / TSR', badge: 'TSR/PP', badgeColor: 'bg-fuchsia-500/20 text-fuchsia-300 border-fuchsia-500/30' };
-    case 'gpu-direct-lighting':
-      return { label: 'GPU: Direct Lighting', badge: 'Lights', badgeColor: 'bg-amber-500/20 text-amber-300 border-amber-500/30' };
-    case 'gpu-translucency':
-      return { label: 'GPU: Translucency', badge: 'Translucent', badgeColor: 'bg-cyan-500/20 text-cyan-300 border-cyan-500/30' };
-    case 'gpu-bound':
-      return { label: 'GPU: Rendering Workload', badge: 'GPU', badgeColor: 'bg-rose-500/20 text-rose-300 border-rose-500/30' };
-    case 'gc-hitch':
-      return { label: 'CPU: Garbage Collection', badge: 'GC', badgeColor: 'bg-red-500/20 text-red-300 border-red-500/30' };
-    case 'render-cpu':
-      return { label: 'Render: Scene / Visibility', badge: 'Render CPU', badgeColor: 'bg-purple-500/20 text-purple-300 border-purple-500/30' };
-    case 'render-flush':
-      return { label: 'Render: GPU Flush Stall', badge: 'RHI Flush', badgeColor: 'bg-purple-600/20 text-purple-300 border-purple-600/30' };
-    case 'bp-tick':
-      return { label: 'Game: Blueprint Tick', badge: 'Blueprint', badgeColor: 'bg-violet-500/20 text-violet-300 border-violet-500/30' };
-    case 'animation-cpu':
-      return { label: 'Game: AnimGraph / Pose', badge: 'Animation', badgeColor: 'bg-fuchsia-500/20 text-fuchsia-300 border-fuchsia-500/30' };
-    case 'physics-cpu':
-      return { label: 'Game: Chaos Physics', badge: 'Physics', badgeColor: 'bg-pink-500/20 text-pink-300 border-pink-500/30' };
-    case 'taskgraph-wait':
-      return { label: 'TaskGraph: Worker Stall', badge: 'TaskGraph', badgeColor: 'bg-orange-500/20 text-orange-300 border-orange-500/30' };
-    case 'shader-compile':
-      return { label: 'Async: Shader Compilation', badge: 'Shaders', badgeColor: 'bg-yellow-500/20 text-yellow-300 border-yellow-500/30' };
-    case 'pso-hitch':
-      return { label: 'Pipeline: PSO Creation', badge: 'PSO', badgeColor: 'bg-lime-500/20 text-lime-300 border-lime-500/30' };
-    case 'sync-load':
-      return { label: 'I/O: Sync Asset Load', badge: 'Sync Load', badgeColor: 'bg-cyan-500/20 text-cyan-300 border-cyan-500/30' };
-    case 'async-load-finalization':
-      return { label: 'I/O: PostLoad Finalization', badge: 'Async Load', badgeColor: 'bg-blue-500/20 text-blue-300 border-blue-500/30' };
-    case 'level-streaming':
-      return { label: 'World: Level Streaming', badge: 'Streaming', badgeColor: 'bg-sky-500/20 text-sky-300 border-sky-500/30' };
-    case 'cpu-hitch':
-      return { label: 'Game: CPU Execution Spike', badge: 'CPU Spike', badgeColor: 'bg-amber-500/20 text-amber-300 border-amber-500/30' };
-    default:
-      return { label: ruleId, badge: 'System', badgeColor: 'bg-slate-700/40 text-slate-300 border-slate-600/40' };
-  }
-}
 
 function formatTime(seconds: number | null | undefined): string {
   if (seconds === null || seconds === undefined || Number.isNaN(seconds)) {
@@ -107,6 +30,48 @@ function formatTime(seconds: number | null | undefined): string {
   return `${mins}m ${secs}s`;
 }
 
+function getNiceTimeStep(vDuration: number, targetTicks = 6): number {
+  const roughStep = Math.max(vDuration / targetTicks, 0.001);
+  const niceSteps = [
+    0.01, 0.02, 0.05, 0.1, 0.2, 0.5,
+    1, 2, 5, 10, 15, 20, 30,
+    60, 120, 300, 600, 900, 1800, 3600,
+  ];
+  for (const s of niceSteps) {
+    if (s >= roughStep) {
+      return s;
+    }
+  }
+  const magnitude = Math.pow(10, Math.floor(Math.log10(roughStep)));
+  const normalized = roughStep / magnitude;
+  if (normalized <= 1) return 1 * magnitude;
+  if (normalized <= 2) return 2 * magnitude;
+  if (normalized <= 5) return 5 * magnitude;
+  return 10 * magnitude;
+}
+
+function formatTickTime(seconds: number, step: number): string {
+  const s = Math.max(0, seconds);
+  if (s < 60) {
+    if (step >= 1) {
+      return `${Math.round(s)}s`;
+    }
+    const decimals = step >= 0.1 ? 1 : 2;
+    return `${s.toFixed(decimals)}s`;
+  }
+  const mins = Math.floor(s / 60);
+  const remSecs = s % 60;
+  if (step >= 1) {
+    const secInt = Math.round(remSecs);
+    if (secInt === 60) {
+      return `${mins + 1}m 00s`;
+    }
+    return `${mins}m ${secInt < 10 ? '0' : ''}${secInt}s`;
+  }
+  const decimals = step >= 0.1 ? 1 : 2;
+  return `${mins}m ${remSecs.toFixed(decimals)}s`;
+}
+
 function formatBookmarkName(name: string | undefined, timeS: number): string {
   if (!name || name.trim().toLowerCase() === 'bookmark') {
     return `Marker ${timeS.toFixed(2)}s`;
@@ -114,7 +79,192 @@ function formatBookmarkName(name: string | undefined, timeS: number): string {
   return name;
 }
 
+interface BookmarkChipsListProps {
+  bookmarks: TraceBookmark[];
+  durationS: number;
+  onSelectRange?: (range: [number, number] | null) => void;
+}
+
+function BookmarkChipsList({ bookmarks, durationS, onSelectRange }: BookmarkChipsListProps) {
+  const [isExpanded, setIsExpanded] = useState(false);
+  const [visibleCount, setVisibleCount] = useState<number>(bookmarks.length);
+  const containerRef = useRef<HTMLDivElement>(null);
+  const ghostRef = useRef<HTMLDivElement>(null);
+
+  const updateVisibleCount = useCallback(() => {
+    if (!containerRef.current || !ghostRef.current) return;
+    const width = containerRef.current.clientWidth;
+    if (width <= 0) return;
+
+    ghostRef.current.style.width = `${width}px`;
+
+    const ghostItems = Array.from(
+      ghostRef.current.querySelectorAll<HTMLElement>('[data-ghost-bm="true"]')
+    );
+    const ghostMore = ghostRef.current.querySelector<HTMLElement>('[data-ghost-more="true"]');
+
+    if (ghostItems.length === 0) {
+      setVisibleCount(bookmarks.length);
+      return;
+    }
+
+    // Determine row tops (clustering by tolerance of 4px)
+    const lineTops: number[] = [];
+    const itemLineIndices: number[] = [];
+
+    for (let i = 0; i < ghostItems.length; i++) {
+      const top = ghostItems[i].offsetTop;
+      let lineIdx = lineTops.findIndex((t) => Math.abs(t - top) < 4);
+      if (lineIdx === -1) {
+        lineTops.push(top);
+        lineTops.sort((a, b) => a - b);
+        lineIdx = lineTops.findIndex((t) => Math.abs(t - top) < 4);
+      }
+      itemLineIndices[i] = lineIdx;
+    }
+
+    // If 2 lines or fewer, everything fits
+    if (lineTops.length <= 2) {
+      setVisibleCount(bookmarks.length);
+      return;
+    }
+
+    // If more than 2 lines, we find how many items fit on lines 0 and 1 with the "+X more" button
+    const moreBtnWidth = ghostMore ? ghostMore.offsetWidth : 75;
+    const gap = 6;
+    const maxLine2Right = width - moreBtnWidth - gap;
+
+    let fittingCount = 0;
+    for (let i = 0; i < ghostItems.length; i++) {
+      const lineIdx = itemLineIndices[i];
+      if (lineIdx === 0) {
+        fittingCount = i + 1;
+      } else if (lineIdx === 1) {
+        const itemRight = ghostItems[i].offsetLeft + ghostItems[i].offsetWidth;
+        if (itemRight <= maxLine2Right) {
+          fittingCount = i + 1;
+        } else {
+          break;
+        }
+      } else {
+        break;
+      }
+    }
+
+    setVisibleCount(Math.max(1, fittingCount));
+  }, [bookmarks]);
+
+  useEffect(() => {
+    updateVisibleCount();
+
+    if (!containerRef.current) return;
+    const observer = new ResizeObserver(() => {
+      updateVisibleCount();
+    });
+    observer.observe(containerRef.current);
+    return () => observer.disconnect();
+  }, [updateVisibleCount]);
+
+  if (bookmarks.length === 0) return null;
+
+  const hasOverflow = visibleCount < bookmarks.length;
+  const displayedBookmarks = isExpanded ? bookmarks : bookmarks.slice(0, visibleCount);
+  const hiddenCount = bookmarks.length - visibleCount;
+
+  return (
+    <div className="relative w-full">
+      {/* Invisible Ghost container for accurate 2-line overflow measurement */}
+      <div
+        ref={ghostRef}
+        aria-hidden="true"
+        className="invisible pointer-events-none absolute top-0 left-0 flex flex-wrap items-center gap-1.5 opacity-0 z-[-999]"
+        style={{ width: '100%' }}
+      >
+        <span className="text-[11px] font-semibold shrink-0">📌 Bookmarks:</span>
+        {bookmarks.map((bm) => (
+          <div
+            key={bm.id}
+            data-ghost-bm="true"
+            className="px-2 py-0.5 rounded text-[10px] flex items-center gap-1 shrink-0"
+          >
+            <span className="font-medium truncate max-w-[130px]">{formatBookmarkName(bm.name, bm.startS)}</span>
+            <span className="font-mono text-[9px]">({formatTime(bm.startS)})</span>
+          </div>
+        ))}
+        <button
+          type="button"
+          data-ghost-more="true"
+          className="px-2 py-0.5 rounded text-[10px] font-semibold flex items-center gap-1 shrink-0"
+        >
+          +999 more
+        </button>
+      </div>
+
+      {/* Visible bookmarks bar */}
+      <div
+        ref={containerRef}
+        className="flex flex-wrap items-center gap-1.5 w-full transition-all duration-200"
+      >
+        <span className="text-[11px] text-purple-300 font-semibold shrink-0 flex items-center gap-1">
+          📌 <span>Bookmarks:</span>
+        </span>
+
+        {displayedBookmarks.map((bm) => (
+          <button
+            key={bm.id}
+            type="button"
+            onClick={() => {
+              const bStart = Math.max(0, bm.startS - 2.5);
+              const bEnd = Math.min(durationS, bm.startS + Math.max(bm.durationS, 2.5));
+              onSelectRange?.([bStart, bEnd]);
+            }}
+            className="px-2 py-0.5 rounded bg-purple-950/70 border border-purple-600/50 hover:bg-purple-900 text-purple-200 text-[10px] flex items-center gap-1 shrink-0 transition-colors shadow-sm cursor-pointer"
+            title={`${bm.name} at ${formatTime(bm.startS)} (click to inspect range)`}
+          >
+            <span className="font-medium truncate max-w-[130px]">{formatBookmarkName(bm.name, bm.startS)}</span>
+            <span className="text-purple-400 font-mono text-[9px]">({formatTime(bm.startS)})</span>
+          </button>
+        ))}
+
+        {hasOverflow && !isExpanded && (
+          <button
+            type="button"
+            onClick={() => setIsExpanded(true)}
+            className="px-2 py-0.5 rounded bg-purple-900/80 border border-purple-500/60 hover:bg-purple-800 text-purple-100 text-[10px] font-semibold flex items-center gap-1 shrink-0 transition-all shadow-sm cursor-pointer hover:border-purple-400"
+            title={`Show ${hiddenCount} more bookmark${hiddenCount > 1 ? 's' : ''}`}
+          >
+            <span>+{hiddenCount} more</span>
+            <svg className="w-2.5 h-2.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M19 9l-7 7-7-7" />
+            </svg>
+          </button>
+        )}
+
+        {hasOverflow && isExpanded && (
+          <button
+            type="button"
+            onClick={() => setIsExpanded(false)}
+            className="px-2 py-0.5 rounded bg-purple-900/80 border border-purple-500/60 hover:bg-purple-800 text-purple-100 text-[10px] font-semibold flex items-center gap-1 shrink-0 transition-all shadow-sm cursor-pointer hover:border-purple-400"
+            title="Collapse back to 2 lines"
+          >
+            <span>Show less</span>
+            <svg className="w-2.5 h-2.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M5 15l7-7 7 7" />
+            </svg>
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
+const PAD_L = 92;
+const PAD_R = 20;
+const PAD_T = 24;
+const PAD_B = 25;
+
 export function FrameGraph({
+  summary,
   durationS,
   targetMs,
   episodes = [],
@@ -161,7 +311,9 @@ export function FrameGraph({
     renderMs?: number;
     gpuMs?: number;
     bookmarkName?: string;
+    hitchNum?: number;
   } | null>(null);
+  const [showAllIssues, setShowAllIssues] = useState(false);
 
   // Drag / pan / selection interaction mode state
   const dragModeRef = useRef<'none' | 'pan' | 'brush' | 'handle_left' | 'handle_right'>('none');
@@ -201,21 +353,17 @@ export function FrameGraph({
   }, [sortedEpisodes]);
 
   const pixelToTime = useCallback((px: number, totalW: number) => {
-    const padL = 58;
-    const padR = 20;
-    const graphW = Math.max(totalW - padL - padR, 1);
-    const ratio = Math.max(0, Math.min(1, (px - padL) / graphW));
+    const graphW = Math.max(totalW - PAD_L - PAD_R, 1);
+    const ratio = Math.max(0, Math.min(1, (px - PAD_L) / graphW));
     const [vStart, vEnd] = viewRange;
     return vStart + ratio * (vEnd - vStart);
   }, [viewRange]);
 
   const timeToPixel = useCallback((t: number, totalW: number) => {
-    const padL = 58;
-    const padR = 20;
-    const graphW = Math.max(totalW - padL - padR, 1);
+    const graphW = Math.max(totalW - PAD_L - PAD_R, 1);
     const [vStart, vEnd] = viewRange;
     const vDuration = Math.max(vEnd - vStart, 0.001);
-    return padL + ((t - vStart) / vDuration) * graphW;
+    return PAD_L + ((t - vStart) / vDuration) * graphW;
   }, [viewRange]);
 
   // Canvas drawing
@@ -236,11 +384,10 @@ export function FrameGraph({
     const [vStart, vEnd] = viewRange;
     const vDuration = Math.max(vEnd - vStart, 0.001);
 
-    // Padding
-    const padL = 58;
-    const padR = 20;
-    const padT = 24; // Extra space for bookmark pins
-    const padB = 25;
+    const padL = PAD_L;
+    const padR = PAD_R;
+    const padT = PAD_T;
+    const padB = PAD_B;
 
     const graphW = width - padL - padR;
     const graphH = height - padT - padB;
@@ -303,7 +450,7 @@ export function FrameGraph({
         ctx.fillStyle = b.color;
         ctx.font = '10px sans-serif';
         ctx.textAlign = 'right';
-        ctx.fillText(b.label, padL - 6, y + 3);
+        ctx.fillText(b.label, padL - 8, y + 3);
       }
     }
     ctx.setLineDash([]);
@@ -363,12 +510,15 @@ export function FrameGraph({
         for (const b of seriesData.buckets) {
           const x1 = timeToX(b.t0);
           const x2 = timeToX(b.t1);
-          const barW = Math.max(x2 - x1, 1);
+          const rawBarW = Math.max(x2 - x1, 1);
           const isOffScale = b.maxMs > maxY;
 
           const yMin = msToY(b.minMs);
           const yMax = msToY(b.maxMs);
           const yAvg = msToY(b.avgMs);
+
+          const barGap = rawBarW >= 4.0 ? 0.5 : 0;
+          const barW = Math.max(rawBarW - barGap, 1);
 
           let barColor = 'rgba(56, 189, 248, 0.75)'; // sky
           let maxRangeColor = 'rgba(56, 189, 248, 0.25)';
@@ -388,6 +538,12 @@ export function FrameGraph({
           ctx.fillStyle = barColor;
           ctx.fillRect(x1, yAvg, barW, Math.max(baseBottomY - yAvg, 1));
 
+          if (rawBarW >= 3.5) {
+            ctx.strokeStyle = '#020617';
+            ctx.lineWidth = 1;
+            ctx.strokeRect(x1, yAvg, barW, Math.max(baseBottomY - yAvg, 1));
+          }
+
           // 3. Top peak indicator
           if (isOffScale) {
             ctx.fillStyle = '#ef4444';
@@ -405,10 +561,23 @@ export function FrameGraph({
         }
       } else if (!seriesData.isBucketed && seriesData.points.length > 0) {
         const points = seriesData.points;
-        const ptWidth = Math.max(graphW / Math.max(points.length, 1), 1.5);
 
-        for (const p of points) {
-          const x = timeToX(p.t);
+        for (let i = 0; i < points.length; i++) {
+          const p = points[i];
+          const nextP = points[i + 1];
+          const frameDurS = (nextP && nextP.t > p.t && nextP.t - p.t < 2.0)
+            ? (nextP.t - p.t)
+            : Math.max(p.frameMs / 1000, 0.001);
+
+          const x1 = timeToX(p.t);
+          const x2 = timeToX(p.t + frameDurS);
+          const rawBarW = Math.max(x2 - x1, 1.0);
+
+          // Subtle gap and border separation below certain zoom threshold
+          const showBorder = rawBarW >= 3.0;
+          const barGap = rawBarW >= 6.0 ? 1.0 : (rawBarW >= 3.5 ? 0.5 : 0);
+          const barW = Math.max(rawBarW - barGap, 1.0);
+
           const y = msToY(p.frameMs);
           const barH = Math.max(baseBottomY - y, 1.0);
           const isOffScale = p.frameMs > maxY;
@@ -421,43 +590,72 @@ export function FrameGraph({
           }
 
           ctx.fillStyle = color;
-          ctx.fillRect(x - ptWidth / 2, y, ptWidth, barH);
+          ctx.fillRect(x1, y, barW, barH);
+
+          // Black border on the bars when zoomed below threshold to clearly separate adjacent bars
+          if (showBorder) {
+            ctx.strokeStyle = '#020617';
+            ctx.lineWidth = 1;
+            ctx.strokeRect(x1, y, barW, barH);
+          }
 
           if (isOffScale) {
             ctx.fillStyle = '#ef4444';
-            ctx.fillRect(x - ptWidth / 2, padT, ptWidth, 2.5);
+            ctx.fillRect(x1, padT, barW, 2.5);
             ctx.fillStyle = '#fca5a5';
             ctx.font = 'bold 8px sans-serif';
             ctx.textAlign = 'center';
-            ctx.fillText('▲', x, padT - 2);
+            ctx.fillText('▲', x1 + barW / 2, padT - 2);
           }
 
           if (showGame && p.gameMs) {
             const gy = msToY(p.gameMs);
             ctx.fillStyle = '#34d399'; // emerald
-            ctx.fillRect(x - ptWidth / 2, gy, ptWidth, 2);
+            ctx.fillRect(x1, gy, barW, Math.min(2, barH));
           }
           if (showRender && p.renderMs) {
             const ry = msToY(p.renderMs);
             ctx.fillStyle = '#a78bfa'; // purple
-            ctx.fillRect(x - ptWidth / 2, ry, ptWidth, 2);
+            ctx.fillRect(x1, ry, barW, Math.min(2, barH));
           }
           if (showGpu && p.gpuMs) {
             const py = msToY(p.gpuMs);
             ctx.fillStyle = '#fb923c'; // orange
-            ctx.fillRect(x - ptWidth / 2, py, ptWidth, 2);
+            ctx.fillRect(x1, py, barW, Math.min(2, barH));
           }
         }
       }
     }
 
-    // Draw Hitch Markers
+    // Draw Hitch Markers: Show #N only for the worst 5 in view, others plain ticks; hide overlapping labels
+    const hitchesInView = episodes.filter((ep) => {
+      if (ep.kind !== 'hitch') return false;
+      const x = timeToX(ep.startS);
+      return x >= padL && x <= padL + graphW;
+    });
+
+    const worst5Hitches = [...hitchesInView]
+      .sort((a, b) => b.peakMs - a.peakMs)
+      .slice(0, 5);
+
+    const worst5SortedByX = worst5Hitches.sort((a, b) => a.startS - b.startS);
+    const labeledHitchIds = new Set<number>();
+    let lastLabelX = -999;
+    for (const h of worst5SortedByX) {
+      const hx = timeToX(h.startS);
+      if (hx - lastLabelX >= 26) {
+        labeledHitchIds.add(h.id);
+        lastLabelX = hx;
+      }
+    }
+
     for (const ep of episodes) {
       if (ep.kind === 'hitch') {
         const x = timeToX(ep.startS);
         if (x >= padL && x <= padL + graphW) {
           const y = msToY(ep.peakMs) - 6;
           const markerNum = episodeIndexMap.get(ep.id) || 1;
+          const showLabel = labeledHitchIds.has(ep.id);
 
           ctx.fillStyle = '#ef4444';
           ctx.beginPath();
@@ -467,10 +665,12 @@ export function FrameGraph({
           ctx.closePath();
           ctx.fill();
 
-          ctx.fillStyle = '#fca5a5';
-          ctx.font = 'bold 9px monospace';
-          ctx.textAlign = 'center';
-          ctx.fillText(`#${markerNum}`, x, y - 8);
+          if (showLabel) {
+            ctx.fillStyle = '#fca5a5';
+            ctx.font = 'bold 9px monospace';
+            ctx.textAlign = 'center';
+            ctx.fillText(`#${markerNum}`, x, y - 8);
+          }
         }
       }
     }
@@ -554,20 +754,31 @@ export function FrameGraph({
       }
     }
 
-    // Draw X-axis time labels
+    // Draw X-axis time labels with round seconds
     ctx.fillStyle = '#94a3b8';
     ctx.font = '11px sans-serif';
     ctx.textAlign = 'center';
-    const labelSteps = 5;
-    for (let i = 0; i <= labelSteps; i++) {
-      const t = vStart + (i / labelSteps) * vDuration;
+    ctx.strokeStyle = '#475569';
+    ctx.lineWidth = 1;
+
+    const step = getNiceTimeStep(vDuration, Math.max(3, Math.min(8, Math.floor(graphW / 120))));
+    const firstTick = Math.ceil(vStart / step) * step;
+    const lastTick = Math.floor(vEnd / step) * step;
+
+    for (let t = firstTick; t <= lastTick + step * 0.001; t += step) {
       const x = timeToX(t);
-      ctx.fillText(formatTime(t), x, padT + graphH + 16);
+      if (x >= padL + 12 && x <= padL + graphW - 12) {
+        // Small tick mark on axis line
+        ctx.beginPath();
+        ctx.moveTo(x, padT + graphH);
+        ctx.lineTo(x, padT + graphH + 4);
+        ctx.stroke();
+
+        ctx.fillText(formatTickTime(t, step), x, padT + graphH + 16);
+      }
     }
 
     // Frame axis line
-    ctx.strokeStyle = '#475569';
-    ctx.lineWidth = 1;
     ctx.beginPath();
     ctx.moveTo(padL, padT + graphH);
     ctx.lineTo(padL + graphW, padT + graphH);
@@ -636,8 +847,8 @@ export function FrameGraph({
       if (!canvas) return;
 
       const rect = canvas.getBoundingClientRect();
-      const mouseX = e.clientX - rect.left - 45;
-      const graphW = rect.width - 65;
+      const mouseX = e.clientX - rect.left - PAD_L;
+      const graphW = Math.max(1, rect.width - PAD_L - PAD_R);
       if (graphW <= 0) return;
 
       const mouseRatio = Math.max(0, Math.min(1, mouseX / graphW));
@@ -744,7 +955,7 @@ export function FrameGraph({
       onSelectRange?.([leftS, Math.max(currentT, leftS + 0.01)]);
     } else if (dragModeRef.current === 'pan') {
       const deltaPx = e.clientX - dragStartXRef.current;
-      const graphW = rect.width - 65;
+      const graphW = Math.max(1, rect.width - PAD_L - PAD_R);
       const [startRange0, startRange1] = dragStartRangeRef.current;
       const duration = startRange1 - startRange0;
       const deltaT = (deltaPx / graphW) * duration;
@@ -764,7 +975,26 @@ export function FrameGraph({
       setViewRange([newStart, newEnd]);
     } else {
       // Hover Tooltip Info
-      // 1. Check bookmark hover
+      // 1. Check hitch marker hover
+      const hitHitch = episodes.find((ep) => {
+        if (ep.kind !== 'hitch') return false;
+        const hx = timeToPixel(ep.startS, rect.width);
+        return Math.abs(x - hx) < 8;
+      });
+
+      if (hitHitch) {
+        const markerNum = episodeIndexMap.get(hitHitch.id) || 1;
+        setHoverInfo({
+          x: e.clientX - rect.left,
+          y: e.clientY - rect.top,
+          timeS: hitHitch.startS,
+          frameMs: hitHitch.peakMs,
+          hitchNum: markerNum,
+        });
+        return;
+      }
+
+      // 2. Check bookmark hover
       const hitBm = bookmarks.find((bm) => {
         const bx = timeToPixel(bm.startS, rect.width);
         return Math.abs(x - bx) < 8;
@@ -781,9 +1011,16 @@ export function FrameGraph({
         return;
       }
 
-      // 2. Check frame data hover
+      // 3. Check frame data hover
       if (seriesData && !seriesData.isBucketed) {
-        const hoveredPoint = seriesData.points.find((p) => Math.abs(p.t - currentT) < 0.05);
+        const hoveredPoint = seriesData.points.find((p, idx) => {
+          const nextP = seriesData.points[idx + 1];
+          const durS = (nextP && nextP.t > p.t && nextP.t - p.t < 2.0)
+            ? (nextP.t - p.t)
+            : Math.max(p.frameMs / 1000, 0.001);
+          return currentT >= p.t - 0.002 && currentT <= p.t + durS + 0.002;
+        }) ?? seriesData.points.find((p) => Math.abs(p.t - currentT) < 0.03);
+
         if (hoveredPoint) {
           setHoverInfo({
             x: e.clientX - rect.left,
@@ -864,216 +1101,184 @@ export function FrameGraph({
     }
   };
 
-  // Quick range preset actions
-  const handleSelectEntireTrace = () => {
-    onSelectRange?.([0, durationS]);
-  };
-
-  const handleSelectWorst10s = () => {
-    if (!seriesData) {
-      onSelectRange?.([0, Math.min(10.0, durationS)]);
-      return;
-    }
-
-    const windowLen = 10.0;
-    if (durationS <= windowLen) {
-      onSelectRange?.([0, durationS]);
-      return;
-    }
-
-    // Find 10s sliding window with highest average ms
-    let bestStart = 0;
-    let maxAvg = -1;
-
-    if (seriesData.isBucketed && seriesData.buckets.length > 0) {
-      for (let s = 0; s <= durationS - windowLen; s += 1.0) {
-        const matching = seriesData.buckets.filter((b) => b.t1 >= s && b.t0 <= s + windowLen);
-        if (matching.length > 0) {
-          const avg = matching.reduce((sum, b) => sum + b.avgMs, 0) / matching.length;
-          if (avg > maxAvg) {
-            maxAvg = avg;
-            bestStart = s;
-          }
-        }
-      }
-    } else if (!seriesData.isBucketed && seriesData.points.length > 0) {
-      for (let s = 0; s <= durationS - windowLen; s += 1.0) {
-        const matching = seriesData.points.filter((p) => p.t >= s && p.t <= s + windowLen);
-        if (matching.length > 0) {
-          const avg = matching.reduce((sum, p) => sum + p.frameMs, 0) / matching.length;
-          if (avg > maxAvg) {
-            maxAvg = avg;
-            bestStart = s;
-          }
-        }
-      }
-    }
-
-    onSelectRange?.([bestStart, bestStart + windowLen]);
-  };
-
   const handleResetZoom = () => {
     setViewRange([0, Math.max(durationS, 1)]);
   };
 
+  const medianFps = summary && (summary.medianMs ?? 0) > 0 ? Math.round(1000 / summary.medianMs) : 0;
+
   return (
     <div className="flex flex-col gap-2 w-full min-h-[280px]">
-      {/* Graph Toolbar with Presets */}
-      <div className="flex flex-wrap items-center justify-between gap-2 px-2 text-xs text-slate-400">
-        <div className="flex items-center gap-3">
-          <span className="font-medium text-slate-300">Timeline & Frame Graph</span>
-
-          {/* Quick Range Presets */}
-          <div className="flex items-center gap-1 bg-slate-800/90 rounded border border-slate-700/80 p-0.5 text-[11px]">
-            <span className="text-[10px] text-slate-400 font-semibold uppercase px-1">Presets:</span>
-            <button
-              type="button"
-              onClick={handleSelectEntireTrace}
-              title="Select the entire trace from start to finish"
-              className="px-2 py-0.5 rounded bg-slate-700/70 hover:bg-slate-700 text-slate-200 transition-colors"
-            >
-              Entire Trace
-            </button>
-            <button
-              type="button"
-              onClick={handleSelectWorst10s}
-              title="Select the worst 10-second window by frame time"
-              className="px-2 py-0.5 rounded bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 border border-amber-500/30 transition-colors"
-            >
-              Worst 10s
-            </button>
-          </div>
-
-          {/* Thread Overlays */}
-          <label className="flex items-center gap-1.5 cursor-pointer hover:text-slate-200 ml-1">
-            <input
-              type="checkbox"
-              checked={showGame}
-              onChange={(e) => setShowGame(e.target.checked)}
-              className="rounded bg-slate-700 border-slate-600 text-emerald-500 focus:ring-0"
-            />
-            <span className="text-emerald-400">Game</span>
-          </label>
-          <label className="flex items-center gap-1.5 cursor-pointer hover:text-slate-200">
-            <input
-              type="checkbox"
-              checked={showRender}
-              onChange={(e) => setShowRender(e.target.checked)}
-              className="rounded bg-slate-700 border-slate-600 text-purple-500 focus:ring-0"
-            />
-            <span className="text-purple-400">Render</span>
-          </label>
-          <label className="flex items-center gap-1.5 cursor-pointer hover:text-slate-200">
-            <input
-              type="checkbox"
-              checked={showGpu}
-              onChange={(e) => setShowGpu(e.target.checked)}
-              className="rounded bg-slate-700 border-slate-600 text-orange-500 focus:ring-0"
-            />
-            <span className="text-orange-400">GPU</span>
-          </label>
-        </div>
-
-        <div className="flex items-center gap-2">
-          {/* Vertical Scale Mode Toggle */}
-          <div className="flex items-center bg-slate-800/80 rounded border border-slate-700/80 p-0.5 text-[11px]">
-            <button
-              type="button"
-              onClick={() => setScaleMode('p99')}
-              title="Percentile Clamping: prioritizes frame-to-frame baseline resolution, capping off-scale spikes"
-              className={`px-2 py-0.5 rounded transition-colors ${
-                scaleMode === 'p99'
-                  ? 'bg-sky-600/70 text-sky-100 font-medium'
-                  : 'text-slate-400 hover:text-slate-200'
-              }`}
-            >
-              Auto (p99)
-            </button>
-            <button
-              type="button"
-              onClick={() => setScaleMode('fit')}
-              title="Fit Peaks: scales vertical axis to fit the absolute highest hitch spike"
-              className={`px-2 py-0.5 rounded transition-colors ${
-                scaleMode === 'fit'
-                  ? 'bg-sky-600/70 text-sky-100 font-medium'
-                  : 'text-slate-400 hover:text-slate-200'
-              }`}
-            >
-              Fit Peaks
-            </button>
-          </div>
-
-          <span className="text-slate-500">
-            View: {formatTime(viewRange[0])} – {formatTime(viewRange[1])}
-          </span>
-          <button
-            type="button"
-            onClick={handleResetZoom}
-            className="px-2 py-0.5 rounded bg-slate-700/60 hover:bg-slate-700 text-slate-300 transition-colors"
-          >
-            Reset View
-          </button>
-        </div>
-      </div>
-
-      {/* Legend & Navigation Hint Bar */}
-      <div className="flex flex-wrap items-center justify-between gap-2 px-2 py-1 bg-slate-900/60 rounded border border-slate-800 text-[11px] text-slate-400">
-        <div className="flex flex-wrap items-center gap-3">
-          <div className="flex items-center gap-1.5">
-            <span className="w-2.5 h-2.5 rounded-sm bg-sky-400/80" />
-            <span>Frame Time</span>
-          </div>
-          <div className="flex items-center gap-1.5">
-            <span className="w-2.5 h-0.5 border-b-2 border-sky-400 border-dashed" />
-            <span>Target Budget ({targetMs.toFixed(1)} ms)</span>
-          </div>
-          <div className="flex items-center gap-1.5">
-            <span className="w-2.5 h-2.5 rounded-sm bg-rose-500" />
-            <span>Hitch Spike (#N)</span>
-          </div>
-          <div className="flex items-center gap-1.5">
-            <span className="w-2.5 h-2.5 rounded-full bg-purple-500" />
-            <span>Bookmark Pin</span>
-          </div>
-          {showGame && (
-            <div className="flex items-center gap-1.5 text-emerald-400">
-              <span className="w-2.5 h-0.5 bg-emerald-400" />
-              <span>Game Thread</span>
+      {/* Frame Graph Main Unified Container */}
+      <div className="flex flex-col rounded-lg bg-slate-900/70 border border-slate-800 overflow-hidden shadow-sm">
+        {/* Graph Header: Metrics Line + Zoom / View Controls */}
+        <div className="flex flex-wrap items-center justify-between gap-2 px-3 py-2 bg-slate-900/90 border-b border-slate-800 text-xs shrink-0">
+          {/* Left: 4 Metrics Summary Line */}
+          {summary ? (
+            <div className="flex items-center gap-2 text-slate-400 text-xs font-mono flex-wrap">
+              <span>
+                Duration: <strong className="text-slate-200">{formatTime(summary.durationS)}</strong>
+              </span>
+              <span className="text-slate-600">•</span>
+              <span>
+                Median: <strong className="text-emerald-400">{medianFps} fps</strong> ({(summary.medianMs ?? 0).toFixed(1)} ms/frame)
+              </span>
+              <span className="text-slate-600">•</span>
+              <span>
+                p95: <strong className="text-amber-300">{(summary.p95Ms ?? 0).toFixed(1)} ms/frame</strong>
+              </span>
+              <span className="text-slate-600">•</span>
+              <span>
+                Hitches: <strong className={(summary.hitchCount ?? 0) > 0 ? 'text-rose-400' : 'text-slate-300'}>{summary.hitchCount ?? 0}</strong>
+              </span>
             </div>
+          ) : (
+            <span className="font-semibold text-slate-300">Timeline &amp; Frame Graph</span>
           )}
-          {showRender && (
-            <div className="flex items-center gap-1.5 text-purple-400">
-              <span className="w-2.5 h-0.5 bg-purple-400" />
-              <span>Render Thread</span>
+
+          {/* Right: Scale Mode & View Controls */}
+          <div className="flex items-center gap-2">
+            {/* Thread Overlays */}
+            <div className="flex items-center gap-2 text-[11px]">
+              <label className="flex items-center gap-1 cursor-pointer hover:text-slate-200">
+                <input
+                  type="checkbox"
+                  checked={showGame}
+                  onChange={(e) => setShowGame(e.target.checked)}
+                  className="rounded bg-slate-700 border-slate-600 text-emerald-500 focus:ring-0 w-3 h-3"
+                />
+                <span className="text-emerald-400">Game</span>
+              </label>
+              <label className="flex items-center gap-1 cursor-pointer hover:text-slate-200">
+                <input
+                  type="checkbox"
+                  checked={showRender}
+                  onChange={(e) => setShowRender(e.target.checked)}
+                  className="rounded bg-slate-700 border-slate-600 text-purple-500 focus:ring-0 w-3 h-3"
+                />
+                <span className="text-purple-400">Render</span>
+              </label>
+              <label className="flex items-center gap-1 cursor-pointer hover:text-slate-200">
+                <input
+                  type="checkbox"
+                  checked={showGpu}
+                  onChange={(e) => setShowGpu(e.target.checked)}
+                  className="rounded bg-slate-700 border-slate-600 text-orange-500 focus:ring-0 w-3 h-3"
+                />
+                <span className="text-orange-400">GPU</span>
+              </label>
             </div>
-          )}
-          {showGpu && (
-            <div className="flex items-center gap-1.5 text-orange-400">
-              <span className="w-2.5 h-0.5 bg-orange-400" />
-              <span>GPU Thread</span>
+
+            {/* Vertical Scale Mode Toggle */}
+            <div className="flex items-center bg-slate-800/80 rounded border border-slate-700/80 p-0.5 text-[11px]">
+              <button
+                type="button"
+                onClick={() => setScaleMode('p99')}
+                title="Percentile Clamping: baseline resolution, capping off-scale spikes"
+                className={`px-1.5 py-0.5 rounded transition-colors ${
+                  scaleMode === 'p99'
+                    ? 'bg-sky-600/70 text-sky-100 font-medium'
+                    : 'text-slate-400 hover:text-slate-200'
+                }`}
+              >
+                Auto (p99)
+              </button>
+              <button
+                type="button"
+                onClick={() => setScaleMode('fit')}
+                title="Fit Peaks: scales vertical axis to fit highest hitch spike"
+                className={`px-1.5 py-0.5 rounded transition-colors ${
+                  scaleMode === 'fit'
+                    ? 'bg-sky-600/70 text-sky-100 font-medium'
+                    : 'text-slate-400 hover:text-slate-200'
+                }`}
+              >
+                Fit Peaks
+              </button>
             </div>
-          )}
+
+            <span className="text-slate-500 text-[11px] font-mono">
+              {formatTime(viewRange[0])} – {formatTime(viewRange[1])}
+            </span>
+            <button
+              type="button"
+              onClick={handleResetZoom}
+              className="px-2 py-0.5 rounded bg-slate-700/60 hover:bg-slate-700 text-slate-300 text-[11px] transition-colors"
+            >
+              Reset
+            </button>
+          </div>
         </div>
 
-        {/* One-line Navigation Hint */}
-        <div className="text-[11px] text-slate-400 font-mono">
-          <strong className="text-slate-300">Drag</strong> = select | <strong className="text-slate-300">Wheel</strong> = zoom | <strong className="text-slate-300">Alt+Drag</strong> = pan
-        </div>
-      </div>
+        {/* Bookmarks Bar: Up to 2 lines of bookmark chips + "+X more" expand toggle */}
+        {bookmarks.length > 0 && (
+          <div className="px-3 py-1.5 bg-slate-900/60 border-b border-slate-800 text-xs shrink-0">
+            <BookmarkChipsList
+              bookmarks={bookmarks}
+              durationS={durationS}
+              onSelectRange={onSelectRange}
+            />
+          </div>
+        )}
 
-      {/* Canvas Viewport */}
-      <div
-        ref={containerRef}
-        className="relative flex-1 w-full min-h-[170px] bg-slate-900/60 rounded border border-slate-700/60 overflow-hidden cursor-crosshair select-none"
-        onMouseDown={handleMouseDown}
-        onMouseMove={handleMouseMove}
-        onMouseUp={handleMouseUp}
-        onMouseLeave={() => {
-          dragModeRef.current = 'none';
-          setHoverInfo(null);
-        }}
-      >
-        <canvas ref={canvasRef} className="absolute inset-0 block w-full h-full" />
+        {/* Legend & Navigation Hint Bar - Included directly inside the frame graph container above the canvas */}
+        <div className="flex flex-wrap items-center justify-between gap-2 px-3 py-1.5 bg-slate-950/40 border-b border-slate-800/60 text-[11px] text-slate-400">
+          <div className="flex flex-wrap items-center gap-3">
+            <div className="flex items-center gap-1.5">
+              <span className="w-2.5 h-2.5 rounded-sm bg-sky-400/80" />
+              <span>Frame Time</span>
+            </div>
+            <div className="flex items-center gap-1.5">
+              <span className="w-2.5 h-0.5 border-b-2 border-sky-400 border-dashed" />
+              <span>Target ({targetMs.toFixed(1)} ms)</span>
+            </div>
+            <div className="flex items-center gap-1.5">
+              <span className="w-2.5 h-2.5 rounded-sm bg-rose-500" />
+              <span>Hitch Spike (#N)</span>
+            </div>
+            <div className="flex items-center gap-1.5">
+              <span className="w-2.5 h-2.5 rounded-full bg-purple-500" />
+              <span>Bookmark</span>
+            </div>
+            {showGame && (
+              <div className="flex items-center gap-1 text-emerald-400">
+                <span className="w-2 h-0.5 bg-emerald-400" />
+                <span>Game</span>
+              </div>
+            )}
+            {showRender && (
+              <div className="flex items-center gap-1 text-purple-400">
+                <span className="w-2 h-0.5 bg-purple-400" />
+                <span>Render</span>
+              </div>
+            )}
+            {showGpu && (
+              <div className="flex items-center gap-1 text-orange-400">
+                <span className="w-2 h-0.5 bg-orange-400" />
+                <span>GPU</span>
+              </div>
+            )}
+          </div>
+
+          {/* Interaction Hint */}
+          <div className="text-[11px] text-slate-400 font-mono">
+            <strong className="text-slate-300">Drag</strong> = select • <strong className="text-slate-300">Wheel</strong> = zoom • <strong className="text-slate-300">Alt+Drag</strong> = pan
+          </div>
+        </div>
+
+        {/* Canvas Viewport */}
+        <div
+          ref={containerRef}
+          className="relative flex-1 w-full min-h-[180px] bg-slate-950/60 overflow-hidden cursor-crosshair select-none"
+          onMouseDown={handleMouseDown}
+          onMouseMove={handleMouseMove}
+          onMouseUp={handleMouseUp}
+          onMouseLeave={() => {
+            dragModeRef.current = 'none';
+            setHoverInfo(null);
+          }}
+        >
+          <canvas ref={canvasRef} className="absolute inset-0 block w-full h-full" />
 
         {/* Hover Tooltip */}
         {hoverInfo && (
@@ -1084,7 +1289,13 @@ export function FrameGraph({
               top: `${Math.max(10, hoverInfo.y - 45)}px`,
             }}
           >
-            {hoverInfo.bookmarkName ? (
+            {hoverInfo.hitchNum !== undefined ? (
+              <div>
+                <span className="text-rose-400 font-bold">Hitch #{hoverInfo.hitchNum}</span>:{' '}
+                <span className="font-mono text-amber-300 font-semibold">{hoverInfo.frameMs.toFixed(1)} ms</span>
+                <div className="text-[11px] text-slate-400">At {formatTime(hoverInfo.timeS)} (Click to select)</div>
+              </div>
+            ) : hoverInfo.bookmarkName ? (
               <div>
                 <span className="text-purple-300 font-semibold">📌 Bookmark:</span>{' '}
                 <span className="font-mono text-purple-100">{hoverInfo.bookmarkName}</span>
@@ -1110,40 +1321,14 @@ export function FrameGraph({
             )}
           </div>
         )}
+        </div>
       </div>
 
-      {/* Bookmarks Track Bar (if bookmarks present) */}
-      {bookmarks.length > 0 && (
-        <div className="flex items-center gap-1.5 px-2.5 py-1.5 bg-slate-800/60 rounded border border-purple-500/30 text-xs overflow-x-auto shrink-0 shadow-inner">
-          <span className="text-purple-300 font-medium text-[11px] flex items-center gap-1 shrink-0">
-            <span>📌</span> Bookmarks ({bookmarks.length}):
-          </span>
-          <div className="flex items-center gap-1.5 flex-nowrap">
-            {bookmarks.map((bm) => (
-              <button
-                key={bm.id}
-                type="button"
-                onClick={() => {
-                  const bStart = Math.max(0, bm.startS - 2.5);
-                  const bEnd = Math.min(durationS, bm.startS + Math.max(bm.durationS, 2.5));
-                  onSelectRange?.([bStart, bEnd]);
-                }}
-                className="px-2.5 py-1 rounded bg-purple-950/70 border border-purple-600/50 hover:bg-purple-900 text-purple-200 text-[11px] flex items-center gap-1 shrink-0 transition-colors shadow-sm"
-                title={`${bm.name} at ${formatTime(bm.startS)}`}
-              >
-                <span className="font-medium">{formatBookmarkName(bm.name, bm.startS)}</span>
-                <span className="text-purple-400 font-mono text-[10px]">({formatTime(bm.startS)})</span>
-              </button>
-            ))}
-          </div>
-        </div>
-      )}
-
-      {/* Findings Timeline Lane */}
+      {/* Findings Lane directly under the graph, aligned to same x-axis */}
       {(() => {
         if (!issues || issues.length === 0 || durationS <= 0) return null;
 
-        // Collapse duplicate diagnosis by ruleId into a single consolidated timeline row
+        // Group diagnoses by ruleId
         const map = new Map<
           string,
           {
@@ -1181,23 +1366,34 @@ export function FrameGraph({
           group.occurrences.sort((a, b) => a.occurrence.frameFrom - b.occurrence.frameFrom);
         }
 
-        const totalOccurrencesCount = issues.reduce((acc, i) => acc + i.occurrences.length, 0);
-
         if (groupedDiagnoses.length === 0) return null;
 
+        const displayedDiagnoses = showAllIssues ? groupedDiagnoses : groupedDiagnoses.slice(0, 6);
+
         return (
-          <div className="flex flex-col gap-1.5 px-3 py-2 bg-slate-800/40 rounded border border-slate-700/50 text-xs">
+          <div className="flex flex-col gap-1.5 px-3 py-2 bg-slate-900/60 rounded border border-slate-800 text-xs">
             <div className="flex items-center justify-between text-[11px] text-slate-400 font-semibold mb-0.5">
               <span className="flex items-center gap-1.5">
-                <span className="w-2 h-2 rounded-full bg-sky-400 animate-pulse" />
-                <span>Diagnostic Findings Timeline</span>
+                <span className="w-2 h-2 rounded-full bg-sky-400" />
+                <span className="text-slate-300">Findings Timeline Lane</span>
+                <span className="text-slate-500 font-normal">
+                  ({displayedDiagnoses.length} of {groupedDiagnoses.length} issues)
+                </span>
               </span>
-              <span className="text-slate-500 font-mono text-[10px]">
-                {totalOccurrencesCount} occurrence{totalOccurrencesCount !== 1 ? 's' : ''} across {groupedDiagnoses.length} diagnos{groupedDiagnoses.length > 1 ? 'es' : 'is'}
-              </span>
+
+              {groupedDiagnoses.length > 6 && (
+                <button
+                  type="button"
+                  onClick={() => setShowAllIssues(!showAllIssues)}
+                  className="text-sky-400 hover:text-sky-300 font-medium text-[11px] transition-colors"
+                >
+                  {showAllIssues ? 'Show top 6' : `Show all (${groupedDiagnoses.length})`}
+                </button>
+              )}
             </div>
-            <div className="flex flex-col gap-1.5 w-full max-h-52 overflow-y-auto pr-0.5">
-              {groupedDiagnoses.map((diag) => {
+
+            <div className="flex flex-col gap-1.5 w-full">
+              {displayedDiagnoses.map((diag) => {
                 const color = RULE_COLORS[diag.ruleId] || '#38bdf8';
                 const { label, badge, badgeColor } = getRuleDisplayLabel(diag.ruleId);
 
@@ -1217,8 +1413,8 @@ export function FrameGraph({
                       </span>
                     </div>
 
-                    {/* Timeline Bar of Occurrences using exact startS and endS */}
-                    <div className="flex-1 relative h-2.5 bg-slate-900/90 rounded overflow-hidden border border-slate-700/60">
+                    {/* Timeline Bar aligned to graph width (58px padLeft, 20px padRight) */}
+                    <div className="flex-1 relative h-2.5 bg-slate-950/80 rounded overflow-hidden border border-slate-700/60">
                       {diag.occurrences.map((item) => {
                         const occ = item.occurrence;
                         const isSpike = item.issue.scale === 'spike';
@@ -1245,13 +1441,13 @@ export function FrameGraph({
                               backgroundColor: color,
                               opacity: isSpike ? 1 : 0.85,
                             }}
-                            title={`${label} [${item.issue.scale}] (${threadRole || 'all threads'})\nFrames ${occ.frameFrom}..${occ.frameTo} (${fromSec}s – ${toSec}s)\nPeak: ${occ.peakFrameMs.toFixed(1)} ms | Excess: +${occ.sumExcessMs.toFixed(1)} ms\nClick to select range`}
+                            title={`${label} [${item.issue.scale}] (${threadRole || 'all threads'})\n${fromSec}s – ${toSec}s\nPeak: ${occ.peakFrameMs.toFixed(1)} ms | Excess: +${occ.sumExcessMs.toFixed(1)} ms\nClick to select range`}
                           />
                         );
                       })}
                     </div>
 
-                    {/* Summary Metric (Occurrences & Excess) */}
+                    {/* Summary Metric */}
                     <span className="text-[9px] text-slate-500 font-mono w-16 text-right shrink-0">
                       {diag.occurrences.length}x (+{diag.totalExcessMs.toFixed(0)}ms)
                     </span>

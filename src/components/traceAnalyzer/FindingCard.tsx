@@ -1,5 +1,6 @@
 import { useState, useMemo } from 'react';
 import type { Episode, Finding, TraceBookmark } from '../../types/traceAnalyzer';
+import { getRuleDisplayLabel } from '../../utils/ruleDisplay';
 
 interface FindingCardProps {
   finding: Finding;
@@ -31,19 +32,6 @@ export function FindingCard({
   const [showMoreFixes, setShowMoreFixes] = useState(false);
 
   const p = finding.parsedPayload;
-
-  // Build sorted episode index map for numbered markers #1, #2...
-  const sortedEpisodes = useMemo(() => {
-    return [...episodes].sort((a, b) => a.startS - b.startS);
-  }, [episodes]);
-
-  const episodeIndexMap = useMemo(() => {
-    const map = new Map<number, number>();
-    sortedEpisodes.forEach((ep, idx) => {
-      map.set(ep.id, idx + 1);
-    });
-    return map;
-  }, [sortedEpisodes]);
 
   const episodesMap = useMemo(() => {
     return new Map<number, Episode>(episodes.map((ep) => [ep.id, ep]));
@@ -103,6 +91,10 @@ export function FindingCard({
     : p?.matchConfidence === 'medium'
     ? 'text-sky-400 bg-sky-950/60 border-sky-500/40'
     : 'text-amber-400 bg-amber-950/60 border-amber-500/40';
+
+  const ruleDisplay = useMemo(() => {
+    return getRuleDisplayLabel(finding.ruleId, p?.title);
+  }, [finding.ruleId, p?.title]);
 
   // Fix likelihood
   const likelihoodText = isInconclusive
@@ -164,9 +156,18 @@ export function FindingCard({
             >
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
             </svg>
-            <h3 className="text-sm font-semibold text-slate-100 group-hover:text-sky-300 leading-snug transition-colors">
-              {headline}
-            </h3>
+            <div className="flex items-center gap-2 flex-wrap flex-1">
+              {/* Domain pill */}
+              <span
+                className={`text-[10px] font-bold px-1.5 py-0.5 rounded border uppercase tracking-wider shrink-0 ${ruleDisplay.badgeColor}`}
+                title={`Domain: ${ruleDisplay.label}`}
+              >
+                {ruleDisplay.badge}
+              </span>
+              <h3 className="text-sm font-semibold text-slate-100 group-hover:text-sky-300 leading-snug transition-colors">
+                {headline}
+              </h3>
+            </div>
           </div>
 
           {/* Badges & Actions */}
@@ -348,19 +349,16 @@ export function FindingCard({
             </div>
           )}
 
-          {/* Numbered Occurrence Chips */}
+          {/* Time Range Chips */}
           {p.episodeIds && p.episodeIds.length > 0 && (
             <div className="flex items-center gap-2 pt-1 border-t border-slate-800/60 text-xs text-slate-400 flex-wrap">
-              <span className="font-medium text-slate-400">Occurrences:</span>
+              <span className="font-medium text-slate-400">Time Range:</span>
               <div className="flex flex-wrap gap-1.5">
                 {p.episodeIds.map((epId) => {
                   const ep = episodesMap.get(epId);
                   if (!ep) return null;
-                  const markerNum = episodeIndexMap.get(epId) || 1;
-                  const isStartup = ep.startS < 1.0;
-                  const tag = isStartup ? 'startup' : ep.kind === 'slow_region' ? 'region' : 'hitch';
-                  const timeLabel = `${formatTime(ep.startS)}`;
-                  const peakLabel = `${ep.peakMs.toFixed(0)} ms`;
+                  const timeLabel = `${ep.startS.toFixed(1)}s – ${ep.endS.toFixed(1)}s`;
+                  const peakLabel = `${ep.peakMs.toFixed(1)} ms`;
 
                   return (
                     <button
@@ -370,15 +368,9 @@ export function FindingCard({
                         const padding = 0.5;
                         onSelectRange?.([Math.max(0, ep.startS - padding), ep.endS + padding]);
                       }}
-                      title={`Focus marker #${markerNum} at ${timeLabel} (${peakLabel})`}
-                      className="flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-slate-800/80 hover:bg-sky-950/70 text-slate-300 hover:text-sky-200 border border-slate-700/80 hover:border-sky-500/60 text-xs transition-all cursor-pointer font-mono shadow-sm"
+                      title={`Select ${timeLabel} (${peakLabel})`}
+                      className="flex items-center gap-1.5 px-2 py-0.5 rounded bg-slate-800 hover:bg-sky-950/70 text-slate-300 hover:text-sky-200 border border-slate-700 hover:border-sky-500/60 text-xs transition-all cursor-pointer font-mono shadow-sm"
                     >
-                      <span className="text-sky-400 font-bold">#{markerNum}</span>
-                      <span className={`text-[10px] font-sans px-1 rounded uppercase font-semibold ${
-                        isStartup ? 'bg-amber-950 text-amber-300' : 'bg-slate-700 text-slate-300'
-                      }`}>
-                        {tag}
-                      </span>
                       <span>{timeLabel}</span>
                       <span className="text-amber-300 font-semibold">({peakLabel})</span>
                     </button>

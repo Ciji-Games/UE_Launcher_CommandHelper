@@ -1,30 +1,18 @@
-import { useEffect, useState, useMemo } from 'react';
+import { useEffect, useState, useMemo, useRef } from 'react';
 import { open } from '@tauri-apps/plugin-dialog';
 import { getCurrentWebview } from '@tauri-apps/api/webview';
 import { useTraceAnalyzer } from '../hooks/useTraceAnalyzer';
 import { FrameGraph } from './traceAnalyzer/FrameGraph';
 import { SummaryHeader } from './traceAnalyzer/SummaryHeader';
-import { StartHereBanner } from './traceAnalyzer/StartHereBanner';
 import { FindingCard } from './traceAnalyzer/FindingCard';
 import { LoadingStages } from './traceAnalyzer/LoadingStages';
 import { RangeAnalysisPanel } from './traceAnalyzer/RangeAnalysisPanel';
-import { DetailsDrawer } from './traceAnalyzer/DetailsDrawer';
 import { getRemediationAdvice } from '../utils/remediationAdvice';
 import type { Episode, Finding, FindingPayload, Level, TraceCandidate } from '../types/traceAnalyzer';
-
-function formatDuration(s: number): string {
-  if (s < 60) return `${s.toFixed(2)}s`;
-  const m = Math.floor(s / 60);
-  const sec = (s % 60).toFixed(1);
-  return `${m}m ${sec}s`;
-}
 
 export function TraceAnalyzerPanel() {
   const {
     candidates,
-    availableEngines,
-    selectedEngineRoot,
-    setSelectedEngineRoot,
     insightsInfo,
     currentTracePath,
     summary,
@@ -61,6 +49,7 @@ export function TraceAnalyzerPanel() {
   const [selectedExePath, setSelectedExePath] = useState<string>('');
   const [customArgs, setCustomArgs] = useState<string>('');
   const [selectedTimerName, setSelectedTimerName] = useState<string | null>(null);
+  const findingsSectionRef = useRef<HTMLDivElement>(null);
 
   // File picker handler for .utrace
   const handlePickFile = async () => {
@@ -524,7 +513,7 @@ export function TraceAnalyzerPanel() {
   }, [scopedFindings, episodes, rangeStats]);
 
   return (
-    <div className="flex flex-col h-full bg-slate-950 text-slate-100 p-4 gap-3 select-none overflow-hidden">
+    <div className="flex flex-col h-full min-h-0 text-slate-100 gap-3 select-none overflow-hidden">
       {/* Top Compact Action & Metadata Bar */}
       <SummaryHeader
         summary={summary}
@@ -539,12 +528,10 @@ export function TraceAnalyzerPanel() {
         onPickExe={handlePickExe}
         candidates={candidates}
         onOpenTrace={openTrace}
-        availableEngines={availableEngines}
-        selectedEngineRoot={selectedEngineRoot}
-        onEngineChange={setSelectedEngineRoot}
         insightsExists={!!insightsInfo?.exists}
         isAnalyzing={isAnalyzing}
         selectedRange={selectedRange}
+        onResetRange={() => summary && setSelectedRange([0, summary.durationS])}
         onRefreshDiagnostic={refreshTraceDiagnostic}
         onCleanTraceDatabase={() => setShowCleanDbModal(true)}
       />
@@ -570,26 +557,16 @@ export function TraceAnalyzerPanel() {
 
         {/* Loading State */}
         {isAnalyzing ? (
-          <div className="flex-1 flex items-center justify-center min-h-0">
+          <div className="flex-1 flex items-center justify-center min-h-[300px]">
             <LoadingStages progress={progressPayload} importProgress={importProgress} onCancel={cancelAnalysis} />
           </div>
         ) : summary ? (
-          /* Active Trace View: Unified Performance Studio Dashboard */
+          /* Active Trace View: Single Scroll Column Dashboard */
           <div className="flex flex-col gap-3 flex-1 min-h-0 overflow-y-auto pr-1">
-            {/* "Start Here" Dynamic Diagnostic Banner */}
-            <StartHereBanner
-              stats={rangeStats}
-              summary={summary}
-              findings={scopedFindings}
-              episodes={rangeEpisodes}
-              hitchCount={rangeHitchCount}
-              maxHitchMs={rangeMaxHitchMs}
-              onShowOnGraph={(range) => setSelectedRange(range)}
-            />
-
-            {/* Frame Time Graph + Bookmarks Track + Diagnosis Chunk Overlays */}
+            {/* 3 & 4. Frame Graph with Header Metrics, Bookmarks Chips, Worst-5 Hitch Labels, and Findings Lane */}
             <div className="min-h-[280px] shrink-0">
               <FrameGraph
+                summary={summary}
                 durationS={summary.durationS}
                 targetMs={summary.targetMs}
                 episodes={episodes}
@@ -603,240 +580,48 @@ export function TraceAnalyzerPanel() {
               />
             </div>
 
-            {/* Middle Row: Range Analysis Panel */}
+            {/* 5 & 7. Range Card (Verdict, 3 numbers, Thread Bars, First thing to try) + Details Accordion (Subsystems, Waiting, Channels) */}
             <div className="shrink-0">
               <RangeAnalysisPanel
                 stats={rangeStats}
+                summary={summary}
                 targetMs={summary.targetMs}
+                topFinding={scopedFindings[0]}
                 hitchCount={rangeHitchCount}
                 maxHitchMs={rangeMaxHitchMs}
                 isLoading={rangeStatsLoading}
                 selectedTimerName={selectedTimerName}
                 onSelectTimer={setSelectedTimerName}
+                onSeeDetails={() => findingsSectionRef.current?.scrollIntoView({ behavior: 'smooth' })}
+                onRefreshDiagnostic={refreshTraceDiagnostic}
+                onCleanAllCaches={() => setShowCleanDbModal(true)}
               />
             </div>
 
-            {/* Scoped Diagnostic Findings Section */}
-            <div className="flex flex-col gap-4 min-h-[300px] pb-6 pt-1 border-t border-slate-800/80">
-
-              {/* Regime Changes Notification Banner (Item 7) */}
-              {rangeStats?.regimeChanges && rangeStats.regimeChanges.length > 0 && (
-                <div className="p-3 rounded-lg bg-slate-900 border border-sky-500/30 text-slate-200 text-xs flex flex-col gap-1.5">
-                  <div className="flex items-center gap-2 font-bold text-sky-400">
-                    <span>📈 Frame Time Regime Transitions</span>
-                  </div>
-                  <ul className="list-disc list-inside text-[11px] text-slate-300 flex flex-col gap-1">
-                    {rangeStats.regimeChanges.map((rc, idx) => (
-                      <li key={`rc-${idx}`}>
-                        <span className="font-semibold text-slate-100">{rc.description}</span>
-                      </li>
-                    ))}
-                  </ul>
-                </div>
-              )}
-
-              {/* Selected Scope Indicator Bar (Hidden when entire trace is active) */}
-              {selectedRange &&
-                Math.max(...selectedRange) - Math.min(...selectedRange) < summary.durationS - 0.05 && (
-                  <div className="flex flex-wrap items-center justify-between gap-3 p-3 rounded-lg bg-slate-900/80 border border-sky-500/50 shadow-md">
-                    <div className="flex items-center gap-2.5 text-xs">
-                      <span className="font-bold text-sky-300 text-sm">
-                        Active Scope:
-                      </span>
-                      <span className="font-mono text-slate-200">
-                        {formatDuration(selectedRange[0])} – {formatDuration(selectedRange[1])}
-                      </span>
-                      <span className="text-slate-500">•</span>
-                      <span className="text-slate-400">
-                        Duration: <strong className="text-amber-300 font-mono">{(selectedRange[1] - selectedRange[0]).toFixed(2)}s</strong>
-                      </span>
-                      {rangeStats && (
-                        <>
-                          <span className="text-slate-500">•</span>
-                          <span className="text-slate-400">
-                            Frames: <strong className="text-sky-300 font-mono">{rangeStats.frameCount}</strong>
-                          </span>
-                        </>
-                      )}
-                    </div>
-
-                    <div className="flex items-center gap-2 shrink-0">
-                      <button
-                        type="button"
-                        onClick={() => openInInsights()}
-                        className="flex items-center gap-1 px-2.5 py-1 rounded bg-sky-600 hover:bg-sky-500 text-white text-xs font-medium transition-colors shadow-sm"
-                      >
-                        <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
-                        </svg>
-                        <span>Inspect in Unreal Insights</span>
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => setSelectedRange([0, summary.durationS])}
-                        className="px-2 py-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white text-xs transition-colors border border-slate-700"
-                      >
-                        Entire Trace
-                      </button>
-                    </div>
-                  </div>
-                )}
-
-              {/* No Findings State */}
+            {/* 6. Findings Section ("Every frame" and "Spikes") */}
+            <div ref={findingsSectionRef} className="flex flex-col gap-4 pb-6 pt-1">
               {everyFrameFindings.length === 0 && spikeFindings.length === 0 ? (
-                (() => {
-                  const targetMs = 1000.0 / options.targetFps;
-                  const isUnhealthy =
-                    rangeStats &&
-                    (rangeStats.budgetGapMs > 0.001 ||
-                      rangeStats.overBudgetPct > 15 ||
-                      rangeStats.p95Ms > targetMs ||
-                      rangeHitchCount > 0 ||
-                      rangeEpisodes.length > 0);
-
-                  if (isUnhealthy) {
-                    const limiting = rangeStats?.threadMedians?.limitingThread || 'game';
-                    const topTimers = rangeStats?.topTimers || [];
-                    const waitTimer = topTimers.find(
-                      (t) =>
-                        t.name.toLowerCase().includes('reflex') ||
-                        t.name.toLowerCase().includes('waitfortask') ||
-                        t.bucket.toLowerCase() === 'wait'
-                    );
-
-                    return (
-                      <div className="p-5 rounded-xl bg-slate-900/50 border border-amber-900/40 flex flex-col gap-4 text-left">
-                        <div className="flex items-start gap-3.5">
-                          <div className="w-9 h-9 rounded-full bg-amber-950/60 border border-amber-500/40 flex items-center justify-center text-amber-400 shrink-0 mt-0.5">
-                            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
-                            </svg>
-                          </div>
-                          <div className="flex-1 flex flex-col gap-1">
-                            <div className="text-sm font-semibold text-amber-300 flex items-center justify-between">
-                              <span>Over Budget ({rangeStats?.overBudgetPct.toFixed(0)}% frames over {targetMs.toFixed(1)} ms budget)</span>
-                              <span className="text-xs font-mono font-normal text-slate-400">
-                                Median {rangeStats?.medianMs.toFixed(1)} ms (+{(rangeStats?.budgetGapMs || 0).toFixed(1)} ms gap)
-                              </span>
-                            </div>
-                            <div className="text-xs text-slate-300 leading-relaxed">
-                              This range is <span className="text-sky-300 font-bold uppercase">{limiting}-bound</span> (+{(rangeStats?.budgetGapMs || 0).toFixed(1)} ms over budget).
-                              {limiting === 'gpu' && waitTimer && (
-                                <span className="ml-1 text-slate-400">
-                                  Game Thread wall duration is elevated because it is waiting on GPU synchronization (e.g. <span className="text-amber-200 font-mono">{waitTimer.name}</span> averaging {waitTimer.avgMsPerFrame.toFixed(1)} ms/frame).
-                                </span>
-                              )}
-                            </div>
-                          </div>
-                        </div>
-
-                        {/* Top Contributing Timers Breakdown */}
-                        {topTimers.length > 0 && (
-                          <div className="flex flex-col gap-2 pt-2 border-t border-slate-800">
-                            <div className="text-xs font-semibold text-slate-300 flex items-center justify-between">
-                              <span>Top Functions & Timers in Range</span>
-                              <span className="text-[11px] text-slate-500">Sorted by avg time per frame</span>
-                            </div>
-
-                            <div className="overflow-x-auto rounded border border-slate-800 bg-slate-950/60">
-                              <table className="w-full text-left text-xs">
-                                <thead>
-                                  <tr className="border-b border-slate-800/80 text-[10.5px] text-slate-400 bg-slate-900/60 font-medium">
-                                    <th className="py-1.5 px-3">Function / Scope</th>
-                                    <th className="py-1.5 px-2">Thread</th>
-                                    <th className="py-1.5 px-2">Category</th>
-                                    <th className="py-1.5 px-2 text-right">Avg / Frame</th>
-                                    <th className="py-1.5 px-3 text-right">Share of Gap</th>
-                                  </tr>
-                                </thead>
-                                <tbody className="divide-y divide-slate-800/40 font-mono text-[11px]">
-                                  {topTimers.slice(0, 8).map((timer, idx) => (
-                                    <tr
-                                      key={`${timer.threadRole}-${timer.name}-${idx}`}
-                                      onClick={() => setSelectedTimerName(selectedTimerName === timer.name ? null : timer.name)}
-                                      className={`hover:bg-slate-800/40 cursor-pointer transition-colors ${
-                                        selectedTimerName === timer.name ? 'bg-sky-950/40 text-sky-200' : 'text-slate-300'
-                                      }`}
-                                    >
-                                      <td className="py-1.5 px-3 font-medium truncate max-w-xs font-sans" title={timer.name}>
-                                        {timer.name}
-                                      </td>
-                                      <td className="py-1.5 px-2">
-                                        <span className="px-1 py-0.2 rounded text-[9px] uppercase font-bold bg-slate-800 text-slate-400 border border-slate-700/60">
-                                          {timer.threadRole}
-                                        </span>
-                                      </td>
-                                      <td className="py-1.5 px-2">
-                                        <span className="px-1 py-0.2 rounded text-[9px] bg-slate-900 text-sky-400 border border-sky-800/40 font-sans">
-                                          {timer.bucket}
-                                        </span>
-                                      </td>
-                                      <td className="py-1.5 px-2 text-right text-slate-200">
-                                        {timer.avgMsPerFrame.toFixed(2)} ms
-                                      </td>
-                                      <td className="py-1.5 px-3 text-right text-amber-300 font-semibold">
-                                        {timer.shareOfBudgetGapPct !== undefined && timer.shareOfBudgetGapPct !== null
-                                          ? `${timer.shareOfBudgetGapPct.toFixed(1)}%`
-                                          : '—'}
-                                      </td>
-                                    </tr>
-                                  ))}
-                                </tbody>
-                              </table>
-                            </div>
-                          </div>
-                        )}
-
-                        <div className="flex items-center justify-between pt-2 border-t border-slate-800">
-                          <span className="text-[11px] text-slate-400">
-                            Tip: Click any timer to isolate its occurrence findings across the timeline.
-                          </span>
-                          <button
-                            type="button"
-                            onClick={() => openInInsights()}
-                            className="px-3 py-1.5 rounded bg-sky-600 hover:bg-sky-500 text-white text-xs font-medium transition-colors shadow-sm flex items-center gap-1.5 shrink-0"
-                          >
-                            <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
-                            </svg>
-                            <span>Inspect Callstacks in Insights</span>
-                          </button>
-                        </div>
-                      </div>
-                    );
-                  }
-
-                  return (
-                    <div className="p-8 rounded-xl bg-slate-900/40 border border-emerald-900/30 text-center flex flex-col items-center justify-center gap-2">
-                      <div className="w-9 h-9 rounded-full bg-emerald-950/60 border border-emerald-500/40 flex items-center justify-center text-emerald-400">
-                        <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
-                        </svg>
-                      </div>
-                      <div className="text-sm font-medium text-emerald-300">Within Budget / Smooth</div>
-                      <div className="text-xs text-slate-400 max-w-md">
-                        No performance bottlenecks detected in this range. Frames are running within the target budget.
-                      </div>
-                    </div>
-                  );
-                })()
+                <div className="p-6 rounded-xl bg-slate-900/40 border border-slate-800 text-center flex flex-col items-center justify-center gap-1.5">
+                  <div className="text-sm font-semibold text-emerald-400">Within Target Budget</div>
+                  <div className="text-xs text-slate-400 max-w-md">
+                    No discrete performance bottlenecks detected in this range.
+                  </div>
+                </div>
               ) : (
                 <>
-                  {/* Section 1: Every Frame (Sustained Bottlenecks) */}
+                  {/* Every Frame Findings */}
                   {everyFrameFindings.length > 0 && (
                     <div className="flex flex-col gap-2.5">
                       <div className="flex items-center justify-between">
-                        <div className="flex items-center gap-2">
-                          <span className="text-xs font-bold text-slate-200 uppercase tracking-wider">
-                            Every Frame ({everyFrameFindings.length})
-                          </span>
-                          <span className="text-[11px] text-slate-400 font-normal">
-                            — Continuous budget bottlenecks and sustained overheads
-                          </span>
-                        </div>
+                        <span className="text-xs font-bold text-slate-200 uppercase tracking-wider">
+                          Every Frame ({everyFrameFindings.length})
+                        </span>
+                        <span className="text-[11px] text-slate-500 font-mono">
+                          Continuous frame time bottlenecks
+                        </span>
                       </div>
 
-                      <div className="flex flex-col gap-3">
+                      <div className="flex flex-col gap-2.5">
                         {everyFrameFindings.map((f: Finding, idx: number) => (
                           <FindingCard
                             key={f.id}
@@ -845,7 +630,7 @@ export function TraceAnalyzerPanel() {
                             bookmarks={bookmarks}
                             targetFps={options.targetFps}
                             budgetGapMs={rangeStats?.budgetGapMs || 0}
-                            defaultExpanded={idx < 3}
+                            defaultExpanded={idx === 0}
                             onSelectRange={(range) => setSelectedRange(range)}
                             onOpenInInsights={() => openInInsights()}
                           />
@@ -854,22 +639,19 @@ export function TraceAnalyzerPanel() {
                     </div>
                   )}
 
-                  {/* Section 2: Spikes (Hitches) */}
+                  {/* Spikes Findings */}
                   {spikeFindings.length > 0 && (
                     <div className="flex flex-col gap-2.5">
                       <div className="flex items-center justify-between">
-                        <div className="flex items-center gap-2">
-                          <span className="text-xs font-bold text-slate-200 uppercase tracking-wider">
-                            Spikes ({spikeFindings.length})
-                          </span>
-                          <span className="text-[11px] text-slate-400 font-normal">
-                            — Discrete frame hitches and anomalous pauses
-                          </span>
-                        </div>
-                        <span className="text-[11px] text-slate-500 font-mono">Sorted chronologically (startup last)</span>
+                        <span className="text-xs font-bold text-slate-200 uppercase tracking-wider">
+                          Spikes ({spikeFindings.length})
+                        </span>
+                        <span className="text-[11px] text-slate-500 font-mono">
+                          Discrete frame hitches
+                        </span>
                       </div>
 
-                      <div className="flex flex-col gap-3">
+                      <div className="flex flex-col gap-2.5">
                         {spikeFindings.map((f: Finding, idx: number) => (
                           <FindingCard
                             key={f.id}
@@ -878,7 +660,7 @@ export function TraceAnalyzerPanel() {
                             bookmarks={bookmarks}
                             targetFps={options.targetFps}
                             budgetGapMs={rangeStats?.budgetGapMs || 0}
-                            defaultExpanded={everyFrameFindings.length + idx < 3}
+                            defaultExpanded={everyFrameFindings.length === 0 && idx === 0}
                             onSelectRange={(range) => setSelectedRange(range)}
                             onOpenInInsights={() => openInInsights()}
                           />
@@ -888,13 +670,6 @@ export function TraceAnalyzerPanel() {
                   )}
                 </>
               )}
-
-              {/* Bottom Collapsible Details Drawer */}
-              <DetailsDrawer
-                summary={summary}
-                onRefreshDiagnostic={refreshTraceDiagnostic}
-                onCleanAllCaches={() => setShowCleanDbModal(true)}
-              />
             </div>
           </div>
         ) : (
