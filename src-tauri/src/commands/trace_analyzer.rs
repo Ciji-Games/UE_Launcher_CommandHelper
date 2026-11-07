@@ -65,8 +65,14 @@ pub struct TraceSummary {
 #[serde(rename_all = "camelCase")]
 pub struct ThreadMedians {
     pub game_ms: f64,
+    pub active_game_ms: f64,
+    pub wait_game_ms: f64,
     pub render_ms: f64,
+    pub active_render_ms: f64,
+    pub wait_render_ms: f64,
     pub gpu_ms: f64,
+    pub active_gpu_ms: f64,
+    pub wait_gpu_ms: f64,
     pub limiting_thread: String, // "gpu" | "game" | "render" | "idle"
 }
 
@@ -1243,24 +1249,116 @@ pub fn compute_range_statistics(
 
     let budget_gap_ms = (median_ms - target_ms).max(0.0);
 
-    // 2. Thread Medians & Active Work Times
+    // 2. Thread Active & Wait Times per Frame (Item 5)
+    let mut frame_waits: std::collections::HashMap<(i64, String), f64> = std::collections::HashMap::new();
+    if let Ok(mut wait_stmt) = conn.prepare(
+        "SELECT ft.frame_idx, th.role, SUM(ft.excl_ms)
+         FROM frame_timer ft
+         JOIN frames f ON f.idx = ft.frame_idx
+         JOIN threads th ON th.id = ft.thread_id
+         JOIN timers t ON t.id = ft.timer_id
+         WHERE f.start_s >= ?1 AND f.start_s <= ?2
+           AND (t.kind = 'wait' OR t.kind = 'idle')
+         GROUP BY ft.frame_idx, th.role",
+    ) {
+        if let Ok(rows) = wait_stmt.query_map(rusqlite::params![start_s, end_s], |row| {
+            let f_idx: i64 = row.get(0)?;
+            let role: String = row.get(1)?;
+            let wait_sum: f64 = row.get(2)?;
+            Ok((f_idx, role, wait_sum))
+        }) {
+            for r in rows.flatten() {
+                let (f_idx, role, wait_sum) = r;
+                frame_waits.insert((f_idx, role), wait_sum);
+            }
+        }
+    }
+
     let mut game_times: Vec<f64> = frames.iter().filter_map(|f| f.game_ms).collect();
     game_times.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
     let median_game_ms = if game_times.is_empty() { 0.0 } else { calculate_percentile(&game_times, 0.5) };
+
+    let mut active_game_times: Vec<f64> = frames.iter().map(|f| {
+        let wall = f.game_ms.unwrap_or(0.0);
+        let wait = frame_waits.get(&(f.idx, "game".to_string())).copied().unwrap_or(0.0);
+        (wall - wait).max(0.0)
+    }).collect();
+    active_game_times.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let active_game_ms = if active_game_times.is_empty() { 0.0 } else { calculate_percentile(&active_game_times, 0.5) };
+
+    let mut wait_game_times: Vec<f64> = frames.iter().map(|f| {
+        frame_waits.get(&(f.idx, "game".to_string())).copied().unwrap_or(0.0)
+    }).collect();
+    wait_game_times.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let wait_game_ms = if wait_game_times.is_empty() { 0.0 } else { calculate_percentile(&wait_game_times, 0.5) };
 
     let mut render_times: Vec<f64> = frames.iter().filter_map(|f| f.render_ms).collect();
     render_times.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
     let median_render_ms = if render_times.is_empty() { 0.0 } else { calculate_percentile(&render_times, 0.5) };
 
+    let mut active_render_times: Vec<f64> = frames.iter().map(|f| {
+        let wall = f.render_ms.unwrap_or(0.0);
+        let wait = frame_waits.get(&(f.idx, "render".to_string())).copied().unwrap_or(0.0);
+        (wall - wait).max(0.0)
+    }).collect();
+    active_render_times.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let active_render_ms = if active_render_times.is_empty() { 0.0 } else { calculate_percentile(&active_render_times, 0.5) };
+
+    let mut wait_render_times: Vec<f64> = frames.iter().map(|f| {
+        frame_waits.get(&(f.idx, "render".to_string())).copied().unwrap_or(0.0)
+    }).collect();
+    wait_render_times.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let wait_render_ms = if wait_render_times.is_empty() { 0.0 } else { calculate_percentile(&wait_render_times, 0.5) };
+
     let mut gpu_times: Vec<f64> = frames.iter().filter_map(|f| f.gpu_ms).collect();
     gpu_times.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
     let median_gpu_ms = if gpu_times.is_empty() { 0.0 } else { calculate_percentile(&gpu_times, 0.5) };
+
+    let mut active_gpu_times: Vec<f64> = frames.iter().map(|f| {
+        let wall = f.gpu_ms.unwrap_or(0.0);
+        let wait = frame_waits.get(&(f.idx, "gpu".to_string())).copied().unwrap_or(0.0);
+        (wall - wait).max(0.0)
+    }).collect();
+    active_gpu_times.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let active_gpu_ms = if active_gpu_times.is_empty() { 0.0 } else { calculate_percentile(&active_gpu_times, 0.5) };
+
+    let mut wait_gpu_times: Vec<f64> = frames.iter().map(|f| {
+        frame_waits.get(&(f.idx, "gpu".to_string())).copied().unwrap_or(0.0)
+    }).collect();
+    wait_gpu_times.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let wait_gpu_ms = if wait_gpu_times.is_empty() { 0.0 } else { calculate_percentile(&wait_gpu_times, 0.5) };
+
+    let limiting_thread_str = if active_gpu_ms >= active_game_ms && active_gpu_ms >= active_render_ms && active_gpu_ms > 0.0 {
+        "gpu"
+    } else if active_game_ms >= active_render_ms && active_game_ms > 0.0 {
+        "game"
+    } else if active_render_ms > 0.0 {
+        "render"
+    } else if median_ms > 0.0 && active_gpu_ms == 0.0 && active_game_ms == 0.0 && active_render_ms == 0.0 {
+        "idle"
+    } else {
+        "game"
+    };
+
+    let thread_medians = ThreadMedians {
+        game_ms: median_game_ms,
+        active_game_ms,
+        wait_game_ms,
+        render_ms: median_render_ms,
+        active_render_ms,
+        wait_render_ms,
+        gpu_ms: median_gpu_ms,
+        active_gpu_ms,
+        wait_gpu_ms,
+        limiting_thread: limiting_thread_str.to_string(),
+    };
 
     // 3. Top Timers Aggregation & Wait Separation
     let mut top_timers = Vec::new();
     let mut waiting_on = Vec::new();
     let mut thread_wait_sums: std::collections::HashMap<String, f64> = std::collections::HashMap::new();
     let mut thread_work_excess: std::collections::HashMap<String, f64> = std::collections::HashMap::new();
+    let mut all_raw_work_timers = Vec::new();
 
     let subsystems = crate::trace::subsystem::load_subsystems();
 
@@ -1298,8 +1396,6 @@ pub fn compute_range_statistics(
             let base_calls: f64 = row.get(9)?;
             Ok((name, bucket, kind, path, thread_name, thread_role, total_excl, call_count as usize, base_ms, base_calls))
         }) {
-            let mut raw_work_timers = Vec::new();
-
             for r in rows.flatten() {
                 let (name, bucket, kind, path, thread_name, thread_role, total_excl, call_count, base_ms, base_calls) = r;
                 let is_wait = crate::trace::diagnosis::is_wait_timer(&name, &kind);
@@ -1329,35 +1425,16 @@ pub fn compute_range_statistics(
                     }
                 } else {
                     *thread_work_excess.entry(thread_role.clone()).or_insert(0.0) += excess_ms;
-                    raw_work_timers.push((name, bucket, subsystem, path, thread_role, avg_ms_per_frame, total_excl, base_ms, call_count, base_calls, queue, excess_ms));
+                    all_raw_work_timers.push((name, bucket, subsystem, path, thread_role, avg_ms_per_frame, total_excl, base_ms, call_count, base_calls, queue, excess_ms));
                 }
             }
 
             waiting_on.sort_by(|a, b| b.avg_ms_per_frame.partial_cmp(&a.avg_ms_per_frame).unwrap_or(std::cmp::Ordering::Equal));
             waiting_on.truncate(10);
 
-            // Active compute for thread limiting determination
-            let avg_game_wait = thread_wait_sums.get("game").copied().unwrap_or(0.0) / (frame_count as f64).max(1.0);
-            let avg_render_wait = thread_wait_sums.get("render").copied().unwrap_or(0.0) / (frame_count as f64).max(1.0);
-            let active_game_ms = (median_game_ms - avg_game_wait).max(0.0);
-            let active_render_ms = (median_render_ms - avg_render_wait).max(0.0);
-            let active_gpu_ms = median_gpu_ms;
+            let limiting_work_excess = thread_work_excess.get(&thread_medians.limiting_thread).copied().unwrap_or(0.0);
 
-            let limiting_thread_str = if active_gpu_ms >= active_game_ms && active_gpu_ms >= active_render_ms && active_gpu_ms > 0.0 {
-                "gpu"
-            } else if active_game_ms >= active_render_ms && active_game_ms > 0.0 {
-                "game"
-            } else if active_render_ms > 0.0 {
-                "render"
-            } else if median_ms > 0.0 && active_gpu_ms == 0.0 && active_game_ms == 0.0 && active_render_ms == 0.0 {
-                "idle"
-            } else {
-                "game"
-            };
-
-            let limiting_work_excess = thread_work_excess.get(limiting_thread_str).copied().unwrap_or(0.0);
-
-            for (name, bucket, subsystem, path, thread_role, avg_ms_per_frame, total_excl, base_ms, call_count, base_calls, queue, excess_ms) in raw_work_timers {
+            for (name, bucket, subsystem, path, thread_role, avg_ms_per_frame, total_excl, base_ms, call_count, base_calls, queue, excess_ms) in &all_raw_work_timers {
                 let share_of_thread_excess_pct = if limiting_work_excess > 0.001 {
                     Some(((excess_ms / limiting_work_excess) * 100.0).clamp(0.0, 999.0))
                 } else {
@@ -1370,18 +1447,18 @@ pub fn compute_range_statistics(
                 };
 
                 top_timers.push(RangeTopTimer {
-                    name,
-                    bucket,
-                    subsystem,
-                    path,
-                    thread_role,
-                    avg_ms_per_frame,
-                    total_ms: total_excl,
-                    baseline_ms_per_frame: base_ms,
-                    call_count,
-                    baseline_calls_per_frame: base_calls,
+                    name: name.clone(),
+                    bucket: bucket.clone(),
+                    subsystem: subsystem.clone(),
+                    path: path.clone(),
+                    thread_role: thread_role.clone(),
+                    avg_ms_per_frame: *avg_ms_per_frame,
+                    total_ms: *total_excl,
+                    baseline_ms_per_frame: *base_ms,
+                    call_count: *call_count,
+                    baseline_calls_per_frame: *base_calls,
                     is_wait: false,
-                    queue,
+                    queue: queue.clone(),
                     share_of_thread_excess_pct,
                     share_of_budget_gap_pct,
                 });
@@ -1392,31 +1469,7 @@ pub fn compute_range_statistics(
         }
     }
 
-    // Determine limiting thread based on active compute time (excluding sleep/sync wait on other hardware)
-    let avg_game_wait = thread_wait_sums.get("game").copied().unwrap_or(0.0) / (frame_count as f64).max(1.0);
-    let avg_render_wait = thread_wait_sums.get("render").copied().unwrap_or(0.0) / (frame_count as f64).max(1.0);
-    let active_game_ms = (median_game_ms - avg_game_wait).max(0.0);
-    let active_render_ms = (median_render_ms - avg_render_wait).max(0.0);
-    let active_gpu_ms = median_gpu_ms;
-
-    let limiting_thread = if active_gpu_ms >= active_game_ms && active_gpu_ms >= active_render_ms && active_gpu_ms > 0.0 {
-        "gpu"
-    } else if active_game_ms >= active_render_ms && active_game_ms > 0.0 {
-        "game"
-    } else if active_render_ms > 0.0 {
-        "render"
-    } else if median_ms > 0.0 && active_gpu_ms == 0.0 && active_game_ms == 0.0 && active_render_ms == 0.0 {
-        "idle"
-    } else {
-        "game"
-    };
-
-    let thread_medians = ThreadMedians {
-        game_ms: median_game_ms,
-        render_ms: median_render_ms,
-        gpu_ms: median_gpu_ms,
-        limiting_thread: limiting_thread.to_string(),
-    };
+    let limiting_work_excess = thread_work_excess.get(&thread_medians.limiting_thread).copied().unwrap_or(0.0);
 
     let mut findings = Vec::new();
     let mut sanity_flags = Vec::new();
@@ -1623,6 +1676,7 @@ pub fn compute_range_statistics(
         let mut selection_excess_sum = 0.0f64;
         let mut selection_frames = 0usize;
         let mut sub_occurrences: Vec<serde_json::Value> = Vec::new();
+        let mut is_approximate = false;
 
         for occ in &occs {
             let occ_start = occ.frame_from.max(f_from);
@@ -1631,8 +1685,9 @@ pub fn compute_range_statistics(
                 let occ_clipped_frames = (occ_end - occ_start + 1) as usize;
                 let mut occ_excess_ms = 0.0f64;
                 let mut occ_peak_frame_ms = 0.0f64;
+                let mut exact_found = false;
 
-                // Query exact timer excess and peak frame time from frame_timer and frames
+                // Query exact timer excess and peak frame time from frame_timer and frames with thread role filter (Item 6)
                 if issue.key_timer_id != 0 {
                     let exact_query_res: Result<(f64, f64), rusqlite::Error> = conn.query_row(
                         "SELECT 
@@ -1640,20 +1695,27 @@ pub fn compute_range_statistics(
                             COALESCE(MAX(f.interval_ms), 0.0)
                          FROM frame_timer ft
                          JOIN frames f ON f.idx = ft.frame_idx
+                         JOIN threads th ON th.id = ft.thread_id
                          LEFT JOIN baseline_global b ON b.timer_id = ft.timer_id AND b.thread_id = ft.thread_id
-                         WHERE ft.frame_idx >= ?1 AND ft.frame_idx <= ?2 AND ft.timer_id = ?3",
-                        rusqlite::params![occ_start, occ_end, issue.key_timer_id],
+                         WHERE ft.frame_idx >= ?1 AND ft.frame_idx <= ?2 AND ft.timer_id = ?3
+                           AND (th.role = ?4 OR ?4 = '' OR ?4 = 'general')",
+                        rusqlite::params![occ_start, occ_end, issue.key_timer_id, issue.thread_role],
                         |r| Ok((r.get(0)?, r.get(1)?)),
                     );
 
                     if let Ok((exact_sum, peak)) = exact_query_res {
-                        occ_excess_ms = exact_sum;
-                        occ_peak_frame_ms = peak;
+                        if exact_sum > 0.0 {
+                            occ_excess_ms = exact_sum;
+                            occ_peak_frame_ms = peak;
+                            exact_found = true;
+                        }
                     }
                 }
 
-                // Fallback to proportional clipping if exact sum produced 0.0
-                if occ_excess_ms <= 0.0 {
+                if !exact_found {
+                    if issue.key_timer_id != 0 {
+                        is_approximate = true;
+                    }
                     let occ_total_count = (occ.frame_to - occ.frame_from + 1).max(1) as f64;
                     let fraction = (occ_clipped_frames as f64 / occ_total_count).clamp(0.0, 1.0);
                     occ_excess_ms = occ.sum_excess_ms * fraction;
@@ -1711,40 +1773,74 @@ pub fn compute_range_statistics(
             continue;
         }
 
-        let of_excess_ms_per_frame = if budget_gap_ms > 0.001 {
-            budget_gap_ms
+        // Share reference is limiting thread's work excess (Item 2)
+        let of_excess_ms_per_frame = if limiting_work_excess > 0.001 {
+            limiting_work_excess
         } else {
             explains_ms_per_frame
         };
 
         let share_of_excess = if of_excess_ms_per_frame > 0.001 {
-            (explains_ms_per_frame / of_excess_ms_per_frame).clamp(0.0, 1.0)
+            explains_ms_per_frame / of_excess_ms_per_frame
         } else {
             1.0
         };
 
-        let confidence = if share_of_excess < 0.10 {
+        let mut data_quality_flag = false;
+        if of_excess_ms_per_frame > 0.001 && explains_ms_per_frame > of_excess_ms_per_frame * 1.10 {
+            data_quality_flag = true;
+        }
+
+        let fraction_of_frames_affected = selection_frames as f64 / frame_count.max(1) as f64;
+
+        let mut confidence = if share_of_excess < 0.10 {
             "low"
-        } else if share_of_excess >= 0.40 && (selection_frames as f64 / frame_count.max(1) as f64) >= 0.50 {
+        } else if share_of_excess >= 0.40 && fraction_of_frames_affected >= 0.50 {
             "high"
         } else {
             "medium"
         };
 
-        let fix_likelihood = if share_of_excess >= 0.40 { "high" } else if share_of_excess >= 0.20 { "medium" } else { "low" };
+        let has_sanity_violation = !sanity_flags.is_empty();
+        if has_sanity_violation || data_quality_flag {
+            if confidence == "high" {
+                confidence = "medium";
+            }
+        }
+
+        let rule_fix_likelihood = matched_rule
+            .map(|r| r.def.fix_likelihood.as_str())
+            .unwrap_or("low");
+
+        let fix_likelihood = if matched_rule.is_none() {
+            "low"
+        } else {
+            match confidence {
+                "low" => {
+                    if rule_fix_likelihood == "high" {
+                        "medium"
+                    } else {
+                        rule_fix_likelihood
+                    }
+                }
+                "medium" | "high" => rule_fix_likelihood,
+                _ => "low",
+            }
+        };
 
         let fixes = matched_rule.map(|r| r.def.fixes.clone()).unwrap_or_default();
         let verify = matched_rule.map(|r| r.def.verify.clone()).unwrap_or_else(|| "Re-capture the trace to confirm reduced execution time.".to_string());
         let caveats = matched_rule.map(|r| r.def.caveats.clone()).unwrap_or_default();
 
+        let share_pct = (share_of_excess * 100.0).clamp(0.0, 999.0);
         let evidence_label = if !culprit_timer.is_empty() && culprit_timer != "Other" {
             if !culprit_path.is_empty() && culprit_path != culprit_timer {
-                format!("{}: {:.1} ms/frame excess ({:.0}% of frame gap) [Path: {}]", culprit_timer, explains_ms_per_frame, share_of_excess * 100.0, culprit_path)
+                format!("{}: {:.1} ms/frame excess ({:.0}% of thread excess) [Path: {}]", culprit_timer, explains_ms_per_frame, share_pct, culprit_path)
             } else {
-                format!("{}: {:.1} ms/frame excess ({:.0}% of frame gap)", culprit_timer, explains_ms_per_frame, share_of_excess * 100.0)
+                format!("{}: {:.1} ms/frame excess ({:.0}% of thread excess)", culprit_timer, explains_ms_per_frame, share_pct)
             }
         } else {
-            format!("{:.1} ms/frame excess ({:.0}% of frame gap)", explains_ms_per_frame, share_of_excess * 100.0)
+            format!("{:.1} ms/frame excess ({:.0}% of thread excess)", explains_ms_per_frame, share_pct)
         };
 
         let mut ev_obj = serde_json::json!({
@@ -1766,6 +1862,12 @@ pub fn compute_range_statistics(
         }
         if let Some(b) = base_ms_opt {
             ev_obj["baselineMsPerFrame"] = serde_json::json!(b);
+        }
+        if budget_gap_ms > 0.001 {
+            ev_obj["overBudgetMs"] = serde_json::json!(budget_gap_ms);
+        }
+        if is_approximate {
+            ev_obj["isApproximate"] = serde_json::json!(true);
         }
 
         let mut evidence_arr = vec![ev_obj];
@@ -1792,6 +1894,8 @@ pub fn compute_range_statistics(
             "scale": issue.scale,
             "explainsMs": explains_ms_per_frame,
             "ofExcessMs": of_excess_ms_per_frame,
+            "overBudgetMs": if budget_gap_ms > 0.001 { Some(budget_gap_ms) } else { None },
+            "isApproximate": is_approximate,
             "matchConfidence": confidence,
             "fixLikelihood": fix_likelihood,
             "fixes": fixes,
@@ -1814,6 +1918,115 @@ pub fn compute_range_statistics(
             episode_ids: episode_ids_vec,
             payload: payload_json,
         });
+    }
+
+    // Sustained absolute-cost fallback for all-slow captures (Item 7)
+    if findings.is_empty() && budget_gap_ms > 0.5 {
+        let limiting_role = &thread_medians.limiting_thread;
+        let mut limiting_work_timers: Vec<_> = all_raw_work_timers
+            .iter()
+            .filter(|t| t.4 == *limiting_role && t.5 >= 0.5)
+            .cloned()
+            .collect();
+        limiting_work_timers.sort_by(|a, b| b.5.partial_cmp(&a.5).unwrap_or(std::cmp::Ordering::Equal));
+
+        if let Some(top_timer) = limiting_work_timers.first() {
+            let (name, _bucket, _subsystem, path, _thread_role, avg_ms_per_frame, _total_excl, base_ms, call_count, _base_calls, _queue, _excess_ms) = top_timer;
+            let active_thread_time = match limiting_role.as_str() {
+                "gpu" => thread_medians.active_gpu_ms,
+                "game" => thread_medians.active_game_ms,
+                "render" => thread_medians.active_render_ms,
+                _ => median_ms,
+            };
+            let share_of_active_pct = if active_thread_time > 0.001 {
+                ((avg_ms_per_frame / active_thread_time) * 100.0).clamp(0.0, 100.0)
+            } else {
+                0.0
+            };
+            let thread_display = match limiting_role.as_str() {
+                "gpu" => "GPU",
+                "render" => "RenderThread",
+                _ => "GameThread",
+            };
+
+            let matched_rule = compiled_rules.iter().find(|r| {
+                let thread_match = r.def.when.threads.is_empty() || r.def.when.threads.iter().any(|t| t == limiting_role || t == "any");
+                let timer_match = r.regexes.iter().any(|re| re.is_match(name)) || r.path_regexes.iter().any(|re| re.is_match(path));
+                thread_match && timer_match
+            }).or_else(|| {
+                compiled_rules.iter().find(|r| {
+                    r.regexes.iter().any(|re| re.is_match(name)) || r.path_regexes.iter().any(|re| re.is_match(path))
+                })
+            });
+
+            let rule_id = matched_rule.map(|r| r.def.id.clone()).unwrap_or_else(|| {
+                if limiting_role == "gpu" {
+                    "gpu-bound".to_string()
+                } else if limiting_role == "render" {
+                    "render-cpu".to_string()
+                } else {
+                    "cpu-hitch".to_string()
+                }
+            });
+
+            let finding_title = matched_rule.map(|r| r.def.title.clone()).unwrap_or_else(|| {
+                format!("Sustained {} Work: {}", thread_display, name)
+            });
+
+            let confidence = "medium";
+            let rule_fix_likelihood = matched_rule.map(|r| r.def.fix_likelihood.as_str()).unwrap_or("low");
+            let fix_likelihood = if rule_fix_likelihood == "high" { "medium" } else { rule_fix_likelihood };
+
+            let fixes = matched_rule.map(|r| r.def.fixes.clone()).unwrap_or_default();
+            let verify = matched_rule.map(|r| r.def.verify.clone()).unwrap_or_else(|| "Re-capture the trace to confirm reduced execution time.".to_string());
+            let caveats = matched_rule.map(|r| r.def.caveats.clone()).unwrap_or_default();
+
+            let evidence_label = format!(
+                "{}: costs {:.1} ms/frame ({:.0}% of {} time); no faster period in this capture to compare with",
+                name, avg_ms_per_frame, share_of_active_pct, thread_display
+            );
+
+            let mut ev_obj = serde_json::json!({
+                "label": evidence_label,
+                "value": format!("{:.1} ms", avg_ms_per_frame),
+                "isKey": true,
+                "timer": name,
+                "callsPerFrame": call_count,
+                "observedMsPerFrame": avg_ms_per_frame,
+                "baselineMsPerFrame": base_ms,
+                "overBudgetMs": budget_gap_ms,
+            });
+            if !path.is_empty() && path != name {
+                ev_obj["path"] = serde_json::json!(path);
+            }
+
+            let payload_json = serde_json::json!({
+                "title": finding_title,
+                "scale": "sustained",
+                "explainsMs": avg_ms_per_frame,
+                "ofExcessMs": budget_gap_ms,
+                "overBudgetMs": budget_gap_ms,
+                "isApproximate": false,
+                "matchConfidence": confidence,
+                "fixLikelihood": fix_likelihood,
+                "fixes": fixes,
+                "verify": verify,
+                "caveats": caveats,
+                "episodeIds": Vec::<i64>::new(),
+                "evidence": vec![ev_obj],
+                "occurrences": Vec::<serde_json::Value>::new()
+            }).to_string();
+
+            findings.push(DbFinding {
+                id: 999999,
+                rule_id,
+                rank: *avg_ms_per_frame,
+                match_confidence: 0.6,
+                fix_likelihood: fix_likelihood.to_string(),
+                episode_ids: Vec::new(),
+                payload: payload_json,
+            });
+        }
     }
 
     // Detect Regime Changes (Item 7)
@@ -2457,12 +2670,19 @@ mod tests {
 
         conn.execute("INSERT INTO threads (id, name, role) VALUES (4, 'GPU', 'gpu')", []).unwrap();
         conn.execute("INSERT INTO timers (id, name, bucket, kind, path) VALUES (20, 'SmallPass', 'GPU', 'work', 'SmallPass')", []).unwrap();
+        conn.execute("INSERT INTO timers (id, name, bucket, kind, path) VALUES (21, 'MainPass', 'GPU', 'work', 'MainPass')", []).unwrap();
         conn.execute("INSERT INTO baseline_global (thread_id, timer_id, median_excl_ms, p95_excl_ms, median_calls, samples) VALUES (4, 20, 0.5, 0.5, 1, 10)", []).unwrap();
+        conn.execute("INSERT INTO baseline_global (thread_id, timer_id, median_excl_ms, p95_excl_ms, median_calls, samples) VALUES (4, 21, 1.0, 1.0, 1, 10)", []).unwrap();
 
         for i in 0..10 {
-            // Explains only 2.0 ms of 43.3 ms budget gap (< 5% share)
+            // SmallPass explains 2.0 ms excess
             conn.execute(
                 "INSERT INTO frame_timer (frame_idx, thread_id, timer_id, excl_ms, calls, max_ms) VALUES (?1, 4, 20, 2.5, 1, 2.5)",
+                rusqlite::params![i],
+            ).unwrap();
+            // MainPass explains 40.0 ms excess, so total GPU work excess = 42.0 ms
+            conn.execute(
+                "INSERT INTO frame_timer (frame_idx, thread_id, timer_id, excl_ms, calls, max_ms) VALUES (?1, 4, 21, 41.0, 1, 41.0)",
                 rusqlite::params![i],
             ).unwrap();
         }
@@ -2484,10 +2704,11 @@ mod tests {
         assert_eq!(stats.findings.len(), 1);
         let p: serde_json::Value = serde_json::from_str(&stats.findings[0].payload).unwrap();
 
-        // Share of excess is 2.0 / 43.33 = ~4.6% (< 10%)
+        // Share of excess is 2.0 / 42.0 = ~4.76% (< 10%) -> confidence is low
         assert_eq!(p["matchConfidence"], "low");
-        assert_eq!(p["fixLikelihood"], "low");
-        assert_eq!(stats.findings[0].fix_likelihood, "low");
+        // gpu-bound has fix_likelihood "high", lowered to at most one level above "low" -> "medium"
+        assert_eq!(p["fixLikelihood"], "medium");
+        assert_eq!(stats.findings[0].fix_likelihood, "medium");
     }
 
     #[test]
@@ -2544,5 +2765,157 @@ mod tests {
         // Sub-occurrence excess is exactly 6 frames * 20.0 ms = 120.0 ms
         assert_eq!(occurrences[0]["excessMs"], 120.0);
         assert_eq!(occurrences[1]["excessMs"], 120.0);
+    }
+
+    #[test]
+    fn test_scenario_s9_all_slow_sustained_gpu_absolute_cost() {
+        // Test S9: every frame about 35 ms (no fast period), GPU SceneRender dominant.
+        let conn = Connection::open_in_memory().unwrap();
+        init_db(&conn).unwrap();
+
+        for i in 0..30 {
+            conn.execute(
+                "INSERT INTO frames (idx, start_s, interval_ms, game_ms, render_ms, gpu_ms) VALUES (?1, ?2, 35.0, 10.0, 10.0, 35.0)",
+                rusqlite::params![i, i as f64 * 0.035],
+            ).unwrap();
+        }
+
+        conn.execute("INSERT INTO threads (id, name, role) VALUES (4, 'GPU', 'gpu')", []).unwrap();
+        conn.execute("INSERT INTO timers (id, name, bucket, kind, path) VALUES (50, 'SceneRender', 'GPU', 'work', 'SceneRender')", []).unwrap();
+        // Baseline matches observed (no fast period -> excess = 0)
+        conn.execute("INSERT INTO baseline_global (thread_id, timer_id, median_excl_ms, p95_excl_ms, median_calls, samples) VALUES (4, 50, 30.0, 30.0, 1, 30)", []).unwrap();
+
+        for i in 0..30 {
+            conn.execute(
+                "INSERT INTO frame_timer (frame_idx, thread_id, timer_id, excl_ms, calls, max_ms) VALUES (?1, 4, 50, 30.0, 1, 30.0)",
+                rusqlite::params![i],
+            ).unwrap();
+        }
+
+        let stats = compute_range_statistics(&conn, 0.0, 1.05).unwrap();
+        assert_eq!(stats.frame_count, 30);
+        assert!(stats.budget_gap_ms > 0.0, "Budget gap should be > 0 (35ms vs 16.6ms target)");
+        assert_eq!(stats.findings.len(), 1, "Should produce absolute-cost finding");
+
+        let f = &stats.findings[0];
+        let p: serde_json::Value = serde_json::from_str(&f.payload).unwrap();
+        assert_eq!(p["matchConfidence"], "medium");
+        let ev_label = p["evidence"][0]["label"].as_str().unwrap();
+        assert!(ev_label.contains("costs 30.0 ms/frame") || ev_label.contains("costs 30 ms/frame"), "Label was: {}", ev_label);
+        assert!(ev_label.contains("no faster period in this capture to compare with"), "Label was: {}", ev_label);
+    }
+
+    #[test]
+    fn test_scenario_steady_gpu_bound_after_fast_period() {
+        let conn = Connection::open_in_memory().unwrap();
+        init_db(&conn).unwrap();
+
+        // 20 normal frames (16.6ms) + 20 slow frames (40ms)
+        for i in 0..20 {
+            conn.execute(
+                "INSERT INTO frames (idx, start_s, interval_ms, game_ms, render_ms, gpu_ms) VALUES (?1, ?2, 16.6, 12.0, 10.0, 15.0)",
+                rusqlite::params![i, i as f64 * 0.0166],
+            ).unwrap();
+        }
+        for i in 20..40 {
+            conn.execute(
+                "INSERT INTO frames (idx, start_s, interval_ms, game_ms, render_ms, gpu_ms) VALUES (?1, ?2, 40.0, 12.0, 10.0, 38.0)",
+                rusqlite::params![i, 0.332 + (i - 20) as f64 * 0.040],
+            ).unwrap();
+        }
+
+        conn.execute("INSERT INTO threads (id, name, role) VALUES (4, 'GPU', 'gpu')", []).unwrap();
+        conn.execute("INSERT INTO timers (id, name, bucket, kind, path) VALUES (60, 'LumenScreenProbeGather', 'GPU', 'work', 'LumenScreenProbeGather')", []).unwrap();
+        conn.execute("INSERT INTO baseline_global (thread_id, timer_id, median_excl_ms, p95_excl_ms, median_calls, samples) VALUES (4, 60, 2.0, 2.0, 1, 20)", []).unwrap();
+
+        for i in 0..20 {
+            conn.execute("INSERT INTO frame_timer (frame_idx, thread_id, timer_id, excl_ms, calls, max_ms) VALUES (?1, 4, 60, 2.0, 1, 2.0)", rusqlite::params![i]).unwrap();
+        }
+        for i in 20..40 {
+            conn.execute("INSERT INTO frame_timer (frame_idx, thread_id, timer_id, excl_ms, calls, max_ms) VALUES (?1, 4, 60, 25.0, 1, 25.0)", rusqlite::params![i]).unwrap();
+        }
+
+        conn.execute(
+            "INSERT INTO issue (issue_id, rule_id, key_timer_id, thread_role, scale, first_frame, last_frame, occurrences_count, total_excess_ms, worst_excess_ms) VALUES
+             (1, 'gpu-lumen', 60, 'gpu', 'sustained', 20, 39, 1, 460.0, 40.0)",
+            [],
+        ).unwrap();
+
+        let ev_lumen = r#"{"timer":"LumenScreenProbeGather","path":"LumenScreenProbeGather","excessMs":460.0,"shareOfExcess":0.80,"callsPerFrame":1.0,"observedMsPerFrame":25.0,"baselineMsPerFrame":2.0,"sanityViolation":false}"#;
+        conn.execute(
+            "INSERT INTO occurrence (occurrence_id, issue_id, chunk_id, frame_from, frame_to, start_s, end_s, peak_frame_ms, mean_excess_ms, sum_excess_ms, confidence, evidence_json) VALUES
+             (301, 1, 0, 20, 39, 0.332, 1.132, 40.0, 23.0, 460.0, 'high', ?1)",
+            rusqlite::params![ev_lumen],
+        ).unwrap();
+
+        let stats = compute_range_statistics(&conn, 0.332, 1.132).unwrap();
+        assert_eq!(stats.findings.len(), 1);
+        let f = &stats.findings[0];
+        assert_eq!(f.rule_id, "gpu-lumen");
+        let p: serde_json::Value = serde_json::from_str(&f.payload).unwrap();
+        assert_eq!(p["matchConfidence"], "high");
+    }
+
+    #[test]
+    fn test_scenario_repeating_gc_hitch() {
+        let conn = Connection::open_in_memory().unwrap();
+        init_db(&conn).unwrap();
+
+        for i in 0..100 {
+            let interval = if i % 20 == 0 && i > 0 { 60.0 } else { 16.6 };
+            let game_ms = if i % 20 == 0 && i > 0 { 55.0 } else { 12.0 };
+            conn.execute(
+                "INSERT INTO frames (idx, start_s, interval_ms, game_ms, render_ms, gpu_ms) VALUES (?1, ?2, ?3, ?4, 10.0, 10.0)",
+                rusqlite::params![i, i as f64 * 0.0166, interval, game_ms],
+            ).unwrap();
+        }
+
+        conn.execute("INSERT INTO threads (id, name, role) VALUES (1, 'GameThread', 'game')", []).unwrap();
+        conn.execute("INSERT INTO timers (id, name, bucket, kind, path) VALUES (70, 'CollectGarbage', 'GC', 'work', 'CollectGarbage')", []).unwrap();
+        conn.execute("INSERT INTO baseline_global (thread_id, timer_id, median_excl_ms, p95_excl_ms, median_calls, samples) VALUES (1, 70, 0.0, 0.0, 0, 96)", []).unwrap();
+
+        for i in 0..100 {
+            let gc_ms = if i % 20 == 0 && i > 0 { 40.0 } else { 0.0 };
+            if gc_ms > 0.0 {
+                conn.execute("INSERT INTO frame_timer (frame_idx, thread_id, timer_id, excl_ms, calls, max_ms) VALUES (?1, 1, 70, ?2, 1, ?2)", rusqlite::params![i, gc_ms]).unwrap();
+            }
+        }
+
+        conn.execute(
+            "INSERT INTO issue (issue_id, rule_id, key_timer_id, thread_role, scale, first_frame, last_frame, occurrences_count, total_excess_ms, worst_excess_ms) VALUES
+             (1, 'gc-hitch', 70, 'game', 'spike', 20, 80, 4, 160.0, 60.0)",
+            [],
+        ).unwrap();
+
+        let ev_gc = r#"{"timer":"CollectGarbage","path":"CollectGarbage","excessMs":160.0,"shareOfExcess":0.90,"callsPerFrame":1.0,"observedMsPerFrame":40.0,"baselineMsPerFrame":0.0,"sanityViolation":false}"#;
+        conn.execute(
+            "INSERT INTO occurrence (occurrence_id, issue_id, chunk_id, frame_from, frame_to, start_s, end_s, peak_frame_ms, mean_excess_ms, sum_excess_ms, confidence, evidence_json) VALUES
+             (401, 1, 0, 20, 80, 0.33, 1.33, 60.0, 40.0, 160.0, 'high', ?1)",
+            rusqlite::params![ev_gc],
+        ).unwrap();
+
+        let stats = compute_range_statistics(&conn, 0.0, 1.66).unwrap();
+        assert_eq!(stats.findings.len(), 1);
+        assert_eq!(stats.findings[0].rule_id, "gc-hitch");
+    }
+
+    #[test]
+    fn test_scenario_within_budget_range_no_findings() {
+        let conn = Connection::open_in_memory().unwrap();
+        init_db(&conn).unwrap();
+
+        // 50 smooth frames at 15.0ms (under 16.67ms target)
+        for i in 0..50 {
+            conn.execute(
+                "INSERT INTO frames (idx, start_s, interval_ms, game_ms, render_ms, gpu_ms) VALUES (?1, ?2, 15.0, 10.0, 10.0, 14.0)",
+                rusqlite::params![i, i as f64 * 0.015],
+            ).unwrap();
+        }
+
+        let stats = compute_range_statistics(&conn, 0.0, 0.75).unwrap();
+        assert_eq!(stats.frame_count, 50);
+        assert_eq!(stats.budget_gap_ms, 0.0);
+        assert_eq!(stats.over_budget_pct, 0.0);
+        assert_eq!(stats.findings.len(), 0, "Smooth within-budget range should produce no findings");
     }
 }

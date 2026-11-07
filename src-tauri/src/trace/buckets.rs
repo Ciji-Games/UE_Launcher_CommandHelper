@@ -93,6 +93,48 @@ mod tests {
     use super::*;
 
     #[test]
+    fn test_wait_timers_classification() {
+        let rules = get_compiled_bucket_rules();
+        let wait_timers = [
+            "GameThreadWaitForTask",
+            "ReflexSleep",
+            "LowLatencySleep",
+            "WaitForTasks",
+            "WaitUntilTasksComplete",
+            "ProcessUntilTasksComplete",
+            "WaitUntilIdle",
+            "WaitForWork",
+            "WaitForFrame",
+            "RenderCommandFence",
+            "FRenderCommandFence",
+            "GpuWait",
+        ];
+
+        for name in wait_timers {
+            let (bucket, kind) = classify_timer(name, &rules);
+            assert_eq!(kind, "wait", "Timer '{}' should be classified as wait, got {}", name, kind);
+            assert_eq!(bucket, "Wait", "Timer '{}' should have bucket Wait, got {}", name, bucket);
+            assert!(crate::trace::diagnosis::is_wait_timer(name, &kind));
+        }
+
+        let work_timers = [
+            "CollectGarbage",
+            "Tick_Engine",
+            "InitViews",
+            "SceneRender",
+            "Chaos",
+            "MainPass",
+            "Slate::DrawWindows",
+        ];
+
+        for name in work_timers {
+            let (_, kind) = classify_timer(name, &rules);
+            assert_eq!(kind, "work", "Timer '{}' should be classified as work, got {}", name, kind);
+            assert!(!crate::trace::diagnosis::is_wait_timer(name, &kind));
+        }
+    }
+
+    #[test]
     fn test_timer_classification() {
         let rules = get_compiled_bucket_rules();
         assert!(!rules.is_empty());

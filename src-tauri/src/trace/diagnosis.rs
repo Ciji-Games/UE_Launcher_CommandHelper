@@ -129,21 +129,8 @@ pub struct WindowProfile {
     pub has_sanity_violation: bool,
 }
 
-pub fn is_wait_timer(name: &str, kind: &str) -> bool {
-    if kind == "wait" || kind == "idle" {
-        return true;
-    }
-    let lower = name.to_lowercase();
-    lower.contains("reflex")
-        || lower.contains("lowlatencysleep")
-        || lower.contains("gpuwait")
-        || lower.contains("rendercommandfence")
-        || lower.contains("waitfortasks")
-        || lower.contains("waituntiltaskscomplete")
-        || lower.contains("gamethreadwaitfortask")
-        || lower.contains("waituntilidle")
-        || lower.contains("waitforwork")
-        || lower.contains("waitforframe")
+pub fn is_wait_timer(_name: &str, kind: &str) -> bool {
+    kind == "wait" || kind == "idle"
 }
 
 pub fn build_profile(

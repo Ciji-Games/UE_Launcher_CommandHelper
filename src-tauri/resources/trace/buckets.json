@@ -5,7 +5,7 @@
     "kind": "idle"
   },
   {
-    "pattern": "^(?i)(GameThreadWaitForTask|ReflexSleep|NvReflexSleep|NvLowLatencySleep|WaitForTasks|WaitUntilTasksComplete|ProcessUntilTasksComplete|FRenderCommandFence|GpuWait|WaitForFrame|TaskWorkerIsLookingForWork|FTaskGraphImplementation::WaitUntilTasksComplete|FQueuedThreadPoolWrapper::WaitForWork|FEvent::Wait|FRHICommandListExecutor::Wait|WaitUntilIdle)",
+    "pattern": "^(?i)(?:.*::)?(?:F)?(GameThreadWaitForTask|ReflexSleep|NvReflexSleep|LowLatencySleep|NvLowLatencySleep|WaitForTasks|WaitUntilTasksComplete|ProcessUntilTasksComplete|WaitUntilIdle|WaitForWork|WaitForFrame|RenderCommandFence|GpuWait|TaskWorkerIsLookingForWork|Event::Wait|RHICommandListExecutor::Wait)",
     "bucket": "Wait",
     "kind": "wait"
   },

@@ -149,8 +149,14 @@ export interface BucketBreakdown {
 
 export interface ThreadMedians {
   gameMs: number;
+  activeGameMs?: number;
+  waitGameMs?: number;
   renderMs: number;
+  activeRenderMs?: number;
+  waitRenderMs?: number;
   gpuMs: number;
+  activeGpuMs?: number;
+  waitGpuMs?: number;
   limitingThread: 'gpu' | 'game' | 'render' | 'idle' | string;
 }
 

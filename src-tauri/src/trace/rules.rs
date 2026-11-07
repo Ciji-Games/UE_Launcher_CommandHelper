@@ -1302,7 +1302,7 @@ pub fn generate_verdict(
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::trace::store::init_db;
 
@@ -1509,14 +1509,14 @@ mod tests {
         BaselineEntry { thread_id: 4, timer_name: "Nanite::VisBuffer", ms_per_frame: 0.6, calls_per_frame: 1 },
     ];
 
-    struct ScenarioContext {
-        conn: Connection,
-        timer_map: std::collections::HashMap<(i64, String), i64>,
-        next_timer_id: i64,
+    pub(crate) struct ScenarioContext {
+        pub(crate) conn: Connection,
+        pub(crate) timer_map: std::collections::HashMap<(i64, String), i64>,
+        pub(crate) next_timer_id: i64,
     }
 
     impl ScenarioContext {
-        fn new() -> Self {
+        pub(crate) fn new() -> Self {
             let conn = Connection::open_in_memory().unwrap();
             init_db(&conn).unwrap();
 
@@ -1567,7 +1567,7 @@ mod tests {
             }
         }
 
-        fn get_or_create_timer(&mut self, thread_id: i64, timer_name: &str) -> i64 {
+        pub(crate) fn get_or_create_timer(&mut self, thread_id: i64, timer_name: &str) -> i64 {
             let key = (thread_id, timer_name.to_string());
             if let Some(&tid) = self.timer_map.get(&key) {
                 return tid;
@@ -1584,7 +1584,7 @@ mod tests {
             tid
         }
 
-        fn seed_baseline_window_frames(&mut self, _window_id: i64, num_frames: usize) {
+        pub(crate) fn seed_baseline_window_frames(&mut self, _window_id: i64, num_frames: usize) {
             for f in 0..num_frames {
                 for entry in BASELINE_ENTRIES {
                     let tid = self.timer_map[&(entry.thread_id, entry.timer_name.to_string())];
@@ -1603,7 +1603,7 @@ mod tests {
             }
         }
 
-        fn add_event_for_frame(&mut self, frame_idx: i64, thread_id: i64, timer_name: &str, excl_ms: f64) {
+        pub(crate) fn add_event_for_frame(&mut self, frame_idx: i64, thread_id: i64, timer_name: &str, excl_ms: f64) {
             let tid = self.get_or_create_timer(thread_id, timer_name);
             self.conn.execute(
                 "INSERT INTO frame_timer (frame_idx, thread_id, timer_id, excl_ms, calls, max_ms)
@@ -1616,11 +1616,11 @@ mod tests {
             ).unwrap();
         }
 
-        fn add_event(&mut self, _window_id: i64, thread_id: i64, timer_name: &str, excl_ms: f64) {
+        pub(crate) fn add_event(&mut self, _window_id: i64, thread_id: i64, timer_name: &str, excl_ms: f64) {
             self.add_event_for_frame(100, thread_id, timer_name, excl_ms);
         }
 
-        fn evaluate(&mut self, episode: DbEpisode) -> (Vec<DbFinding>, String) {
+        pub(crate) fn evaluate(&mut self, episode: DbEpisode) -> (Vec<DbFinding>, String) {
             self.conn.execute(
                 "INSERT INTO episodes (id, kind, start_s, end_s, frame_from, frame_to, peak_ms, median_ms, bound_by, periodic_group)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",

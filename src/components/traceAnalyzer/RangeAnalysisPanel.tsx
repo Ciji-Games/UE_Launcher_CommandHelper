@@ -222,11 +222,21 @@ export function RangeAnalysisPanel({
   }
 
   const { medianMs, p95Ms, overBudgetPct, threadMedians, waitingOn } = stats;
-  const { gameMs = 0, renderMs = 0, gpuMs = 0 } = threadMedians || {};
+  const {
+    gameMs = 0,
+    activeGameMs = gameMs,
+    waitGameMs = 0,
+    renderMs = 0,
+    activeRenderMs = renderMs,
+    waitRenderMs = 0,
+    gpuMs = 0,
+    activeGpuMs = gpuMs,
+    waitGpuMs = 0,
+  } = threadMedians || {};
   const isOverBudget = verdict.isOverBudget;
 
   // Active hardware time bars scaling: max(value, budget) * 1.1, clamp fill to 100%, budget marker at true position
-  const maxThreadVal = Math.max(gpuMs, gameMs, renderMs, targetMs);
+  const maxThreadVal = Math.max(activeGpuMs + waitGpuMs, activeGameMs + waitGameMs, activeRenderMs + waitRenderMs, targetMs);
   const axisMax = Math.max(maxThreadVal, targetMs) * 1.1;
   const budgetMarkerPct = Math.min(100, Math.max(0, (targetMs / axisMax) * 100));
 
@@ -240,11 +250,12 @@ export function RangeAnalysisPanel({
 
   const displayedSubsystems = showAllSubsystems ? groupedSubsystems : groupedSubsystems.slice(0, 5);
 
-  const renderThreadBar = (label: string, ms: number, role: 'gpu' | 'game' | 'render') => {
-    const isThreadOver = ms > targetMs;
-    const isExtreme = ms > targetMs * 3.0;
-    const fillPct = Math.min(100, Math.max(0, (ms / axisMax) * 100));
-    const multiple = (ms / targetMs).toFixed(1);
+  const renderThreadBar = (label: string, activeMs: number, waitMs: number, role: 'gpu' | 'game' | 'render') => {
+    const isThreadOver = activeMs > targetMs;
+    const isExtreme = activeMs > targetMs * 3.0;
+    const activeFillPct = Math.min(100, Math.max(0, (activeMs / axisMax) * 100));
+    const waitFillPct = Math.min(100 - activeFillPct, Math.max(0, (waitMs / axisMax) * 100));
+    const multiple = (activeMs / targetMs).toFixed(1);
 
     let barColor = 'bg-emerald-500';
     let textColor = 'text-emerald-400 font-mono';
@@ -266,7 +277,14 @@ export function RangeAnalysisPanel({
         <div className="flex items-center justify-between text-xs">
           <span className="text-slate-300 font-medium">{label}</span>
           <div className="flex items-center gap-1.5">
-            <span className={textColor}>{ms.toFixed(1)} ms/frame</span>
+            <span className={textColor}>
+              {activeMs.toFixed(1)} ms
+              {waitMs >= 0.1 && (
+                <span className="text-slate-400 font-normal text-[11px] ml-1">
+                  (+{waitMs.toFixed(1)} ms wait)
+                </span>
+              )}
+            </span>
             {isExtreme && (
               <span className="text-[10px] px-1 py-0.2 rounded bg-rose-950/80 text-rose-300 border border-rose-500/40 font-mono">
                 x {multiple} over budget
@@ -274,18 +292,30 @@ export function RangeAnalysisPanel({
             )}
           </div>
         </div>
-        <div className="h-2 rounded bg-slate-800/80 overflow-hidden relative">
+        <div className="h-2 rounded bg-slate-800/80 overflow-hidden relative flex">
           {/* Target Budget Marker */}
           <div
             className="absolute top-0 bottom-0 w-0.5 bg-sky-300/90 z-10"
             style={{ left: `${budgetMarkerPct}%` }}
             title={`Target budget: ${targetMs.toFixed(1)} ms/frame`}
           />
-          {/* Fill bar clamped to 100% */}
+          {/* Active Work fill bar */}
           <div
-            className={`h-full ${barColor} rounded transition-all duration-300`}
-            style={{ width: `${fillPct}%` }}
+            className={`h-full ${barColor} rounded-l transition-all duration-300`}
+            style={{ width: `${activeFillPct}%` }}
+            title={`Active work: ${activeMs.toFixed(1)} ms/frame`}
           />
+          {/* Wait Segment (hatched) */}
+          {waitMs >= 0.1 && (
+            <div
+              className="h-full bg-slate-600/70 opacity-80 border-l border-slate-900/40 transition-all duration-300 relative"
+              style={{
+                width: `${waitFillPct}%`,
+                backgroundImage: 'repeating-linear-gradient(45deg, transparent, transparent 2px, rgba(255,255,255,0.15) 2px, rgba(255,255,255,0.15) 4px)',
+              }}
+              title={`Idle/Sync wait: ${waitMs.toFixed(1)} ms/frame`}
+            />
+          )}
         </div>
       </div>
     );
@@ -359,9 +389,9 @@ export function RangeAnalysisPanel({
           </div>
 
           <div className="flex flex-wrap items-center gap-3">
-            {renderThreadBar('GPU', gpuMs, 'gpu')}
-            {renderThreadBar('Game Thread', gameMs, 'game')}
-            {renderThreadBar('Render Thread', renderMs, 'render')}
+            {renderThreadBar('GPU', activeGpuMs, waitGpuMs, 'gpu')}
+            {renderThreadBar('Game Thread', activeGameMs, waitGameMs, 'game')}
+            {renderThreadBar('Render Thread', activeRenderMs, waitRenderMs, 'render')}
           </div>
         </div>
 

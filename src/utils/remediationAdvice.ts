@@ -1,12 +1,10 @@
-import type { FixSuggestion, Level } from '../types/traceAnalyzer';
+import type { FixSuggestion } from '../types/traceAnalyzer';
 
 export interface RemediationAdvice {
   title: string;
   fixes: FixSuggestion[];
   verify: string;
   caveats?: string[];
-  matchConfidence?: Level;
-  fixLikelihood?: Level;
 }
 
 export function getRemediationAdvice(
@@ -49,8 +47,6 @@ export function getRemediationAdvice(
           },
         ],
         verify: 'Adjust particle emitter counts/culling and verify that FXSystemPreRender / Niagara GPU pass times decrease.',
-        fixLikelihood: 'high',
-        matchConfidence: 'high',
       };
     }
 
@@ -86,8 +82,6 @@ export function getRemediationAdvice(
           },
         ],
         verify: 'Toggle r.Lumen.DiffuseIndirect.Allow or adjust r.Lumen.ScreenProbeGather.DownsampleFactor and confirm GPU pass times drop.',
-        fixLikelihood: 'high',
-        matchConfidence: 'high',
       };
     }
 
@@ -129,8 +123,6 @@ export function getRemediationAdvice(
           },
         ],
         verify: 'Verify in the trace that Nanite::DrawGeometry and ShadowDepths Face calls/frame drop toward baseline (e.g. under 6 views/frame).',
-        fixLikelihood: 'high',
-        matchConfidence: 'high',
       };
     }
 
@@ -164,8 +156,6 @@ export function getRemediationAdvice(
           },
         ],
         verify: 'Adjust r.Shadow.Virtual.ResolutionLodBias and verify that ShadowDepths / VirtualShadowMap pass times drop.',
-        fixLikelihood: 'high',
-        matchConfidence: 'high',
       };
     }
 
@@ -194,8 +184,6 @@ export function getRemediationAdvice(
           },
         ],
         verify: 'Adjust r.Nanite.MaxPixelsPerEdge and verify that Nanite rasterization pass duration decreases.',
-        fixLikelihood: 'high',
-        matchConfidence: 'high',
       };
     }
 
@@ -225,8 +213,6 @@ export function getRemediationAdvice(
           },
         ],
         verify: 'Test with simplified materials or EarlyZPass enabled and check BasePass pass times.',
-        fixLikelihood: 'high',
-        matchConfidence: 'high',
       };
     }
 
@@ -263,8 +249,6 @@ export function getRemediationAdvice(
           },
         ],
         verify: 'Adjust r.ScreenPercentage or r.TSR.History.ScreenPercentage and confirm post-processing duration drops.',
-        fixLikelihood: 'high',
-        matchConfidence: 'high',
       };
     }
 
@@ -293,8 +277,6 @@ export function getRemediationAdvice(
           },
         ],
         verify: 'Toggle off overlapping local lights or clamp light radii and observe DirectLighting duration.',
-        fixLikelihood: 'high',
-        matchConfidence: 'high',
       };
     }
 
@@ -321,8 +303,6 @@ export function getRemediationAdvice(
           },
         ],
         verify: 'Adjust r.SeparateTranslucencyScreenPercentage and verify translucency pass times decrease.',
-        fixLikelihood: 'high',
-        matchConfidence: 'high',
       };
     }
 
@@ -351,8 +331,6 @@ export function getRemediationAdvice(
         },
       ],
       verify: 'Adjust r.ScreenPercentage or shadow quality presets and confirm GPU frame duration decreases.',
-      fixLikelihood: 'high',
-      matchConfidence: 'high',
     };
   }
 
@@ -376,8 +354,6 @@ export function getRemediationAdvice(
         },
       ],
       verify: 'Verify in Unreal Insights Threads channel that Game Thread is no longer blocked in WaitUntilTasksComplete.',
-      fixLikelihood: 'high',
-      matchConfidence: 'high',
     };
   }
 
@@ -400,8 +376,6 @@ export function getRemediationAdvice(
         },
       ],
       verify: 'Profile with stat SceneRendering and verify Mesh Draw Commands and View Visibility times drop.',
-      fixLikelihood: 'high',
-      matchConfidence: 'high',
     };
   }
 
@@ -426,8 +400,6 @@ export function getRemediationAdvice(
         },
       ],
       verify: 'Adjust gc.TimeBetweenPurgingPendingKillObjects and confirm GC hitch frequency and duration decrease.',
-      fixLikelihood: 'high',
-      matchConfidence: 'high',
     };
   }
 
@@ -451,8 +423,6 @@ export function getRemediationAdvice(
         },
       ],
       verify: 'Enable URO and verify that TickPose and RefreshBoneTransforms CPU execution time drops.',
-      fixLikelihood: 'high',
-      matchConfidence: 'high',
     };
   }
 
@@ -475,8 +445,6 @@ export function getRemediationAdvice(
         },
       ],
       verify: 'Disable unnecessary actor ticks and verify Blueprint execution time decreases.',
-      fixLikelihood: 'high',
-      matchConfidence: 'high',
     };
   }
 
@@ -500,8 +468,6 @@ export function getRemediationAdvice(
         },
       ],
       verify: 'Profile with stat Chaos or stat Collision to confirm reduced physics step duration.',
-      fixLikelihood: 'high',
-      matchConfidence: 'high',
     };
   }
 
@@ -524,8 +490,6 @@ export function getRemediationAdvice(
         },
       ],
       verify: 'Wrap widgets in InvalidationBox and confirm PaintSlowPath / Prepass time drops.',
-      fixLikelihood: 'high',
-      matchConfidence: 'high',
     };
   }
 
@@ -548,8 +512,6 @@ export function getRemediationAdvice(
         },
       ],
       verify: 'Verify that Game Thread is no longer blocked on synchronous package serialization.',
-      fixLikelihood: 'high',
-      matchConfidence: 'high',
     };
   }
 
@@ -572,7 +534,5 @@ export function getRemediationAdvice(
       },
     ],
     verify: `Verify in Unreal Insights that ${timerName} duration and call counts decrease proportionally.`,
-    fixLikelihood: 'medium',
-    matchConfidence: 'medium',
   };
 }

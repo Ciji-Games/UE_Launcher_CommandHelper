@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 
-pub const SCHEMA_VERSION: i32 = 12;
+pub const SCHEMA_VERSION: i32 = 13;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
@@ -74,6 +74,7 @@ pub struct DbBaselineGlobal {
     pub p95_excl_ms: f64,
     pub median_calls: f64,
     pub samples: i64,
+    pub present_frames: i64,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -266,6 +267,7 @@ pub fn init_db(conn: &Connection) -> Result<(), rusqlite::Error> {
             p95_excl_ms REAL NOT NULL,
             median_calls REAL NOT NULL,
             samples INTEGER NOT NULL,
+            present_frames INTEGER NOT NULL DEFAULT 0,
             PRIMARY KEY(thread_id, timer_id)
         );
 
