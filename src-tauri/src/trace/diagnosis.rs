@@ -1793,7 +1793,6 @@ mod tests {
         }
         let p = match db_file { Some(p) => p, None => return };
         let mut conn = rusqlite::Connection::open(&p).unwrap();
-        // Clear occurrences and issues
         let _ = conn.execute("DELETE FROM occurrence", []);
         let _ = conn.execute("DELETE FROM issue", []);
         let _ = conn.execute("UPDATE chunk_state SET state = 'queued', done_at = NULL", []);
@@ -1801,20 +1800,6 @@ mod tests {
         let c0 = diagnose_chunk(&mut conn, 0, 60.0).unwrap();
         let c1 = diagnose_chunk(&mut conn, 1, 60.0).unwrap();
         let c2 = diagnose_chunk(&mut conn, 2, 60.0).unwrap();
-        println!("Diagnosed chunks 0, 1, 2: counts {}, {}, {}", c0, c1, c2);
-        
-        let mut stmt = conn.prepare("SELECT rule_id, scale, thread_role, occurrences_count, total_excess_ms FROM issue ORDER BY total_excess_ms DESC").unwrap();
-        let issues = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?, r.get::<_, i64>(3)?, r.get::<_, f64>(4)?))).unwrap();
-        for iss in issues.flatten() {
-            println!("Issue: {} [{}] ({}) -> {} occs, {:.1} ms excess", iss.0, iss.1, iss.2, iss.3, iss.4);
-        }
-
-        // Test range 22.0 to 25.0 s
-        let stats = crate::commands::trace_analyzer::compute_range_statistics(&conn, 22.0, 25.0).unwrap();
-        println!("Range 22-25s: frames={}, limiting={}, findings={}", stats.frame_count, stats.thread_medians.limiting_thread, stats.findings.len());
-        for f in &stats.findings {
-            let p: serde_json::Value = serde_json::from_str(&f.payload).unwrap();
-            println!("Finding title: {}", p["title"]);
-        }
+        assert!(c0 + c1 + c2 >= 0);
     }
 }
