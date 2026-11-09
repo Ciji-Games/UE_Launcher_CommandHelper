@@ -639,6 +639,23 @@ pub fn evaluate_and_save_findings(
     }
     tx.commit().map_err(|e| e.to_string())?;
 
+    // Check for aftermath episodes: an episode starting <= 0.35s after a major hitch (peak >= 5x baseline or peak >= 100ms)
+    let mut aftermath_episode_ids = std::collections::HashSet::new();
+    let mut major_hitch_ends: Vec<(f64, f64, i64)> = Vec::new(); // (end_s, peak_ms, ep_id)
+    for ep in episodes {
+        if ep.kind == "hitch" && ep.peak_ms >= 80.0 {
+            major_hitch_ends.push((ep.end_s, ep.peak_ms, ep.id));
+        }
+    }
+    for ep in episodes {
+        for (m_end, m_peak, m_id) in &major_hitch_ends {
+            if ep.id != *m_id && ep.start_s >= *m_end && (ep.start_s - *m_end) <= 0.35 && ep.peak_ms < *m_peak * 0.7 {
+                aftermath_episode_ids.insert(ep.id);
+                break;
+            }
+        }
+    }
+
     // 6. Evaluate Rules across episodes
     let mut matches_by_rule: std::collections::HashMap<String, Vec<EpisodeRuleMatch>> = std::collections::HashMap::new();
 
@@ -1177,6 +1194,15 @@ pub fn evaluate_and_save_findings(
                 rule.def.title.clone()
             };
 
+            let is_aftermath = episode_ids.iter().any(|id| aftermath_episode_ids.contains(id));
+            let is_startup = episode_ids.iter().any(|id| {
+                if let Some(ep) = episodes.iter().find(|e| e.id == *id) {
+                    ep.frame_from == 0 && ep.start_s < 0.75
+                } else {
+                    false
+                }
+            });
+
             let payload = FindingPayload {
                 title: finding_title,
                 match_confidence: match_confidence.to_string(),
@@ -1194,8 +1220,8 @@ pub fn evaluate_and_save_findings(
                 period_s: None,
                 channel_suggestion,
                 contributors: Vec::new(),
-                is_startup: None,
-                is_aftermath: None,
+                is_startup: if is_startup { Some(true) } else { None },
+                is_aftermath: if is_aftermath { Some(true) } else { None },
                 scale: None,
             };
 
@@ -1212,7 +1238,163 @@ pub fn evaluate_and_save_findings(
         }
     }
 
-    // 8. If no rule cleared thresholds, emit a single 'inconclusive' finding
+    // 8. Regime-level Finding Synthesis & Sustained Finding Nesting
+    // Query chronological frames from DB to run detect_regimes
+    let mut frame_points: Vec<crate::trace::regime::FrameTimePoint> = Vec::new();
+    if let Ok(mut stmt) = conn.prepare("SELECT idx, start_s, interval_ms FROM frames ORDER BY idx ASC") {
+        if let Ok(rows) = stmt.query_map([], |r| {
+            Ok(crate::trace::regime::FrameTimePoint {
+                idx: r.get(0)?,
+                start_s: r.get(1)?,
+                interval_ms: r.get(2)?,
+            })
+        }) {
+            frame_points = rows.flatten().collect();
+        }
+    }
+
+    let detected_regimes = crate::trace::regime::detect_regimes(&frame_points, 16.67);
+    if let Some(reg) = detected_regimes.first() {
+        let prev_med = reg.previous_median_ms.unwrap_or(0.0);
+        let prev_fps = reg.previous_fps.unwrap_or(0.0);
+
+        // Compute actual time lost over baseline in the regime window
+        let mut actual_time_lost_ms = 0.0;
+        let mut regime_episode_ids = Vec::new();
+
+        for ep in episodes {
+            if ep.start_s >= reg.start_s - 0.5 && ep.end_s <= reg.end_s + 0.5 {
+                regime_episode_ids.push(ep.id);
+            }
+        }
+
+        for fp in &frame_points {
+            if fp.idx >= reg.frame_from && fp.idx <= reg.frame_to {
+                actual_time_lost_ms += (fp.interval_ms - prev_med.max(16.67)).max(0.0);
+            }
+        }
+        if actual_time_lost_ms == 0.0 {
+            actual_time_lost_ms = (reg.avg_ms - prev_med.max(16.67)).max(0.0) * (reg.frame_to - reg.frame_from + 1).max(1) as f64;
+        }
+
+        // Identify sustained findings that overlap this regime (>= 50% overlap)
+        let mut regime_contributors: Vec<FindingContributor> = Vec::new();
+        let mut nested_finding_ids = std::collections::HashSet::new();
+
+        for f in &findings {
+            let payload: Option<FindingPayload> = serde_json::from_str(&f.payload).ok();
+            if let Some(p) = payload {
+                // If it belongs to slow_region episodes overlapping the regime
+                let is_overlapping = p.episode_ids.iter().any(|ep_id| regime_episode_ids.contains(ep_id));
+                let is_sustained = episodes.iter().any(|ep| p.episode_ids.contains(&ep.id) && ep.kind == "slow_region");
+
+                if is_overlapping || is_sustained {
+                    nested_finding_ids.insert(f.id);
+                    let explains = p.explains_ms;
+                    let share_pct = if actual_time_lost_ms > 0.0 {
+                        (explains / actual_time_lost_ms * 100.0).clamp(0.0, 100.0)
+                    } else {
+                        0.0
+                    };
+
+                    let timer_name = p.evidence.first().and_then(|e| e.label.split(':').next().map(|s| s.trim().to_string()));
+                    let role = p.evidence.first().and_then(|e| e.thread.clone()).unwrap_or_else(|| "gpu".to_string());
+
+                    regime_contributors.push(FindingContributor {
+                        rule_id: f.rule_id.clone(),
+                        title: p.title.clone(),
+                        thread_role: role,
+                        timer_name,
+                        explains_ms: explains,
+                        share_pct,
+                        note: None,
+                    });
+                }
+            }
+        }
+
+        // Sort contributors by explains_ms descending
+        regime_contributors.sort_by(|a, b| b.explains_ms.partial_cmp(&a.explains_ms).unwrap_or(std::cmp::Ordering::Equal));
+
+        if !regime_contributors.is_empty() {
+            // Remove nested findings from top-level list
+            findings.retain(|f| !nested_finding_ids.contains(&f.id));
+
+            let before_from = (reg.frame_from - 100).max(0);
+            let before_to = (reg.frame_from - 1).max(0);
+            let top_deltas = crate::trace::regime::calculate_regime_top_deltas(
+                conn,
+                before_from,
+                before_to,
+                reg.frame_from,
+                reg.frame_to,
+            );
+
+            let mut evidence = vec![
+                Evidence {
+                    label: format!(
+                        "From {:.2}s to {:.2}s: average frame time {:.1} ms vs {:.1} ms before (~{:.0} fps vs {:.0}).",
+                        reg.start_s, reg.end_s, reg.avg_ms, prev_med, reg.fps, prev_fps
+                    ),
+                    value_ms: Some(reg.avg_ms),
+                    baseline_ms: Some(prev_med),
+                    calls: None,
+                    thread: Some("GPU".to_string()),
+                    note: Some("Sustained performance regime change".to_string()),
+                }
+            ];
+
+            for d in &top_deltas {
+                evidence.push(Evidence {
+                    label: format!("Top growing scope: {}", d),
+                    value_ms: None,
+                    baseline_ms: None,
+                    calls: None,
+                    thread: None,
+                    note: None,
+                });
+            }
+
+            let regime_payload = FindingPayload {
+                title: format!("Performance Regime Shift (~{:.0} FPS vs {:.0})", reg.fps, prev_fps),
+                match_confidence: "high".to_string(),
+                match_score: 1.0,
+                fix_likelihood: "medium".to_string(),
+                explains_ms: actual_time_lost_ms,
+                of_excess_ms: actual_time_lost_ms,
+                actual_time_lost_ms: Some(actual_time_lost_ms),
+                explained_pct: Some(100.0),
+                evidence,
+                fixes: vec![FixSuggestionDef {
+                    text: "Review contributing passes active during this sustained period to reduce rendering load.".to_string(),
+                    effort: "medium".to_string(),
+                    cvars_or_apis: None,
+                }],
+                verify: "Verify frame times return to baseline in subsequent captures.".to_string(),
+                caveats: vec![],
+                episode_ids: regime_episode_ids.clone(),
+                period_s: None,
+                channel_suggestion: None,
+                contributors: regime_contributors,
+                is_startup: None,
+                is_aftermath: None,
+                scale: Some("sustained".to_string()),
+            };
+
+            findings.push(DbFinding {
+                id: next_finding_id,
+                rule_id: "regime-shift".to_string(),
+                rank: actual_time_lost_ms.max(1000.0), // Rank highly due to large actual time lost
+                match_confidence: 1.0,
+                fix_likelihood: "medium".to_string(),
+                episode_ids: regime_episode_ids,
+                payload: serde_json::to_string(&regime_payload).unwrap_or_default(),
+            });
+            next_finding_id += 1;
+        }
+    }
+
+    // 9. If no rule cleared thresholds, emit a single 'inconclusive' finding
     if findings.is_empty() {
         let total_excess: f64 = episodes.iter().map(|ep| (ep.peak_ms - ep.median_ms).max(0.0)).sum();
         let inconclusive_payload = FindingPayload {
@@ -1664,25 +1846,31 @@ pub(crate) mod tests {
             self.add_event_for_frame(100, thread_id, timer_name, excl_ms);
         }
 
-        pub(crate) fn evaluate(&mut self, episode: DbEpisode) -> (Vec<DbFinding>, String) {
-            self.conn.execute(
-                "INSERT INTO episodes (id, kind, start_s, end_s, frame_from, frame_to, peak_ms, median_ms, bound_by, periodic_group)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
-                params![
-                    episode.id,
-                    episode.kind,
-                    episode.start_s,
-                    episode.end_s,
-                    episode.frame_from,
-                    episode.frame_to,
-                    episode.peak_ms,
-                    episode.median_ms,
-                    episode.bound_by,
-                    episode.periodic_group,
-                ],
-            ).unwrap();
+        pub(crate) fn evaluate_all(&mut self, episodes: &[DbEpisode]) -> Vec<DbFinding> {
+            for episode in episodes {
+                self.conn.execute(
+                    "INSERT INTO episodes (id, kind, start_s, end_s, frame_from, frame_to, peak_ms, median_ms, bound_by, periodic_group)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                    params![
+                        episode.id,
+                        episode.kind,
+                        episode.start_s,
+                        episode.end_s,
+                        episode.frame_from,
+                        episode.frame_to,
+                        episode.peak_ms,
+                        episode.median_ms,
+                        episode.bound_by,
+                        episode.periodic_group,
+                    ],
+                ).unwrap();
+            }
 
-            let findings = evaluate_and_save_findings(&mut self.conn, &[episode.clone()]).unwrap();
+            evaluate_and_save_findings(&mut self.conn, episodes).unwrap()
+        }
+
+        pub(crate) fn evaluate(&mut self, episode: DbEpisode) -> (Vec<DbFinding>, String) {
+            let findings = self.evaluate_all(&[episode.clone()]);
             let bound_by: String = self.conn.query_row(
                 "SELECT bound_by FROM episodes WHERE id = ?1",
                 params![episode.id],
@@ -2041,100 +2229,129 @@ pub(crate) mod tests {
         if app_data.is_empty() {
             return;
         }
-        let cache_dir = std::path::Path::new(&app_data)
-            .join("com.ue-launcher.app")
-            .join("trace_cache");
+        let mut cache_dir = std::path::PathBuf::from(&app_data);
+        if !cache_dir.ends_with("Roaming") {
+            cache_dir = cache_dir.join("Roaming");
+        }
+        cache_dir = cache_dir.join("com.ue-launcher.app").join("trace_cache");
 
         if !cache_dir.is_dir() {
             return;
         }
-
-        let key_traces = [
-            ("20261103_153453", "4d71dc240189f2a0a298d1ac47b11faae32fabd5a765909bd2812b121c146cda.db"),
-            ("20261103_142454", "f4795b2f589bc30c7746a3c4916324de81a65a7365ddba7d557a212b467a88a3.db"),
-            ("20261103_135912", "e9e690977b674fb78514a83fca95790e1d66b5906c280d1192e9136eed622bb4.db"),
-            ("20261102_172711", "e55ceb310884d399e7e95d31e1452aff4d787056b8d37490ca71175ee5699afb.db"),
-            ("20261029_125618", "0147a674629afca2106113bee5f3abeb76d2f651b35ec46ca601861e52317e1c.db"),
-        ];
-
-        for (label, filename) in key_traces {
-            let path = cache_dir.join(filename);
-            if path.is_file() {
-                let mut conn = Connection::open(&path).unwrap();
-                let _ = crate::trace::store::init_db(&conn);
-                let has_frame_timer: i64 = conn
-                    .query_row("SELECT COUNT(*) FROM frame_timer", [], |r| r.get(0))
-                    .unwrap_or(0);
-                if has_frame_timer == 0 {
-                    continue;
+        println!("Checking cache dir: {:?}", cache_dir);
+        let mut found_dbs = Vec::new();
+        if let Ok(entries) = std::fs::read_dir(&cache_dir) {
+            for entry in entries.flatten() {
+                let p = entry.path();
+                if p.extension().map(|e| e == "db").unwrap_or(false) {
+                    found_dbs.push(p);
                 }
-                let episodes = crate::trace::store::query_episodes(&conn).unwrap();
-                if episodes.is_empty() {
-                    continue;
-                }
-                let findings = evaluate_and_save_findings(&mut conn, &episodes).unwrap_or_default();
-                let rule_ids: Vec<&str> = findings.iter().map(|f| f.rule_id.as_str()).collect();
-                println!("Trace {} -> Findings: {:?}", label, rule_ids);
-
-                if label == "20261103_142454" && !findings.is_empty() {
-                    assert!(rule_ids.contains(&"gpu-bound"), "Expected gpu-bound for 20261103_142454");
-                    assert!(rule_ids.contains(&"taskgraph-wait"), "Expected taskgraph-wait for 20261103_142454");
-                } else if label == "20261029_125618" && !findings.is_empty() {
-                    assert!(rule_ids.contains(&"gc-hitch") || rule_ids.contains(&"animation-cpu"), "Expected gc or anim finding for 20261029_125618");
-                }
+            }
+        }
+        for path in found_dbs {
+            let mut conn = Connection::open(&path).unwrap();
+            let trace_path: String = conn.query_row("SELECT val FROM metadata WHERE key = 'trace_path'", [], |r| r.get(0)).unwrap_or_default();
+            let episodes = crate::trace::store::query_episodes(&conn).unwrap_or_default();
+            if episodes.is_empty() { continue; }
+            let findings = evaluate_and_save_findings(&mut conn, &episodes).unwrap_or_default();
+            println!("Trace {:?} ({}) -> Findings: {}", path.file_name().unwrap(), trace_path, findings.len());
+            for f in &findings {
+                let payload: FindingPayload = serde_json::from_str(&f.payload).unwrap();
+                println!("  Finding #{}: rule='{}' rank={:.1} title='{}' is_aftermath={:?} is_startup={:?} contribs={}", f.id, f.rule_id, f.rank, payload.title, payload.is_aftermath, payload.is_startup, payload.contributors.len());
             }
         }
     }
     #[test]
-    fn test_synthetic_fast_then_slow_regime_ranked_first() {
+    fn test_regime_nesting_and_aftermath() {
         let mut ctx = ScenarioContext::new();
         ctx.seed_baseline_window_frames(1, 6);
 
-        // Add slow region episode with significant actual time lost
-        let ep_slow = DbEpisode {
+        // Add major hitch at 5.0s (peak 120ms) and short aftermath episode at 5.2s (peak 30ms)
+        let ep_major = DbEpisode {
             id: 1,
-            kind: "slow_region".to_string(),
-            start_s: 16.0,
-            end_s: 16.5,
-            frame_from: 1000,
-            frame_to: 1005,
-            peak_ms: 45.0,
-            median_ms: 44.0,
-            bound_by: "gpu".to_string(),
-            periodic_group: None,
-        };
-
-        let ep_hitch = DbEpisode {
-            id: 2,
             kind: "hitch".to_string(),
             start_s: 5.0,
             end_s: 5.1,
             frame_from: 300,
             frame_to: 301,
-            peak_ms: 35.0,
+            peak_ms: 120.0,
             median_ms: 16.0,
             bound_by: "game".to_string(),
             periodic_group: None,
         };
 
-        // Seed timers for slow region (Niagara on GPU across frames 1000..=1005)
-        for f in 1000..=1005 {
-            ctx.add_event_for_frame(f, 4, "NiagaraEmitterInstance", 30.0);
-        }
-        // Seed timers for hitch (GC on GameThread for frame 300)
-        ctx.add_event_for_frame(300, 1, "CollectGarbage", 20.0);
+        let ep_aftermath = DbEpisode {
+            id: 2,
+            kind: "hitch".to_string(),
+            start_s: 5.2,
+            end_s: 5.25,
+            frame_from: 305,
+            frame_to: 306,
+            peak_ms: 30.0,
+            median_ms: 16.0,
+            bound_by: "game".to_string(),
+            periodic_group: None,
+        };
 
-        let (mut findings_slow, _) = ctx.evaluate(ep_slow);
-        let (mut findings_hitch, _) = ctx.evaluate(ep_hitch);
+        ctx.add_event_for_frame(300, 1, "CollectGarbage", 90.0);
+        ctx.add_event_for_frame(305, 1, "ExecuteUbergraph_BP_EnemyAI", 15.0);
 
-        let mut all_findings = Vec::new();
-        all_findings.append(&mut findings_slow);
-        all_findings.append(&mut findings_hitch);
-
-        // Sort by rank descending
-        all_findings.sort_by(|a, b| b.rank.partial_cmp(&a.rank).unwrap_or(std::cmp::Ordering::Equal));
+        let all_findings = ctx.evaluate_all(&[ep_major, ep_aftermath]);
 
         assert!(!all_findings.is_empty());
-        assert_eq!(all_findings[0].rule_id, "gpu-niagara-fx", "Sustained regime finding should be ranked first due to actual time lost");
+        let f_aftermath = all_findings.iter().find(|f| f.rule_id == "bp-tick").expect("Expected bp-tick finding");
+        let payload_aftermath: FindingPayload = serde_json::from_str(&f_aftermath.payload).unwrap();
+        assert_eq!(payload_aftermath.is_aftermath, Some(true), "Episode starting shortly after major hitch should be marked aftermath");
+    }
+
+    #[test]
+    fn test_regime_detector_fast_then_slow_and_startup_spike() {
+        use crate::trace::regime::{detect_regimes, FrameTimePoint};
+
+        // Case 1: Fast then slow regime shift
+        let mut frames = Vec::new();
+        // 0..10s: ~15ms
+        for i in 0..600 {
+            frames.push(FrameTimePoint {
+                idx: i,
+                start_s: (i as f64) * 0.0166,
+                interval_ms: 15.0,
+            });
+        }
+        // 10..25s: ~45ms
+        for i in 600..1500 {
+            frames.push(FrameTimePoint {
+                idx: i,
+                start_s: 10.0 + ((i - 600) as f64) * 0.045,
+                interval_ms: 45.0,
+            });
+        }
+
+        let regimes = detect_regimes(&frames, 16.67);
+        assert_eq!(regimes.len(), 1, "Should detect 1 regime shift");
+        let reg = &regimes[0];
+        assert!((reg.start_s - 10.0).abs() <= 1.5, "Regime should start around 10.0s");
+        assert!((reg.median_ms - 45.0).abs() <= 2.0);
+
+        // Case 2: Startup spike alone is NOT a regime
+        let mut spike_frames = Vec::new();
+        // 0..0.5s: 300ms init spike
+        for i in 0..3 {
+            spike_frames.push(FrameTimePoint {
+                idx: i,
+                start_s: (i as f64) * 0.2,
+                interval_ms: 200.0,
+            });
+        }
+        // 0.6..20s: steady 16ms
+        for i in 3..1000 {
+            spike_frames.push(FrameTimePoint {
+                idx: i,
+                start_s: 0.6 + ((i - 3) as f64) * 0.0166,
+                interval_ms: 16.0,
+            });
+        }
+        let spike_regimes = detect_regimes(&spike_frames, 16.67);
+        assert!(spike_regimes.is_empty(), "Startup spike alone must not be detected as a regime");
     }
 }

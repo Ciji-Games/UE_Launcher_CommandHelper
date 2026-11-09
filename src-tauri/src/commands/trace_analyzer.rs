@@ -918,35 +918,22 @@ fn read_summary_from_db(
 
     let mut regime_summary: Option<String> = None;
     if let Ok(mut f_stmt) = conn.prepare("SELECT idx, start_s, interval_ms FROM frames ORDER BY idx ASC") {
-        if let Ok(rows) = f_stmt.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, f64>(1)?, r.get::<_, f64>(2)?))) {
-            let chrono_frames: Vec<(i64, f64, f64)> = rows.flatten().collect();
-            if chrono_frames.len() >= 60 {
-                let win = 30;
-                let mut i = 0;
-                while i + 2 * win <= chrono_frames.len() {
-                    let win1 = &chrono_frames[i..i + win];
-                    let win2 = &chrono_frames[i + win..i + 2 * win];
-
-                    let mut intv1: Vec<f64> = win1.iter().map(|f| f.2).collect();
-                    let mut intv2: Vec<f64> = win2.iter().map(|f| f.2).collect();
-                    intv1.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-                    intv2.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-
-                    let med1 = crate::trace::frames::calculate_percentile(&intv1, 0.5);
-                    let med2 = crate::trace::frames::calculate_percentile(&intv2, 0.5);
-
-                    if (med2 - med1).abs() >= 4.0 || (med1 > 0.0 && (med2 - med1) / med1 >= 0.25) {
-                        let shift_time_s = win2.first().map(|f| f.1).unwrap_or(0.0);
-                        let fps1 = if med1 > 0.0 { (1000.0 / med1).round() } else { 0.0 };
-                        let fps2 = if med2 > 0.0 { (1000.0 / med2).round() } else { 0.0 };
-                        regime_summary = Some(format!(
-                            "From {:.1}s: avg {:.1} ms vs {:.1} ms before (~{:.0} fps vs {:.0})",
-                            shift_time_s, med2, med1, fps2, fps1
-                        ));
-                        break;
-                    }
-                    i += win;
-                }
+        if let Ok(rows) = f_stmt.query_map([], |r| {
+            Ok(crate::trace::regime::FrameTimePoint {
+                idx: r.get(0)?,
+                start_s: r.get(1)?,
+                interval_ms: r.get(2)?,
+            })
+        }) {
+            let chrono_frames: Vec<crate::trace::regime::FrameTimePoint> = rows.flatten().collect();
+            let regimes = crate::trace::regime::detect_regimes(&chrono_frames, target_ms);
+            if let Some(first_regime) = regimes.first() {
+                let prev_med = first_regime.previous_median_ms.unwrap_or(0.0);
+                let prev_fps = first_regime.previous_fps.unwrap_or(0.0);
+                regime_summary = Some(format!(
+                    "From {:.2}s: avg {:.1} ms vs {:.1} ms before (~{:.0} fps vs {:.0})",
+                    first_regime.start_s, first_regime.avg_ms, prev_med, first_regime.fps, prev_fps
+                ));
             }
         }
     }
@@ -2139,43 +2126,44 @@ pub fn compute_range_statistics(
         }
     }
 
-    // Detect Regime Changes (Item 7)
+    // Detect Regime Changes using unified time-based regime detector
     let mut regime_changes = Vec::new();
-    if frames.len() >= 60 {
-        let step = 30;
-        let win = 30;
-        let mut i = 0;
-        while i + 2 * win <= frames.len() {
-            let win1 = &frames[i..i + win];
-            let win2 = &frames[i + win..i + 2 * win];
+    let frame_time_points: Vec<crate::trace::regime::FrameTimePoint> = frames
+        .iter()
+        .map(|f| crate::trace::regime::FrameTimePoint {
+            idx: f.idx,
+            start_s: f.start_s,
+            interval_ms: f.interval_ms,
+        })
+        .collect();
 
-            let mut intv1: Vec<f64> = win1.iter().map(|f| f.interval_ms).collect();
-            let mut intv2: Vec<f64> = win2.iter().map(|f| f.interval_ms).collect();
-            intv1.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-            intv2.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let detected_regimes = crate::trace::regime::detect_regimes(&frame_time_points, target_ms);
+    for reg in detected_regimes {
+        let prev_med = reg.previous_median_ms.unwrap_or(0.0);
+        let delta_ms = reg.median_ms - prev_med;
+        let desc = format!(
+            "at {:.2} s frame time {:.1} -> {:.1} ms ({:+.1} ms/frame)",
+            reg.start_s, prev_med, reg.median_ms, delta_ms
+        );
 
-            let med1 = calculate_percentile(&intv1, 0.5);
-            let med2 = calculate_percentile(&intv2, 0.5);
+        let before_from = (reg.frame_from - 100).max(0);
+        let before_to = (reg.frame_from - 1).max(0);
+        let top_deltas = crate::trace::regime::calculate_regime_top_deltas(
+            conn,
+            before_from,
+            before_to,
+            reg.frame_from,
+            reg.frame_to,
+        );
 
-            if (med2 - med1).abs() >= 4.0 || (med1 > 0.0 && (med2 - med1) / med1 >= 0.25) {
-                let shift_time_s = win2.first().map(|f| f.start_s).unwrap_or(0.0);
-                let shift_frame_idx = i as i64 + win as i64;
-
-                let delta_ms = med2 - med1;
-                let desc = format!("at {:.1} s frame time {:.1} -> {:.1} ms ({:+.1} ms/frame)", shift_time_s, med1, med2, delta_ms);
-
-                regime_changes.push(RegimeChange {
-                    timestamp_s: shift_time_s,
-                    frame_idx: shift_frame_idx,
-                    from_median_ms: med1,
-                    to_median_ms: med2,
-                    description: desc,
-                    top_deltas: Vec::new(),
-                });
-                i += win; // jump past window
-            }
-            i += step;
-        }
+        regime_changes.push(RegimeChange {
+            timestamp_s: reg.start_s,
+            frame_idx: reg.frame_from,
+            from_median_ms: prev_med,
+            to_median_ms: reg.median_ms,
+            description: desc,
+            top_deltas,
+        });
     }
 
     Ok(RangeStatisticsResponse {

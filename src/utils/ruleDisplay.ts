@@ -51,7 +51,12 @@ export function getRuleDisplayLabel(
     case 'gpu-vsm-shadows':
       return { label: 'GPU: Virtual Shadows', badge: 'VSM', badgeColor: 'bg-red-500/20 text-red-300 border-red-500/30' };
     case 'gpu-shadow-views':
+      if (role === 'render' || tLower.includes('render')) {
+        return { label: 'Render: Shadow Setup', badge: 'Shadows (Render)', badgeColor: 'bg-purple-600/20 text-purple-300 border-purple-600/30' };
+      }
       return { label: 'GPU: Shadow Views', badge: 'Shadows', badgeColor: 'bg-red-600/20 text-red-300 border-red-600/30' };
+    case 'regime-shift':
+      return { label: 'Performance Regime Shift', badge: 'Regime', badgeColor: 'bg-amber-500/20 text-amber-300 border-amber-500/30' };
     case 'gpu-nanite':
       return { label: 'GPU: Nanite Raster', badge: 'Nanite', badgeColor: 'bg-rose-600/20 text-rose-300 border-rose-600/30' };
     case 'gpu-basepass':

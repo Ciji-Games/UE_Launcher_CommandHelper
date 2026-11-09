@@ -372,6 +372,7 @@ pub fn evaluate_profile(
         return occurrences;
     }
 
+    #[derive(Clone)]
     struct EvaluatedCandidate {
         rule_id: String,
         rule_title: String,
@@ -576,7 +577,8 @@ pub fn evaluate_profile(
         }
     }
 
-    let is_startup = scale == "spike" && profile.frame_from == 0 && profile.frame_to <= 12 && start_s < 0.55;
+    // Startup warm-up segment (first 0.75s or first frames when init overhead occurs)
+    let is_startup = scale == "spike" && profile.frame_from == 0 && start_s < 0.75;
 
     // Pick primary limiting thread
     let primary_limiting_role = limiting_threads.first().map(|(_, r)| r.as_str()).unwrap_or("game");
@@ -584,15 +586,29 @@ pub fn evaluate_profile(
     // Has any specific (non-fallback) match?
     let has_specific = candidates.iter().any(|c| !c.is_fallback);
 
-    // Filter candidates to suppress generic fallbacks when specific rules matched or role mismatch
+    // Filter candidates: prefer candidates on the limiting thread;
+    // Suppress fallbacks when specific rules matched or when fallback role doesn't match limiting role.
     let mut filtered_candidates: Vec<EvaluatedCandidate> = if has_specific {
-        candidates.into_iter().filter(|c| {
-            if c.is_fallback {
-                false
-            } else {
-                true
-            }
-        }).collect()
+        let limiting_specific: Vec<EvaluatedCandidate> = candidates
+            .iter()
+            .filter(|c| !c.is_fallback && c.thread_role == primary_limiting_role)
+            .cloned()
+            .collect();
+
+        if !limiting_specific.is_empty() {
+            // Keep specific matches; non-limiting matches become secondary contributors
+            candidates.into_iter().filter(|c| !c.is_fallback).collect()
+        } else {
+            // Limiting thread had no specific match; retain other specific matches with reduced confidence
+            candidates
+                .into_iter()
+                .filter(|c| !c.is_fallback)
+                .map(|mut c| {
+                    c.confidence = "medium".to_string();
+                    c
+                })
+                .collect()
+        }
     } else {
         candidates.into_iter().filter(|c| c.thread_role == primary_limiting_role).collect()
     };
@@ -681,10 +697,6 @@ pub fn evaluate_profile(
     }
 
     // Sort remaining candidates by tot_excess descending, prioritizing limiting role
-    println!("DEBUG 404 candidates for window {}..{}:", profile.frame_from, profile.frame_to);
-    for c in &filtered_candidates {
-        println!("  candidate: rule='{}' role='{}' is_fb={} excess={:.1}ms", c.rule_id, c.thread_role, c.is_fallback, c.tot_excess);
-    }
     filtered_candidates.sort_by(|a, b| {
         let a_role_match = if a.thread_role == primary_limiting_role { 1 } else { 0 };
         let b_role_match = if b.thread_role == primary_limiting_role { 1 } else { 0 };

@@ -164,6 +164,16 @@ export function FindingCard({
               >
                 {ruleDisplay.badge}
               </span>
+              {p.isAftermath && (
+                <span className="text-[10px] font-bold px-1.5 py-0.5 rounded border uppercase tracking-wider shrink-0 bg-slate-800 text-amber-300 border-amber-500/40">
+                  Aftermath
+                </span>
+              )}
+              {p.isStartup && (
+                <span className="text-[10px] font-bold px-1.5 py-0.5 rounded border uppercase tracking-wider shrink-0 bg-slate-800 text-sky-300 border-sky-500/40">
+                  Startup
+                </span>
+              )}
               <h3 className="text-sm font-semibold text-slate-100 group-hover:text-sky-300 leading-snug transition-colors">
                 {headline}
               </h3>

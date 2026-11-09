@@ -5,6 +5,7 @@ pub mod diagnosis;
 pub mod exclusive;
 pub mod frames;
 pub mod insights_cli;
+pub mod regime;
 pub mod rules;
 pub mod source;
 pub mod store;
