@@ -187,8 +187,8 @@ impl InsightsCliSource {
             .arg(&abslog_arg)
             .arg("-AutoQuit")
             .arg("-NoUI")
+            .arg("-Silent")
             .arg(&rsp_arg)
-            .arg("-log")
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null());

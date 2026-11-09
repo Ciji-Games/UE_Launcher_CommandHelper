@@ -1,10 +1,8 @@
-import { useEffect, useMemo, useState } from 'react';
-import { invoke } from '@tauri-apps/api/core';
-import type { CacheInfo, Finding, RangeStatisticsResponse, RangeTopTimer, TraceSummary } from '../../types/traceAnalyzer';
+import { useMemo, useState } from 'react';
+import type { Finding, RangeStatisticsResponse, RangeTopTimer } from '../../types/traceAnalyzer';
 
 interface RangeAnalysisPanelProps {
   stats: RangeStatisticsResponse | null;
-  summary: TraceSummary | null;
   targetMs: number;
   topFinding?: Finding | null;
   hitchCount?: number;
@@ -13,8 +11,6 @@ interface RangeAnalysisPanelProps {
   selectedTimerName?: string | null;
   onSelectTimer?: (timerName: string | null) => void;
   onSeeDetails?: () => void;
-  onRefreshDiagnostic?: () => void;
-  onCleanAllCaches?: () => void;
 }
 
 const CATEGORY_COLORS: Record<string, { bg: string; text: string; border: string }> = {
@@ -76,7 +72,6 @@ function normalizeSubsystemName(rawName: string, threadRole: string = 'game'): s
 
 export function RangeAnalysisPanel({
   stats,
-  summary,
   targetMs,
   topFinding,
   hitchCount = 0,
@@ -85,24 +80,11 @@ export function RangeAnalysisPanel({
   selectedTimerName,
   onSelectTimer,
   onSeeDetails,
-  onRefreshDiagnostic,
-  onCleanAllCaches,
 }: RangeAnalysisPanelProps) {
   const [threadFilter, setThreadFilter] = useState<'all' | 'gpu' | 'game' | 'render'>('all');
   const [expandedSubsystems, setExpandedSubsystems] = useState<Record<string, boolean>>({});
   const [showAllSubsystems, setShowAllSubsystems] = useState(false);
   const [isDetailsOpen, setIsDetailsOpen] = useState(false);
-  const [cacheInfo, setCacheInfo] = useState<CacheInfo | null>(null);
-
-  useEffect(() => {
-    if (isDetailsOpen && !cacheInfo) {
-      invoke<CacheInfo>('trace_cache_info')
-        .then(setCacheInfo)
-        .catch(() => {
-          // Ignore cache fetch failure in non-Tauri mode
-        });
-    }
-  }, [isDetailsOpen, cacheInfo]);
 
   const toggleSubsystem = (sub: string) => {
     setExpandedSubsystems((prev) => ({
@@ -440,265 +422,205 @@ export function RangeAnalysisPanel({
             </div>
           </div>
         )}
-      </div>
 
-      {/* 7. "Details" Accordion (Collapsed by Default) */}
-      <div className="flex flex-col border border-slate-800 rounded-xl overflow-hidden bg-slate-900/60">
-        <button
-          type="button"
-          onClick={() => setIsDetailsOpen(!isDetailsOpen)}
-          className="flex items-center justify-between p-3 bg-slate-900/80 hover:bg-slate-800/80 text-xs font-semibold text-slate-300 transition-colors"
-        >
-          <div className="flex items-center gap-2">
-            <svg
-              className={`w-4 h-4 text-slate-400 transition-transform duration-200 ${isDetailsOpen ? 'rotate-90' : ''}`}
-              fill="none"
-              stroke="currentColor"
-              viewBox="0 0 24 24"
-            >
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
-            </svg>
-            <span>Details &amp; Subsystem Breakdown</span>
-          </div>
-          <span className="text-[11px] font-normal text-slate-400 font-mono">
-            {groupedSubsystems.length} subsystems • {stats.topTimers?.length || 0} work timers
-          </span>
-        </button>
-
-        {isDetailsOpen && (
-          <div className="flex flex-col gap-4 p-4 border-t border-slate-800 bg-slate-950/60 text-xs">
-            {/* Section 1: Waiting and Synchronization (Neutral style when not shown inline) */}
-            {!showInlineWaiting && waitingOn && waitingOn.length > 0 && (
-              <div className="flex flex-col gap-1.5 p-3 rounded-lg bg-slate-900/60 border border-slate-800">
-                <span className="font-semibold text-slate-300 uppercase tracking-wider text-[11px]">
-                  CPU Synchronization &amp; Wait Timers
-                </span>
-                <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-slate-300 font-mono text-[11px]">
-                  {waitingOn.map((w, idx) => (
-                    <span key={idx}>
-                      <span className="text-slate-400 uppercase mr-1">{w.thread}:</span>
-                      <span className="text-slate-200">{w.timer}</span> ({w.avgMsPerFrame.toFixed(1)} ms/frame)
-                    </span>
-                  ))}
-                </div>
-              </div>
-            )}
-
-            {/* Section 2: Where the time goes by system (Subsystem Table) */}
-            <div className="flex flex-col gap-2">
-              <div className="flex flex-wrap items-center justify-between gap-2">
-                <div className="flex items-center gap-2">
-                  <span className="font-semibold text-slate-300 uppercase tracking-wider text-[11px]">
-                    Where the Time Goes by System
-                  </span>
-                  {selectedTimerName && (
-                    <button
-                      type="button"
-                      onClick={() => onSelectTimer?.(null)}
-                      className="text-[11px] text-sky-400 hover:text-sky-300 underline font-mono"
-                    >
-                      Clear filter ({selectedTimerName})
-                    </button>
-                  )}
-                </div>
-
-                {/* Thread Filters */}
-                <div className="flex items-center gap-1">
-                  {(['all', 'gpu', 'game', 'render'] as const).map((mode) => (
-                    <button
-                      key={mode}
-                      type="button"
-                      onClick={() => setThreadFilter(mode)}
-                      className={`px-2 py-0.5 rounded text-[11px] font-medium transition-colors ${
-                        threadFilter === mode
-                          ? 'bg-sky-600 text-white font-semibold'
-                          : 'bg-slate-800 text-slate-400 hover:text-slate-200'
-                      }`}
-                    >
-                      {mode === 'all' ? 'All' : mode.toUpperCase()}
-                    </button>
-                  ))}
-                </div>
-              </div>
-
-              {/* Subsystems Table */}
-              <div className="overflow-x-auto rounded-lg border border-slate-800 bg-slate-900/40">
-                <table className="w-full text-left text-xs text-slate-300">
-                  <thead className="bg-slate-900/90 text-slate-400 font-semibold border-b border-slate-800 text-[11px]">
-                    <tr>
-                      <th className="py-2 px-3">Subsystem / Function</th>
-                      <th className="py-2 px-2.5">Thread</th>
-                      <th className="py-2 px-2.5 text-right">ms / Frame</th>
-                      <th className="py-2 px-2.5 text-right">Calls / Frame</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-slate-800/60 font-mono text-[11px]">
-                    {displayedSubsystems.length === 0 ? (
-                      <tr>
-                        <td colSpan={4} className="py-4 text-center text-slate-500 font-sans">
-                          No profiled work timers found for this selection.
-                        </td>
-                      </tr>
-                    ) : (
-                      displayedSubsystems.map((grp) => {
-                        const isExpanded = expandedSubsystems[grp.subsystem] ?? false;
-
-                        return (
-                          <div key={grp.subsystem} className="contents">
-                            {/* Group Header Row */}
-                            <tr
-                              onClick={() => toggleSubsystem(grp.subsystem)}
-                              className="bg-slate-900/80 hover:bg-slate-800/80 cursor-pointer font-sans transition-colors border-t border-slate-800"
-                            >
-                              <td className="py-2 px-3 font-semibold text-slate-200 flex items-center gap-2">
-                                <span className="text-slate-400 text-[10px]">
-                                  {isExpanded ? '▼' : '▶'}
-                                </span>
-                                {getCategoryBadge(grp.subsystem)}
-                                <span className="text-xs font-medium text-slate-200">
-                                  {grp.subsystem}
-                                </span>
-                                <span className="text-[11px] text-slate-500 font-normal">
-                                  ({grp.timers.length} timer{grp.timers.length === 1 ? '' : 's'})
-                                </span>
-                              </td>
-                              <td className="py-2 px-2.5 text-slate-400 font-mono text-[11px]">
-                                {grp.timers[0]?.threadRole ? grp.timers[0].threadRole.toUpperCase() : '—'}
-                              </td>
-                              <td className="py-2 px-2.5 text-right font-bold text-slate-100 font-mono">
-                                {grp.totalMs.toFixed(1)} ms
-                              </td>
-                              <td className="py-2 px-2.5 text-right text-slate-400 font-mono text-[11px]">
-                                —
-                              </td>
-                            </tr>
-
-                            {/* Leaf Rows */}
-                            {isExpanded &&
-                              grp.timers.map((timer: RangeTopTimer) => {
-                                const isSelected = selectedTimerName === timer.name;
-
-                                return (
-                                  <tr
-                                    key={`${timer.threadRole}-${timer.name}-${timer.path}`}
-                                    onClick={() => onSelectTimer?.(isSelected ? null : timer.name)}
-                                    className={`cursor-pointer transition-colors ${
-                                      isSelected
-                                        ? 'bg-sky-950/60 hover:bg-sky-900/60'
-                                        : 'bg-slate-950/30 hover:bg-slate-900/50'
-                                    }`}
-                                  >
-                                    <td className="py-1.5 pl-8 pr-3 font-mono font-medium text-slate-300 text-xs">
-                                      <div className="flex flex-col">
-                                        <span className="text-slate-200">{timer.name}</span>
-                                        {timer.path && timer.path !== timer.name && (
-                                          <span className="text-[10px] text-slate-500 font-sans truncate max-w-md" title={timer.path}>
-                                            {timer.path}
-                                          </span>
-                                        )}
-                                      </div>
-                                    </td>
-                                    <td className="py-1.5 px-2.5 text-slate-400 text-[10px] font-mono">
-                                      {timer.threadRole.toUpperCase()}
-                                    </td>
-                                    <td className="py-1.5 px-2.5 text-right font-bold text-slate-200 font-mono">
-                                      {timer.avgMsPerFrame.toFixed(1)} ms
-                                    </td>
-                                    <td className="py-1.5 px-2.5 text-right text-slate-400 font-mono text-[11px]">
-                                      {timer.callCount && stats.frameCount > 0
-                                        ? (timer.callCount / stats.frameCount).toFixed(1)
-                                        : timer.baselineCallsPerFrame
-                                        ? timer.baselineCallsPerFrame.toFixed(1)
-                                        : '—'}
-                                    </td>
-                                  </tr>
-                                );
-                              })}
-                          </div>
-                        );
-                      })
-                    )}
-                  </tbody>
-                </table>
-              </div>
-
-              {groupedSubsystems.length > 5 && (
-                <button
-                  type="button"
-                  onClick={() => setShowAllSubsystems(!showAllSubsystems)}
-                  className="text-xs text-sky-400 hover:text-sky-300 font-medium self-start mt-1 transition-colors"
-                >
-                  {showAllSubsystems ? 'Show top 5 only' : `Show all (${groupedSubsystems.length}) subsystems...`}
-                </button>
-              )}
+        {/* Details & Subsystem Breakdown Accordion (Included inside the card, below general diagnostic & warning) */}
+        <div className="flex flex-col border border-slate-800 rounded-lg overflow-hidden bg-slate-900/40 mt-1">
+          <button
+            type="button"
+            onClick={() => setIsDetailsOpen(!isDetailsOpen)}
+            className="flex items-center justify-between p-2.5 bg-slate-900/60 hover:bg-slate-800/60 text-xs font-semibold text-slate-300 transition-colors"
+          >
+            <div className="flex items-center gap-2">
+              <svg
+                className={`w-3.5 h-3.5 text-slate-400 transition-transform duration-200 ${isDetailsOpen ? 'rotate-90' : ''}`}
+                fill="none"
+                stroke="currentColor"
+                viewBox="0 0 24 24"
+              >
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+              </svg>
+              <span>Details &amp; Subsystem Breakdown</span>
             </div>
+            <span className="text-[11px] font-normal text-slate-400 font-mono">
+              {groupedSubsystems.length} subsystems • {stats.topTimers?.length || 0} work timers
+            </span>
+          </button>
 
-            {/* Section 3: Engine Metadata & Channels */}
-            {summary && (
-              <div className="flex flex-col gap-2 pt-2 border-t border-slate-800/80">
-                <span className="font-semibold text-slate-300 uppercase tracking-wider text-[11px]">
-                  Engine Channels &amp; Metadata
-                </span>
-
-                <div className="flex flex-wrap gap-1.5">
-                  {summary.detectedChannels?.map((ch) => (
-                    <span
-                      key={ch}
-                      className="px-2 py-0.5 rounded bg-emerald-950/60 text-emerald-300 border border-emerald-500/30 text-[11px] font-mono"
-                    >
-                      ✓ {ch}
-                    </span>
-                  ))}
-                  {summary.missingChannels?.map((ch) => (
-                    <span
-                      key={ch}
-                      className="px-2 py-0.5 rounded bg-slate-900 text-slate-500 border border-slate-800 text-[11px] font-mono"
-                    >
-                      ✕ {ch} (missing)
-                    </span>
-                  ))}
-                </div>
-
-                {summary.isEditorBuild && (
-                  <div className="p-2.5 rounded bg-amber-950/30 border border-amber-600/30 text-amber-200/90 text-xs leading-relaxed mt-1">
-                    <strong>Editor Session Notice:</strong> Slate UI rendering and editor background tasks contribute to frame duration.
-                  </div>
-                )}
-
-                <div className="flex flex-wrap items-center justify-between gap-2 pt-2 text-[11px] text-slate-400">
-                  <div>
-                    Trace Path: <code className="text-slate-300 bg-slate-900 px-1 py-0.5 rounded font-mono">{summary.path || 'Unknown'}</code>
-                  </div>
-                  <div className="flex items-center gap-2 font-mono">
-                    {cacheInfo && (
-                      <span className="text-slate-300">
-                        Cache: {cacheInfo.totalFiles} files ({((cacheInfo.totalSizeBytes || 0) / 1024 / 1024).toFixed(1)} MB)
+          {isDetailsOpen && (
+            <div className="flex flex-col gap-3 p-3 border-t border-slate-800 bg-slate-950/40 text-xs">
+              {/* Section 1: Waiting and Synchronization (Neutral style when not shown inline) */}
+              {!showInlineWaiting && waitingOn && waitingOn.length > 0 && (
+                <div className="flex flex-col gap-1.5 p-2.5 rounded-lg bg-slate-900/60 border border-slate-800">
+                  <span className="font-semibold text-slate-300 uppercase tracking-wider text-[11px]">
+                    CPU Synchronization &amp; Wait Timers
+                  </span>
+                  <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-slate-300 font-mono text-[11px]">
+                    {waitingOn.map((w, idx) => (
+                      <span key={idx}>
+                        <span className="text-slate-400 uppercase mr-1">{w.thread}:</span>
+                        <span className="text-slate-200">{w.timer}</span> ({w.avgMsPerFrame.toFixed(1)} ms/frame)
                       </span>
-                    )}
-                    {onRefreshDiagnostic && (
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Section 2: Where the time goes by system (Subsystem Table) */}
+              <div className="flex flex-col gap-2">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div className="flex items-center gap-2">
+                    <span className="font-semibold text-slate-300 uppercase tracking-wider text-[11px]">
+                      Where the Time Goes by System
+                    </span>
+                    {selectedTimerName && (
                       <button
                         type="button"
-                        onClick={onRefreshDiagnostic}
-                        className="px-2 py-0.5 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 text-[10px] font-sans border border-slate-700 transition-colors"
+                        onClick={() => onSelectTimer?.(null)}
+                        className="text-[11px] text-sky-400 hover:text-sky-300 underline font-mono"
                       >
-                        Refresh Diagnostic
-                      </button>
-                    )}
-                    {onCleanAllCaches && (
-                      <button
-                        type="button"
-                        onClick={onCleanAllCaches}
-                        className="px-2 py-0.5 rounded bg-slate-800 hover:bg-rose-950/60 hover:text-rose-200 text-slate-400 text-[10px] font-sans border border-slate-700 transition-colors"
-                      >
-                        Clean DB
+                        Clear filter ({selectedTimerName})
                       </button>
                     )}
                   </div>
+
+                  {/* Thread Filters */}
+                  <div className="flex items-center gap-1">
+                    {(['all', 'gpu', 'game', 'render'] as const).map((mode) => (
+                      <button
+                        key={mode}
+                        type="button"
+                        onClick={() => setThreadFilter(mode)}
+                        className={`px-2 py-0.5 rounded text-[11px] font-medium transition-colors ${
+                          threadFilter === mode
+                            ? 'bg-sky-600 text-white font-semibold'
+                            : 'bg-slate-800 text-slate-400 hover:text-slate-200'
+                        }`}
+                      >
+                        {mode === 'all' ? 'All' : mode.toUpperCase()}
+                      </button>
+                    ))}
+                  </div>
                 </div>
+
+                {/* Subsystems Table */}
+                <div className="overflow-x-auto rounded-lg border border-slate-800 bg-slate-900/40">
+                  <table className="w-full text-left text-xs text-slate-300">
+                    <thead className="bg-slate-900/90 text-slate-400 font-semibold border-b border-slate-800 text-[11px]">
+                      <tr>
+                        <th className="py-2 px-3">Subsystem / Function</th>
+                        <th className="py-2 px-2.5">Thread</th>
+                        <th className="py-2 px-2.5 text-right">ms / Frame</th>
+                        <th className="py-2 px-2.5 text-right">Calls / Frame</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-800/60 font-mono text-[11px]">
+                      {displayedSubsystems.length === 0 ? (
+                        <tr>
+                          <td colSpan={4} className="py-4 text-center text-slate-500 font-sans">
+                            No profiled work timers found for this selection.
+                          </td>
+                        </tr>
+                      ) : (
+                        displayedSubsystems.map((grp) => {
+                          const isExpanded = expandedSubsystems[grp.subsystem] ?? false;
+
+                          return (
+                            <div key={grp.subsystem} className="contents">
+                              {/* Group Header Row */}
+                              <tr
+                                onClick={() => toggleSubsystem(grp.subsystem)}
+                                className="bg-slate-900/80 hover:bg-slate-800/80 cursor-pointer font-sans transition-colors border-t border-slate-800"
+                              >
+                                <td className="py-2 px-3 font-semibold text-slate-200 flex items-center gap-2">
+                                  <svg
+                                    className={`w-3.5 h-3.5 text-slate-400 transition-transform duration-200 shrink-0 ${isExpanded ? 'rotate-90' : ''}`}
+                                    fill="none"
+                                    stroke="currentColor"
+                                    viewBox="0 0 24 24"
+                                  >
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                                  </svg>
+                                  {getCategoryBadge(grp.subsystem)}
+                                  <span className="text-xs font-medium text-slate-200">
+                                    {grp.subsystem}
+                                  </span>
+                                  <span className="text-[11px] text-slate-500 font-normal">
+                                    ({grp.timers.length} timer{grp.timers.length === 1 ? '' : 's'})
+                                  </span>
+                                </td>
+                                <td className="py-2 px-2.5 text-slate-400 font-mono text-[11px]">
+                                  {grp.timers[0]?.threadRole ? grp.timers[0].threadRole.toUpperCase() : '—'}
+                                </td>
+                                <td className="py-2 px-2.5 text-right font-bold text-slate-100 font-mono">
+                                  {grp.totalMs.toFixed(1)} ms
+                                </td>
+                                <td className="py-2 px-2.5 text-right text-slate-400 font-mono text-[11px]">
+                                  —
+                                </td>
+                              </tr>
+
+                              {/* Leaf Rows */}
+                              {isExpanded &&
+                                grp.timers.map((timer: RangeTopTimer) => {
+                                  const isSelected = selectedTimerName === timer.name;
+
+                                  return (
+                                    <tr
+                                      key={`${timer.threadRole}-${timer.name}-${timer.path}`}
+                                      onClick={() => onSelectTimer?.(isSelected ? null : timer.name)}
+                                      className={`cursor-pointer transition-colors ${
+                                        isSelected
+                                          ? 'bg-sky-950/60 hover:bg-sky-900/60'
+                                          : 'bg-slate-950/30 hover:bg-slate-900/50'
+                                      }`}
+                                    >
+                                      <td className="py-1.5 pl-8 pr-3 font-mono font-medium text-slate-300 text-xs">
+                                        <div className="flex flex-col">
+                                          <span className="text-slate-200">{timer.name}</span>
+                                          {timer.path && timer.path !== timer.name && (
+                                            <span className="text-[10px] text-slate-500 font-sans truncate max-w-md" title={timer.path}>
+                                              {timer.path}
+                                            </span>
+                                          )}
+                                        </div>
+                                      </td>
+                                      <td className="py-1.5 px-2.5 text-slate-400 text-[10px] font-mono">
+                                        {timer.threadRole.toUpperCase()}
+                                      </td>
+                                      <td className="py-1.5 px-2.5 text-right font-bold text-slate-200 font-mono">
+                                        {timer.avgMsPerFrame.toFixed(1)} ms
+                                      </td>
+                                      <td className="py-1.5 px-2.5 text-right text-slate-400 font-mono text-[11px]">
+                                        {timer.callCount && stats.frameCount > 0
+                                          ? (timer.callCount / stats.frameCount).toFixed(1)
+                                          : timer.baselineCallsPerFrame
+                                          ? timer.baselineCallsPerFrame.toFixed(1)
+                                          : '—'}
+                                      </td>
+                                    </tr>
+                                  );
+                                })}
+                            </div>
+                          );
+                        })
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+
+                {groupedSubsystems.length > 5 && (
+                  <button
+                    type="button"
+                    onClick={() => setShowAllSubsystems(!showAllSubsystems)}
+                    className="text-xs text-sky-400 hover:text-sky-300 font-medium self-start mt-1 transition-colors"
+                  >
+                    {showAllSubsystems ? 'Show top 5 only' : `Show all (${groupedSubsystems.length}) subsystems...`}
+                  </button>
+                )}
               </div>
-            )}
-          </div>
-        )}
+            </div>
+          )}
+        </div>
       </div>
     </div>
   );

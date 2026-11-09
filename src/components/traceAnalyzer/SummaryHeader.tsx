@@ -1,12 +1,11 @@
 import { useState } from 'react';
-import type { Finding, IssueWithOccurrences, RangeStatisticsResponse, TraceBookmark, TraceCandidate, TraceSummary } from '../../types/traceAnalyzer';
+import type { Finding, IssueWithOccurrences, RangeStatisticsResponse, TraceCandidate, TraceSummary } from '../../types/traceAnalyzer';
 
 export interface SummaryHeaderProps {
   summary: TraceSummary | null;
   findings: Finding[];
   issues?: IssueWithOccurrences[];
   rangeStats?: RangeStatisticsResponse | null;
-  bookmarks?: TraceBookmark[];
   targetFps: number;
   onTargetFpsChange: (fps: number) => void;
   onOpenInInsights: () => void;
@@ -16,8 +15,6 @@ export interface SummaryHeaderProps {
   onOpenTrace: (path: string) => void;
   insightsExists: boolean;
   isAnalyzing: boolean;
-  selectedRange?: [number, number] | null;
-  onResetRange?: () => void;
   onRefreshDiagnostic?: () => void;
   onCleanTraceDatabase?: () => void;
 }
@@ -39,7 +36,6 @@ export function SummaryHeader({
   findings,
   issues = [],
   rangeStats,
-  bookmarks = [],
   targetFps,
   onTargetFpsChange,
   onOpenInInsights,
@@ -49,13 +45,10 @@ export function SummaryHeader({
   onOpenTrace,
   insightsExists,
   isAnalyzing,
-  selectedRange,
-  onResetRange,
   onRefreshDiagnostic,
   onCleanTraceDatabase,
 }: SummaryHeaderProps) {
   const [copied, setCopied] = useState(false);
-  const [jsonExported, setJsonExported] = useState(false);
 
   const medianFps =
     summary && (summary.medianMs ?? 0) > 0 ? Math.round(1000 / summary.medianMs) : 0;
@@ -63,24 +56,11 @@ export function SummaryHeader({
   const handleCopyReport = () => {
     if (!summary) return;
 
-    const isSelection = Boolean(
-      selectedRange &&
-      summary &&
-      Math.max(...selectedRange) - Math.min(...selectedRange) < summary.durationS - 0.05
-    );
-
-    let md = isSelection
-      ? `# Unreal Engine Trace Diagnosis Report (Selected Window: ${selectedRange![0].toFixed(2)}s – ${selectedRange![1].toFixed(2)}s)\n\n`
-      : `# Unreal Engine Trace Diagnosis Report (Full Trace: 0.00s – ${summary.durationS.toFixed(2)}s)\n\n`;
+    let md = `# Unreal Engine Trace Diagnosis Report (Full Trace: 0.00s – ${summary.durationS.toFixed(2)}s)\n\n`;
 
     md += `**Trace File**: \`${summary.path || 'Unknown'}\`\n`;
     md += `**Engine Version**: ${summary.engineVersion || 'Unknown'}\n`;
     md += `**Duration**: ${formatDuration(summary.durationS)} (${(summary.frameCount ?? 0).toLocaleString()} frames)\n`;
-
-    if (isSelection) {
-      const dur = (selectedRange![1] - selectedRange![0]).toFixed(2);
-      md += `**Selected Window**: ${selectedRange![0].toFixed(2)}s - ${selectedRange![1].toFixed(2)}s (${dur}s)\n`;
-    }
 
     const timeWeightedFps = summary.timeWeightedFps
       ? Math.round(summary.timeWeightedFps)
@@ -171,42 +151,16 @@ export function SummaryHeader({
     });
   };
 
-  const handleExportJson = () => {
-    if (!summary) return;
-
-    const data = {
-      summary,
-      selectedRange,
-      rangeStats,
-      issues,
-      findings,
-      bookmarks,
-      exportedAt: new Date().toISOString(),
-    };
-
-    const jsonStr = JSON.stringify(data, null, 2);
-    const blob = new Blob([jsonStr], { type: 'application/json' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `${summary.traceId || 'trace'}_diagnosis.json`;
-    a.click();
-    URL.revokeObjectURL(url);
-
-    setJsonExported(true);
-    setTimeout(() => setJsonExported(false), 2000);
-  };
-
   const [exportMenuOpen, setExportMenuOpen] = useState(false);
 
   const fileName = summary?.path ? summary.path.split(/[/\\]/).pop() : null;
 
   return (
-    <div className="flex flex-wrap items-center justify-between gap-3 w-full bg-slate-900/90 border border-slate-800 rounded-xl p-3 shadow-md">
+    <div className="flex flex-wrap items-center justify-between gap-3 w-full bg-slate-900/90 border border-slate-800 rounded-xl p-2.5 shadow-md">
       {/* Left: File Name & Trace Actions */}
       <div className="flex flex-wrap items-center gap-2">
         {fileName ? (
-          <div className="flex items-center gap-1.5 px-2.5 py-1 rounded bg-slate-800/90 border border-slate-700/80 text-xs max-w-[260px] truncate" title={summary?.path || fileName}>
+          <div className="flex items-center gap-1.5 px-2.5 py-1 rounded bg-slate-800/90 border border-slate-700/80 text-xs max-w-[280px] truncate" title={summary?.path || fileName}>
             <span className="text-sky-400 font-bold">Trace:</span>
             <span className="text-slate-200 font-mono font-medium truncate">{fileName}</span>
           </div>
@@ -265,50 +219,23 @@ export function SummaryHeader({
         )}
       </div>
 
-      {/* Right Controls: Range Status, FPS Target, Open in Insights, Export Menu */}
+      {/* Right Controls: Target FPS (only if trace loaded), Open in Insights, Copy Report / Options */}
       <div className="flex flex-wrap items-center gap-2 text-xs">
-        {/* Current Range Info & Reset Button */}
+        {/* Target FPS Selector (only shown once a trace is loaded) */}
         {summary && (
-          <div className="flex items-center gap-2 px-2.5 py-1 rounded bg-slate-800 border border-slate-700 text-xs text-slate-300 shadow-sm">
-            <span className="text-sky-400 font-bold">Range:</span>
-            <span className="font-mono">
-              {selectedRange && Math.max(...selectedRange) - Math.min(...selectedRange) < summary.durationS - 0.05 ? (
-                `${selectedRange[0].toFixed(2)}s – ${selectedRange[1].toFixed(2)}s (${(selectedRange[1] - selectedRange[0]).toFixed(2)}s)`
-              ) : (
-                `Entire trace (${summary.durationS.toFixed(2)}s)`
-              )}
-            </span>
-            {rangeStats && (
-              <span className="text-[11px] text-slate-400 font-mono hidden md:inline border-l border-slate-700 pl-2">
-                {rangeStats.frameCount.toLocaleString()} frames ({((rangeStats.durationS / Math.max(summary.durationS, 0.001)) * 100).toFixed(0)}%)
-              </span>
-            )}
-            {onResetRange && (
-              <button
-                type="button"
-                onClick={onResetRange}
-                disabled={!selectedRange || Math.max(...selectedRange) - Math.min(...selectedRange) >= summary.durationS - 0.05}
-                className="ml-0.5 px-2 py-0.5 rounded bg-slate-700 hover:bg-slate-600 disabled:opacity-30 disabled:hover:bg-slate-700 text-slate-200 text-[11px] font-sans transition-colors border border-slate-600/50"
-                title="Reset selection to entire trace"
-              >
-                Entire trace
-              </button>
-            )}
+          <div className="flex items-center gap-1.5 text-slate-400">
+            <span className="text-[11px] font-medium text-slate-400">Target:</span>
+            <select
+              value={targetFps}
+              onChange={(e) => onTargetFpsChange(Number(e.target.value))}
+              className="bg-slate-800 border border-slate-700 rounded px-2 py-1 text-slate-200 text-xs focus:ring-1 focus:ring-sky-500 focus:outline-none"
+            >
+              <option value={30}>30 fps (33.3 ms)</option>
+              <option value={60}>60 fps (16.7 ms)</option>
+              <option value={120}>120 fps (8.3 ms)</option>
+            </select>
           </div>
         )}
-
-        {/* Target FPS Selector */}
-        <div className="flex items-center gap-1 text-slate-400">
-          <select
-            value={targetFps}
-            onChange={(e) => onTargetFpsChange(Number(e.target.value))}
-            className="bg-slate-800 border border-slate-700 rounded px-2 py-1 text-slate-200 text-xs focus:ring-1 focus:ring-sky-500 focus:outline-none"
-          >
-            <option value={30}>30 fps (33.3 ms)</option>
-            <option value={60}>60 fps (16.7 ms)</option>
-            <option value={120}>120 fps (8.3 ms)</option>
-          </select>
-        </div>
 
         {/* Open in Unreal Insights GUI */}
         <button
@@ -323,153 +250,80 @@ export function SummaryHeader({
           <span>Open in Insights</span>
         </button>
 
-        {/* Export Dropdown Menu */}
-        <div className="relative">
+        {/* Copy Report Button */}
+        {summary && (
           <button
             type="button"
-            onClick={() => setExportMenuOpen(!exportMenuOpen)}
-            className="flex items-center gap-1 px-2.5 py-1 bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs rounded border border-slate-700 transition-colors shadow-sm"
+            onClick={handleCopyReport}
+            className="flex items-center gap-1.5 px-2.5 py-1 bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs rounded border border-slate-700 transition-colors shadow-sm"
           >
             <svg className="w-3.5 h-3.5 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12" />
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 5H6a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2v-1M8 5a2 2 0 002 2h2a2 2 0 002-2M8 5a2 2 0 012-2h2a2 2 0 012 2m0 0h2a2 2 0 012 2v3m2 4H10m0 0l3-3m-3 3l3 3" />
             </svg>
-            <span>Export</span>
-            <svg className={`w-3 h-3 text-slate-400 transition-transform ${exportMenuOpen ? 'rotate-180' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
-            </svg>
+            <span>{copied ? '✓ Copied' : 'Copy Report'}</span>
           </button>
+        )}
 
-          {exportMenuOpen && (
-            <>
-              <div
-                className="fixed inset-0 z-30"
-                onClick={() => setExportMenuOpen(false)}
-              />
-              <div className="absolute right-0 mt-1 w-48 bg-slate-900 border border-slate-700 rounded-lg shadow-xl z-40 py-1 text-xs flex flex-col">
-                {/* 1. Copy Report */}
-                <button
-                  type="button"
-                  onClick={() => {
-                    handleCopyReport();
-                    setExportMenuOpen(false);
-                  }}
-                  disabled={!summary}
-                  className="flex items-center gap-2 px-3 py-1.5 hover:bg-slate-800 text-slate-200 disabled:opacity-40 text-left transition-colors"
-                >
-                  <svg className="w-3.5 h-3.5 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 5H6a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2v-1M8 5a2 2 0 002 2h2a2 2 0 002-2M8 5a2 2 0 012-2h2a2 2 0 012 2m0 0h2a2 2 0 012 2v3m2 4H10m0 0l3-3m-3 3l3 3" />
-                  </svg>
-                  <span>{copied ? '✓ Report Copied' : 'Copy Report'}</span>
-                </button>
+        {/* More Actions Dropdown Menu (Refresh Diagnostic / Clean DB) */}
+        {summary && (
+          <div className="relative">
+            <button
+              type="button"
+              onClick={() => setExportMenuOpen(!exportMenuOpen)}
+              className="flex items-center gap-1 px-2 py-1 bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs rounded border border-slate-700 transition-colors shadow-sm"
+              title="More actions"
+            >
+              <svg className="w-3.5 h-3.5 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 5v.01M12 12v.01M12 19v.01M12 6a1 1 0 110-2 1 1 0 010 2zm0 7a1 1 0 110-2 1 1 0 010 2zm0 7a1 1 0 110-2 1 1 0 010 2z" />
+              </svg>
+            </button>
 
-                {/* 2. Download JSON */}
-                <button
-                  type="button"
-                  onClick={() => {
-                    handleExportJson();
-                    setExportMenuOpen(false);
-                  }}
-                  disabled={!summary}
-                  className="flex items-center gap-2 px-3 py-1.5 hover:bg-slate-800 text-slate-200 disabled:opacity-40 text-left transition-colors"
-                >
-                  <svg className="w-3.5 h-3.5 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
-                  </svg>
-                  <span>{jsonExported ? '✓ JSON Exported' : 'Export JSON'}</span>
-                </button>
+            {exportMenuOpen && (
+              <>
+                <div
+                  className="fixed inset-0 z-30"
+                  onClick={() => setExportMenuOpen(false)}
+                />
+                <div className="absolute right-0 mt-1 w-44 bg-slate-900 border border-slate-700 rounded-lg shadow-xl z-40 py-1 text-xs flex flex-col">
+                  {onRefreshDiagnostic && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        onRefreshDiagnostic();
+                        setExportMenuOpen(false);
+                      }}
+                      disabled={isAnalyzing}
+                      className="flex items-center gap-2 px-3 py-1.5 hover:bg-slate-800 text-slate-200 disabled:opacity-40 text-left transition-colors"
+                    >
+                      <svg className={`w-3.5 h-3.5 text-slate-400 ${isAnalyzing ? 'animate-spin' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                      </svg>
+                      <span>Refresh Diagnostic</span>
+                    </button>
+                  )}
 
-                <div className="my-1 border-t border-slate-800" />
-
-                {/* 3. Refresh Diagnostic */}
-                {summary && onRefreshDiagnostic && (
-                  <button
-                    type="button"
-                    onClick={() => {
-                      onRefreshDiagnostic();
-                      setExportMenuOpen(false);
-                    }}
-                    disabled={isAnalyzing}
-                    className="flex items-center gap-2 px-3 py-1.5 hover:bg-slate-800 text-slate-200 disabled:opacity-40 text-left transition-colors"
-                  >
-                    <svg className={`w-3.5 h-3.5 text-slate-400 ${isAnalyzing ? 'animate-spin' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
-                    </svg>
-                    <span>Refresh Diagnostic</span>
-                  </button>
-                )}
-
-                {/* 4. Clean Trace DB */}
-                {onCleanTraceDatabase && (
-                  <button
-                    type="button"
-                    onClick={() => {
-                      onCleanTraceDatabase();
-                      setExportMenuOpen(false);
-                    }}
-                    disabled={isAnalyzing}
-                    className="flex items-center gap-2 px-3 py-1.5 hover:bg-rose-950/60 hover:text-rose-200 text-slate-300 disabled:opacity-40 text-left transition-colors"
-                  >
-                    <svg className="w-3.5 h-3.5 text-rose-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
-                    </svg>
-                    <span>Clean Trace DB</span>
-                  </button>
-                )}
-              </div>
-            </>
-          )}
-        </div>
+                  {onCleanTraceDatabase && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        onCleanTraceDatabase();
+                        setExportMenuOpen(false);
+                      }}
+                      disabled={isAnalyzing}
+                      className="flex items-center gap-2 px-3 py-1.5 hover:bg-rose-950/60 hover:text-rose-200 text-slate-300 disabled:opacity-40 text-left transition-colors"
+                    >
+                      <svg className="w-3.5 h-3.5 text-rose-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                      </svg>
+                      <span>Clean Trace DB</span>
+                    </button>
+                  )}
+                </div>
+              </>
+            )}
+          </div>
+        )}
       </div>
-
-      {/* Summary Performance & Budget Banner */}
-      {summary && (
-        <div className="flex flex-wrap items-center gap-x-4 gap-y-1.5 w-full pt-2 border-t border-slate-800 text-xs">
-          <div className="flex items-center gap-1.5 text-slate-300">
-            <span className="text-slate-400">Median:</span>
-            <span className="font-mono font-bold text-slate-100">{medianFps} FPS</span>
-            <span className="text-slate-400 font-mono">({(summary.medianMs ?? 0).toFixed(1)} ms)</span>
-          </div>
-
-          <div className="flex items-center gap-1.5 text-slate-300">
-            <span className="text-slate-400">Time-weighted:</span>
-            <span className="font-mono font-bold text-sky-400">
-              {summary.timeWeightedFps ? Math.round(summary.timeWeightedFps) : summary.durationS > 0 ? Math.round(summary.frameCount / summary.durationS) : medianFps} FPS
-            </span>
-          </div>
-
-          <div className="flex items-center gap-1.5 text-slate-300">
-            <span className="text-slate-400">p95:</span>
-            <span className="font-mono text-slate-200">{(summary.p95Ms ?? 0).toFixed(1)} ms</span>
-            <span className="text-slate-400 pl-1">p99:</span>
-            <span className="font-mono text-slate-200">{(summary.p99Ms ?? 0).toFixed(1)} ms</span>
-          </div>
-
-          {(summary.timeOverBudgetPct != null || summary.framesOverBudgetPct != null) && (
-            <div className="flex items-center gap-1.5 text-slate-300">
-              <span className="text-slate-400">Over Budget:</span>
-              <span className={`font-mono font-bold ${(summary.timeOverBudgetPct ?? 0) > 20 ? 'text-amber-400' : 'text-slate-200'}`}>
-                {(summary.timeOverBudgetPct ?? 0).toFixed(1)}% time
-              </span>
-              <span className="text-slate-500">/</span>
-              <span className="font-mono text-slate-300">{(summary.framesOverBudgetPct ?? 0).toFixed(1)}% frames</span>
-            </div>
-          )}
-
-          <div className="flex items-center gap-1.5 text-slate-300">
-            <span className="text-slate-400">Hitches:</span>
-            <span className={`font-mono font-bold ${(summary.hitchCount ?? 0) > 0 ? 'text-rose-400' : 'text-emerald-400'}`}>
-              {summary.hitchCount ?? 0}
-            </span>
-          </div>
-
-          {summary.regimeSummary && (
-            <div className="flex items-center gap-1.5 text-xs px-2 py-0.5 rounded bg-slate-800/80 border border-slate-700 text-sky-300 font-mono">
-              <span className="text-sky-400 font-sans font-semibold">Regime:</span>
-              <span>{summary.regimeSummary}</span>
-            </div>
-          )}
-        </div>
-      )}
     </div>
   );
 }

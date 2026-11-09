@@ -54,6 +54,9 @@ export interface FrameBucket {
   maxMs: number;
   avgMs: number;
   count: number;
+  gameMs?: number;
+  renderMs?: number;
+  gpuMs?: number;
 }
 
 export interface FrameSeriesResponse {

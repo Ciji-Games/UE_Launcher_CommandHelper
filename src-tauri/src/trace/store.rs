@@ -25,6 +25,9 @@ pub struct FrameBucket {
     pub max_ms: f64,
     pub avg_ms: f64,
     pub count: usize,
+    pub game_ms: Option<f64>,
+    pub render_ms: Option<f64>,
+    pub gpu_ms: Option<f64>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -485,7 +488,10 @@ pub fn query_frame_buckets(
             MIN(interval_ms),
             MAX(interval_ms),
             AVG(interval_ms),
-            COUNT(*)
+            COUNT(*),
+            AVG(game_ms),
+            AVG(render_ms),
+            AVG(gpu_ms)
          FROM frames
          WHERE start_s >= ?1 AND start_s <= ?3
          GROUP BY b_idx
@@ -500,6 +506,9 @@ pub fn query_frame_buckets(
         let max_ms: f64 = row.get(2)?;
         let avg_ms: f64 = row.get(3)?;
         let count: i64 = row.get(4)?;
+        let game_ms: Option<f64> = row.get(5)?;
+        let render_ms: Option<f64> = row.get(6)?;
+        let gpu_ms: Option<f64> = row.get(7)?;
 
         Ok(FrameBucket {
             t0,
@@ -508,6 +517,9 @@ pub fn query_frame_buckets(
             max_ms,
             avg_ms,
             count: count as usize,
+            game_ms,
+            render_ms,
+            gpu_ms,
         })
     })?;
 

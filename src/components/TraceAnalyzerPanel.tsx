@@ -343,34 +343,33 @@ export function TraceAnalyzerPanel() {
   }, [scopedFindings, episodes, rangeStats]);
 
   return (
-    <div className="flex flex-col h-full min-h-0 text-slate-100 gap-3 select-none overflow-hidden">
-      {/* Top Compact Action & Metadata Bar */}
-      <SummaryHeader
-        summary={summary}
-        findings={scopedFindings}
-        issues={issues}
-        rangeStats={rangeStats}
-        bookmarks={bookmarks}
-        targetFps={options.targetFps}
-        onTargetFpsChange={setTargetFps}
-        onOpenInInsights={() => openInInsights()}
-        onPickFile={handlePickFile}
-        onPickExe={handlePickExe}
-        candidates={candidates}
-        onOpenTrace={openTrace}
-        insightsExists={!!insightsInfo?.exists}
-        isAnalyzing={isAnalyzing}
-        selectedRange={selectedRange}
-        onResetRange={() => summary && setSelectedRange([0, summary.durationS])}
-        onRefreshDiagnostic={refreshTraceDiagnostic}
-        onCleanTraceDatabase={() => setShowCleanDbModal(true)}
-      />
+    <div className="flex flex-col h-full min-h-0 text-slate-100 select-none overflow-hidden">
+      {/* Main Scrollable Column Area (trace controls and all sections scroll together) */}
+      <div className="flex-1 min-h-0 flex flex-col gap-3 overflow-y-auto pr-1 pb-4">
+        {/* Top Compact Action & Metadata Bar */}
+        <div className="shrink-0">
+          <SummaryHeader
+            summary={summary}
+            findings={scopedFindings}
+            issues={issues}
+            rangeStats={rangeStats}
+            targetFps={options.targetFps}
+            onTargetFpsChange={setTargetFps}
+            onOpenInInsights={() => openInInsights()}
+            onPickFile={handlePickFile}
+            onPickExe={handlePickExe}
+            candidates={candidates}
+            onOpenTrace={openTrace}
+            insightsExists={!!insightsInfo?.exists}
+            isAnalyzing={isAnalyzing}
+            onRefreshDiagnostic={refreshTraceDiagnostic}
+            onCleanTraceDatabase={() => setShowCleanDbModal(true)}
+          />
+        </div>
 
-      {/* Main Content Area */}
-      <div className="flex-1 min-h-0 pt-1 flex flex-col gap-3">
         {/* Error Banner */}
         {error && (
-          <div className="p-3 rounded-lg bg-rose-950/40 border border-rose-600/50 text-rose-200 text-xs flex items-center justify-between">
+          <div className="p-3 rounded-lg bg-rose-950/40 border border-rose-600/50 text-rose-200 text-xs flex items-center justify-between shrink-0">
             <div className="flex items-center gap-2">
               <span className="font-bold text-rose-400">Error:</span>
               <span>{error}</span>
@@ -391,8 +390,8 @@ export function TraceAnalyzerPanel() {
             <LoadingStages progress={progressPayload} importProgress={importProgress} onCancel={cancelAnalysis} />
           </div>
         ) : summary ? (
-          /* Active Trace View: Single Scroll Column Dashboard */
-          <div className="flex flex-col gap-3 flex-1 min-h-0 overflow-y-auto pr-1">
+          /* Active Trace View Dashboard */
+          <div className="flex flex-col gap-3 flex-1 min-h-0">
             {/* 3 & 4. Frame Graph with Header Metrics, Bookmarks Chips, Worst-5 Hitch Labels, and Findings Lane */}
             <div className="min-h-[280px] shrink-0">
               <FrameGraph
@@ -404,17 +403,18 @@ export function TraceAnalyzerPanel() {
                 chunks={chunks}
                 issues={issues}
                 selectedRange={selectedRange}
+                rangeStats={rangeStats}
                 onSelectRange={setSelectedRange}
+                onResetRange={() => summary && setSelectedRange([0, summary.durationS])}
                 onSetFrontier={setFrontier}
                 fetchFrameSeries={fetchFrameSeries}
               />
             </div>
 
-            {/* 5 & 7. Range Card (Verdict, 3 numbers, Thread Bars, First thing to try) + Details Accordion (Subsystems, Waiting, Channels) */}
+            {/* 5 & 7. Range Card (Verdict, 3 numbers, Thread Bars, First thing to try) + Details Accordion (Subsystems, Waiting) */}
             <div className="shrink-0">
               <RangeAnalysisPanel
                 stats={rangeStats}
-                summary={summary}
                 targetMs={summary.targetMs}
                 topFinding={scopedFindings[0]}
                 hitchCount={rangeHitchCount}
@@ -423,8 +423,6 @@ export function TraceAnalyzerPanel() {
                 selectedTimerName={selectedTimerName}
                 onSelectTimer={setSelectedTimerName}
                 onSeeDetails={() => findingsSectionRef.current?.scrollIntoView({ behavior: 'smooth' })}
-                onRefreshDiagnostic={refreshTraceDiagnostic}
-                onCleanAllCaches={() => setShowCleanDbModal(true)}
               />
             </div>
 

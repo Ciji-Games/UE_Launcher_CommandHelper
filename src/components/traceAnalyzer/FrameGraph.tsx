@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import type { ChunkState, Episode, FrameSeriesResponse, Issue, IssueWithOccurrences, Occurrence, TraceBookmark, TraceSummary } from '../../types/traceAnalyzer';
+import type { ChunkState, Episode, FrameSeriesResponse, Issue, IssueWithOccurrences, Occurrence, RangeStatisticsResponse, TraceBookmark, TraceSummary } from '../../types/traceAnalyzer';
 import { RULE_COLORS, getRuleDisplayLabel } from '../../utils/ruleDisplay';
 
 interface FrameGraphProps {
@@ -11,7 +11,9 @@ interface FrameGraphProps {
   chunks?: ChunkState[];
   issues?: IssueWithOccurrences[];
   selectedRange?: [number, number] | null;
+  rangeStats?: RangeStatisticsResponse | null;
   onSelectRange?: (range: [number, number] | null) => void;
+  onResetRange?: () => void;
   onSetFrontier?: (startS: number) => void;
   fetchFrameSeries: (startS: number, endS: number, maxItems?: number) => Promise<FrameSeriesResponse | null>;
 }
@@ -272,7 +274,9 @@ export function FrameGraph({
   chunks = [],
   issues = [],
   selectedRange = null,
+  rangeStats,
   onSelectRange,
+  onResetRange,
   onSetFrontier,
   fetchFrameSeries,
 }: FrameGraphProps) {
@@ -295,9 +299,7 @@ export function FrameGraph({
   }, [durationS]);
 
   const [seriesData, setSeriesData] = useState<FrameSeriesResponse | null>(null);
-  const [showGame, setShowGame] = useState(false);
-  const [showRender, setShowRender] = useState(false);
-  const [showGpu, setShowGpu] = useState(false);
+  const [graphMode, setGraphMode] = useState<'frametime' | 'threads'>('frametime');
   const [scaleMode, setScaleMode] = useState<'p99' | 'fit'>('p99');
 
   const [hoverInfo, setHoverInfo] = useState<{
@@ -399,24 +401,38 @@ export function FrameGraph({
     if (seriesData) {
       if (seriesData.isBucketed && seriesData.buckets.length > 0) {
         for (const b of seriesData.buckets) {
-          if (b.maxMs > absoluteMaxMs) absoluteMaxMs = b.maxMs;
+          const val = graphMode === 'threads'
+            ? ((b.gameMs || 0) + (b.renderMs || 0) + (b.gpuMs || 0) || b.maxMs)
+            : b.maxMs;
+          if (val > absoluteMaxMs) absoluteMaxMs = val;
         }
         if (scaleMode === 'fit') {
           maxY = Math.max(maxY, absoluteMaxMs * 1.12);
         } else {
-          const sortedAvgs = seriesData.buckets.map((b) => b.avgMs).sort((a, b) => a - b);
-          const p99_5 = sortedAvgs[Math.floor(sortedAvgs.length * 0.995)] ?? sortedAvgs[sortedAvgs.length - 1];
+          const sortedVals = seriesData.buckets.map((b) =>
+            graphMode === 'threads'
+              ? ((b.gameMs || 0) + (b.renderMs || 0) + (b.gpuMs || 0) || b.avgMs)
+              : b.avgMs
+          ).sort((a, b) => a - b);
+          const p99_5 = sortedVals[Math.floor(sortedVals.length * 0.995)] ?? sortedVals[sortedVals.length - 1];
           maxY = Math.max(maxY, p99_5 * 1.35);
         }
       } else if (!seriesData.isBucketed && seriesData.points.length > 0) {
         for (const p of seriesData.points) {
-          if (p.frameMs > absoluteMaxMs) absoluteMaxMs = p.frameMs;
+          const val = graphMode === 'threads'
+            ? ((p.gameMs || 0) + (p.renderMs || 0) + (p.gpuMs || 0) || p.frameMs)
+            : p.frameMs;
+          if (val > absoluteMaxMs) absoluteMaxMs = val;
         }
         if (scaleMode === 'fit') {
           maxY = Math.max(maxY, absoluteMaxMs * 1.12);
         } else {
-          const sortedFrames = seriesData.points.map((p) => p.frameMs).sort((a, b) => a - b);
-          const p99_5 = sortedFrames[Math.floor(sortedFrames.length * 0.995)] ?? sortedFrames[sortedFrames.length - 1];
+          const sortedVals = seriesData.points.map((p) =>
+            graphMode === 'threads'
+              ? ((p.gameMs || 0) + (p.renderMs || 0) + (p.gpuMs || 0) || p.frameMs)
+              : p.frameMs
+          ).sort((a, b) => a - b);
+          const p99_5 = sortedVals[Math.floor(sortedVals.length * 0.995)] ?? sortedVals[sortedVals.length - 1];
           maxY = Math.max(maxY, p99_5 * 1.35);
         }
       }
@@ -434,6 +450,7 @@ export function FrameGraph({
       { ms: targetMs, color: '#38bdf8', label: `${targetMs.toFixed(1)} ms (${Math.round(1000 / targetMs)} fps)` },
       { ms: targetMs * 2, color: '#fbbf24', label: `${(targetMs * 2).toFixed(1)} ms (2x)` },
       { ms: targetMs * 4, color: '#f87171', label: `${(targetMs * 4).toFixed(1)} ms (4x)` },
+      { ms: targetMs * 8, color: '#ef4444', label: `${(targetMs * 8).toFixed(1)} ms (8x)` },
     ];
 
     ctx.lineWidth = 1;
@@ -454,18 +471,6 @@ export function FrameGraph({
       }
     }
     ctx.setLineDash([]);
-
-    // Draw Slow Region shaded bands
-    for (const ep of episodes) {
-      if (ep.kind === 'slow_region') {
-        const x1 = Math.max(timeToX(ep.startS), padL);
-        const x2 = Math.min(timeToX(ep.endS), padL + graphW);
-        if (x2 > x1) {
-          ctx.fillStyle = 'rgba(245, 158, 11, 0.12)';
-          ctx.fillRect(x1, padT, x2 - x1, graphH);
-        }
-      }
-    }
 
     // Draw Chunk State Overlays (Analysing vs Queued)
     if (chunks && chunks.length > 0 && durationS > 0) {
@@ -511,40 +516,87 @@ export function FrameGraph({
           const x1 = timeToX(b.t0);
           const x2 = timeToX(b.t1);
           const rawBarW = Math.max(x2 - x1, 1);
-          const isOffScale = b.maxMs > maxY;
-
-          const yMin = msToY(b.minMs);
-          const yMax = msToY(b.maxMs);
-          const yAvg = msToY(b.avgMs);
+          const isOffScale = (graphMode === 'threads' ? ((b.gameMs || 0) + (b.renderMs || 0) + (b.gpuMs || 0)) : b.maxMs) > maxY;
 
           const barGap = rawBarW >= 4.0 ? 0.5 : 0;
           const barW = Math.max(rawBarW - barGap, 1);
 
-          let barColor = 'rgba(56, 189, 248, 0.75)'; // sky
-          let maxRangeColor = 'rgba(56, 189, 248, 0.25)';
-          if (b.avgMs >= targetMs * 2) {
-            barColor = 'rgba(239, 68, 68, 0.85)'; // red
-            maxRangeColor = 'rgba(239, 68, 68, 0.35)';
-          } else if (b.avgMs >= targetMs * 1.25) {
-            barColor = 'rgba(245, 158, 11, 0.8)'; // amber
-            maxRangeColor = 'rgba(245, 158, 11, 0.3)';
+          if (graphMode === 'threads') {
+            const gMs = b.gameMs || 0;
+            const rMs = b.renderMs || 0;
+            const gpuMs = b.gpuMs || 0;
+            const totalMs = gMs + rMs + gpuMs;
+
+            if (totalMs > 0) {
+              const y0 = baseBottomY;
+              const y1 = msToY(gMs);
+              const y2 = msToY(gMs + rMs);
+              const y3 = msToY(totalMs);
+
+              // 1. Game Thread slice (Emerald: #10b981) - bottom
+              if (gMs > 0 && y0 > y1) {
+                ctx.fillStyle = '#10b981';
+                ctx.fillRect(x1, y1, barW, Math.max(y0 - y1, 1));
+              }
+
+              // 2. Render Thread slice (Purple: #8b5cf6) - middle
+              if (rMs > 0 && y1 > y2) {
+                ctx.fillStyle = '#8b5cf6';
+                ctx.fillRect(x1, y2, barW, Math.max(y1 - y2, 1));
+              }
+
+              // 3. GPU slice (Red: #ef4444) - top
+              if (gpuMs > 0 && y2 > y3) {
+                ctx.fillStyle = '#ef4444';
+                ctx.fillRect(x1, y3, barW, Math.max(y2 - y3, 1));
+              }
+
+              if (rawBarW >= 3.5 && y0 > y3) {
+                ctx.strokeStyle = '#020617';
+                ctx.lineWidth = 1;
+                ctx.strokeRect(x1, y3, barW, Math.max(y0 - y3, 1));
+              }
+            } else {
+              const yAvg = msToY(b.avgMs);
+              ctx.fillStyle = 'rgba(56, 189, 248, 0.75)';
+              ctx.fillRect(x1, yAvg, barW, Math.max(baseBottomY - yAvg, 1));
+            }
+          } else {
+            const yMin = msToY(b.minMs);
+            const yMax = msToY(b.maxMs);
+            const yAvg = msToY(b.avgMs);
+
+            let barColor = 'rgba(56, 189, 248, 0.75)'; // sky
+            let maxRangeColor = 'rgba(56, 189, 248, 0.25)';
+            if (b.avgMs >= targetMs * 2) {
+              barColor = 'rgba(239, 68, 68, 0.85)'; // red
+              maxRangeColor = 'rgba(239, 68, 68, 0.35)';
+            } else if (b.avgMs >= targetMs * 1.25) {
+              barColor = 'rgba(245, 158, 11, 0.8)'; // amber
+              maxRangeColor = 'rgba(245, 158, 11, 0.3)';
+            }
+
+            // 1. Min-max range bar
+            ctx.fillStyle = maxRangeColor;
+            ctx.fillRect(x1, yMax, barW, Math.max(baseBottomY - yMax, 1));
+
+            // 2. Average body bar
+            ctx.fillStyle = barColor;
+            ctx.fillRect(x1, yAvg, barW, Math.max(baseBottomY - yAvg, 1));
+
+            if (rawBarW >= 3.5) {
+              ctx.strokeStyle = '#020617';
+              ctx.lineWidth = 1;
+              ctx.strokeRect(x1, yAvg, barW, Math.max(baseBottomY - yAvg, 1));
+            }
+
+            if (!isOffScale && yMin - yMax > 2) {
+              ctx.fillStyle = '#f8fafc';
+              ctx.fillRect(x1, yMax, barW, 1.5);
+            }
           }
 
-          // 1. Min-max range bar
-          ctx.fillStyle = maxRangeColor;
-          ctx.fillRect(x1, yMax, barW, Math.max(baseBottomY - yMax, 1));
-
-          // 2. Average body bar
-          ctx.fillStyle = barColor;
-          ctx.fillRect(x1, yAvg, barW, Math.max(baseBottomY - yAvg, 1));
-
-          if (rawBarW >= 3.5) {
-            ctx.strokeStyle = '#020617';
-            ctx.lineWidth = 1;
-            ctx.strokeRect(x1, yAvg, barW, Math.max(baseBottomY - yAvg, 1));
-          }
-
-          // 3. Top peak indicator
+          // Top peak indicator
           if (isOffScale) {
             ctx.fillStyle = '#ef4444';
             ctx.fillRect(x1, padT, barW, 2.5);
@@ -554,9 +606,6 @@ export function FrameGraph({
               ctx.textAlign = 'center';
               ctx.fillText('▲', x1 + barW / 2, padT - 2);
             }
-          } else if (yMin - yMax > 2) {
-            ctx.fillStyle = '#f8fafc';
-            ctx.fillRect(x1, yMax, barW, 1.5);
           }
         }
       } else if (!seriesData.isBucketed && seriesData.points.length > 0) {
@@ -577,26 +626,67 @@ export function FrameGraph({
           const showBorder = rawBarW >= 3.0;
           const barGap = rawBarW >= 6.0 ? 1.0 : (rawBarW >= 3.5 ? 0.5 : 0);
           const barW = Math.max(rawBarW - barGap, 1.0);
+          const isOffScale = (graphMode === 'threads' ? ((p.gameMs || 0) + (p.renderMs || 0) + (p.gpuMs || 0)) : p.frameMs) > maxY;
 
-          const y = msToY(p.frameMs);
-          const barH = Math.max(baseBottomY - y, 1.0);
-          const isOffScale = p.frameMs > maxY;
+          if (graphMode === 'threads') {
+            const gMs = p.gameMs || 0;
+            const rMs = p.renderMs || 0;
+            const gpuMs = p.gpuMs || 0;
+            const totalMs = gMs + rMs + gpuMs;
 
-          let color = '#38bdf8'; // sky
-          if (p.frameMs >= targetMs * 2) {
-            color = '#f87171'; // red
-          } else if (p.frameMs >= targetMs * 1.25) {
-            color = '#fbbf24'; // amber
-          }
+            if (totalMs > 0) {
+              const y0 = baseBottomY;
+              const y1 = msToY(gMs);
+              const y2 = msToY(gMs + rMs);
+              const y3 = msToY(totalMs);
 
-          ctx.fillStyle = color;
-          ctx.fillRect(x1, y, barW, barH);
+              // 1. Game Thread slice (Emerald: #10b981) - bottom
+              if (gMs > 0 && y0 > y1) {
+                ctx.fillStyle = '#10b981';
+                ctx.fillRect(x1, y1, barW, Math.max(y0 - y1, 1));
+              }
 
-          // Black border on the bars when zoomed below threshold to clearly separate adjacent bars
-          if (showBorder) {
-            ctx.strokeStyle = '#020617';
-            ctx.lineWidth = 1;
-            ctx.strokeRect(x1, y, barW, barH);
+              // 2. Render Thread slice (Purple: #8b5cf6) - middle
+              if (rMs > 0 && y1 > y2) {
+                ctx.fillStyle = '#8b5cf6';
+                ctx.fillRect(x1, y2, barW, Math.max(y1 - y2, 1));
+              }
+
+              // 3. GPU slice (Red: #ef4444) - top
+              if (gpuMs > 0 && y2 > y3) {
+                ctx.fillStyle = '#ef4444';
+                ctx.fillRect(x1, y3, barW, Math.max(y2 - y3, 1));
+              }
+
+              if (showBorder && y0 > y3) {
+                ctx.strokeStyle = '#020617';
+                ctx.lineWidth = 1;
+                ctx.strokeRect(x1, y3, barW, Math.max(y0 - y3, 1));
+              }
+            } else {
+              const y = msToY(p.frameMs);
+              ctx.fillStyle = '#38bdf8';
+              ctx.fillRect(x1, y, barW, Math.max(baseBottomY - y, 1));
+            }
+          } else {
+            const y = msToY(p.frameMs);
+            const barH = Math.max(baseBottomY - y, 1.0);
+
+            let color = '#38bdf8'; // sky
+            if (p.frameMs >= targetMs * 2) {
+              color = '#f87171'; // red
+            } else if (p.frameMs >= targetMs * 1.25) {
+              color = '#fbbf24'; // amber
+            }
+
+            ctx.fillStyle = color;
+            ctx.fillRect(x1, y, barW, barH);
+
+            if (showBorder) {
+              ctx.strokeStyle = '#020617';
+              ctx.lineWidth = 1;
+              ctx.strokeRect(x1, y, barW, barH);
+            }
           }
 
           if (isOffScale) {
@@ -606,22 +696,6 @@ export function FrameGraph({
             ctx.font = 'bold 8px sans-serif';
             ctx.textAlign = 'center';
             ctx.fillText('▲', x1 + barW / 2, padT - 2);
-          }
-
-          if (showGame && p.gameMs) {
-            const gy = msToY(p.gameMs);
-            ctx.fillStyle = '#34d399'; // emerald
-            ctx.fillRect(x1, gy, barW, Math.min(2, barH));
-          }
-          if (showRender && p.renderMs) {
-            const ry = msToY(p.renderMs);
-            ctx.fillStyle = '#a78bfa'; // purple
-            ctx.fillRect(x1, ry, barW, Math.min(2, barH));
-          }
-          if (showGpu && p.gpuMs) {
-            const py = msToY(p.gpuMs);
-            ctx.fillStyle = '#fb923c'; // orange
-            ctx.fillRect(x1, py, barW, Math.min(2, barH));
           }
         }
       }
@@ -793,9 +867,7 @@ export function FrameGraph({
     episodeIndexMap,
     bookmarks,
     selectedRange,
-    showGame,
-    showRender,
-    showGpu,
+    graphMode,
     scaleMode,
     chunks,
     durationS,
@@ -1044,6 +1116,9 @@ export function FrameGraph({
             frameMs: bucket.avgMs,
             minMs: bucket.minMs,
             maxMs: bucket.maxMs,
+            gameMs: bucket.gameMs,
+            renderMs: bucket.renderMs,
+            gpuMs: bucket.gpuMs,
           });
         } else {
           setHoverInfo(null);
@@ -1111,62 +1186,98 @@ export function FrameGraph({
     <div className="flex flex-col gap-2 w-full min-h-[280px]">
       {/* Frame Graph Main Unified Container */}
       <div className="flex flex-col rounded-lg bg-slate-900/70 border border-slate-800 overflow-hidden shadow-sm">
-        {/* Graph Header: Metrics Line + Zoom / View Controls */}
+        {/* Graph Header: Complete Metrics Line + Zoom / View Controls */}
         <div className="flex flex-wrap items-center justify-between gap-2 px-3 py-2 bg-slate-900/90 border-b border-slate-800 text-xs shrink-0">
-          {/* Left: 4 Metrics Summary Line */}
+          {/* Left: Complete Metrics Summary Line */}
           {summary ? (
-            <div className="flex items-center gap-2 text-slate-400 text-xs font-mono flex-wrap">
-              <span>
-                Duration: <strong className="text-slate-200">{formatTime(summary.durationS)}</strong>
-              </span>
-              <span className="text-slate-600">•</span>
-              <span>
-                Median: <strong className="text-emerald-400">{medianFps} fps</strong> ({(summary.medianMs ?? 0).toFixed(1)} ms/frame)
-              </span>
-              <span className="text-slate-600">•</span>
-              <span>
-                p95: <strong className="text-amber-300">{(summary.p95Ms ?? 0).toFixed(1)} ms/frame</strong>
-              </span>
-              <span className="text-slate-600">•</span>
-              <span>
-                Hitches: <strong className={(summary.hitchCount ?? 0) > 0 ? 'text-rose-400' : 'text-slate-300'}>{summary.hitchCount ?? 0}</strong>
-              </span>
+            <div className="flex items-center gap-x-3 gap-y-1 text-slate-300 text-xs font-mono flex-wrap">
+              <div className="flex items-center gap-1">
+                <span className="text-slate-400 font-sans">Duration:</span>
+                <strong className="text-slate-100">{formatTime(summary.durationS)}</strong>
+                <span className="text-slate-500 font-sans text-[11px]">({(summary.frameCount ?? 0).toLocaleString()} frames)</span>
+              </div>
+              <span className="text-slate-700">•</span>
+              <div className="flex items-center gap-1">
+                <span className="text-slate-400 font-sans">Median:</span>
+                <strong className="text-emerald-400">{medianFps} FPS</strong>
+                <span className="text-slate-400">({(summary.medianMs ?? 0).toFixed(1)} ms)</span>
+              </div>
+              <span className="text-slate-700">•</span>
+              <div className="flex items-center gap-1">
+                <span className="text-slate-400 font-sans">Time-weighted:</span>
+                <strong className="text-sky-400">
+                  {summary.timeWeightedFps
+                    ? Math.round(summary.timeWeightedFps)
+                    : summary.durationS > 0
+                    ? Math.round(summary.frameCount / summary.durationS)
+                    : medianFps}{' '}
+                  FPS
+                </strong>
+              </div>
+              <span className="text-slate-700">•</span>
+              <div className="flex items-center gap-1">
+                <span className="text-slate-400 font-sans">p95:</span>
+                <strong className="text-slate-200">{(summary.p95Ms ?? 0).toFixed(1)} ms</strong>
+                <span className="text-slate-400 font-sans ml-1">p99:</span>
+                <strong className="text-slate-200">{(summary.p99Ms ?? 0).toFixed(1)} ms</strong>
+              </div>
+              {(summary.timeOverBudgetPct != null || summary.framesOverBudgetPct != null) && (
+                <>
+                  <span className="text-slate-700">•</span>
+                  <div className="flex items-center gap-1">
+                    <span className="text-slate-400 font-sans">Over Budget:</span>
+                    <strong className={(summary.timeOverBudgetPct ?? 0) > 20 ? 'text-amber-400' : 'text-slate-200'}>
+                      {(summary.timeOverBudgetPct ?? 0).toFixed(1)}% time
+                    </strong>
+                    <span className="text-slate-500 font-sans">/</span>
+                    <span className="text-slate-300">{(summary.framesOverBudgetPct ?? 0).toFixed(1)}% frames</span>
+                  </div>
+                </>
+              )}
+              <span className="text-slate-700">•</span>
+              <div className="flex items-center gap-1">
+                <span className="text-slate-400 font-sans">Hitches:</span>
+                <strong className={(summary.hitchCount ?? 0) > 0 ? 'text-rose-400' : 'text-emerald-400'}>
+                  {summary.hitchCount ?? 0}
+                </strong>
+              </div>
+              {summary.regimeSummary && (
+                <div className="flex items-center gap-1.5 px-2 py-0.5 rounded bg-slate-800 border border-slate-700 text-sky-300 text-[11px]">
+                  <span className="text-sky-400 font-sans font-semibold">Regime:</span>
+                  <span>{summary.regimeSummary}</span>
+                </div>
+              )}
             </div>
           ) : (
             <span className="font-semibold text-slate-300">Timeline &amp; Frame Graph</span>
           )}
 
-          {/* Right: Scale Mode & View Controls */}
+          {/* Right: Graph Mode (Frame Time vs Threads) + Vertical Scale Mode + Zoom View Controls */}
           <div className="flex items-center gap-2">
-            {/* Thread Overlays */}
-            <div className="flex items-center gap-2 text-[11px]">
-              <label className="flex items-center gap-1 cursor-pointer hover:text-slate-200">
-                <input
-                  type="checkbox"
-                  checked={showGame}
-                  onChange={(e) => setShowGame(e.target.checked)}
-                  className="rounded bg-slate-700 border-slate-600 text-emerald-500 focus:ring-0 w-3 h-3"
-                />
-                <span className="text-emerald-400">Game</span>
-              </label>
-              <label className="flex items-center gap-1 cursor-pointer hover:text-slate-200">
-                <input
-                  type="checkbox"
-                  checked={showRender}
-                  onChange={(e) => setShowRender(e.target.checked)}
-                  className="rounded bg-slate-700 border-slate-600 text-purple-500 focus:ring-0 w-3 h-3"
-                />
-                <span className="text-purple-400">Render</span>
-              </label>
-              <label className="flex items-center gap-1 cursor-pointer hover:text-slate-200">
-                <input
-                  type="checkbox"
-                  checked={showGpu}
-                  onChange={(e) => setShowGpu(e.target.checked)}
-                  className="rounded bg-slate-700 border-slate-600 text-orange-500 focus:ring-0 w-3 h-3"
-                />
-                <span className="text-orange-400">GPU</span>
-              </label>
+            {/* Graph Mode Switch: Frame Time vs Threads */}
+            <div className="flex items-center bg-slate-800/90 rounded border border-slate-700 p-0.5 text-[11px]">
+              <button
+                type="button"
+                onClick={() => setGraphMode('frametime')}
+                className={`px-2 py-0.5 rounded font-medium transition-colors ${
+                  graphMode === 'frametime'
+                    ? 'bg-sky-600 text-white shadow-sm'
+                    : 'text-slate-400 hover:text-slate-200'
+                }`}
+              >
+                Frame Time
+              </button>
+              <button
+                type="button"
+                onClick={() => setGraphMode('threads')}
+                className={`px-2 py-0.5 rounded font-medium transition-colors ${
+                  graphMode === 'threads'
+                    ? 'bg-sky-600 text-white shadow-sm'
+                    : 'text-slate-400 hover:text-slate-200'
+                }`}
+              >
+                Threads
+              </button>
             </div>
 
             {/* Vertical Scale Mode Toggle */}
@@ -1177,7 +1288,7 @@ export function FrameGraph({
                 title="Percentile Clamping: baseline resolution, capping off-scale spikes"
                 className={`px-1.5 py-0.5 rounded transition-colors ${
                   scaleMode === 'p99'
-                    ? 'bg-sky-600/70 text-sky-100 font-medium'
+                    ? 'bg-slate-700 text-sky-100 font-medium'
                     : 'text-slate-400 hover:text-slate-200'
                 }`}
               >
@@ -1189,7 +1300,7 @@ export function FrameGraph({
                 title="Fit Peaks: scales vertical axis to fit highest hitch spike"
                 className={`px-1.5 py-0.5 rounded transition-colors ${
                   scaleMode === 'fit'
-                    ? 'bg-sky-600/70 text-sky-100 font-medium'
+                    ? 'bg-slate-700 text-sky-100 font-medium'
                     : 'text-slate-400 hover:text-slate-200'
                 }`}
               >
@@ -1224,10 +1335,37 @@ export function FrameGraph({
         {/* Legend & Navigation Hint Bar - Included directly inside the frame graph container above the canvas */}
         <div className="flex flex-wrap items-center justify-between gap-2 px-3 py-1.5 bg-slate-950/40 border-b border-slate-800/60 text-[11px] text-slate-400">
           <div className="flex flex-wrap items-center gap-3">
-            <div className="flex items-center gap-1.5">
-              <span className="w-2.5 h-2.5 rounded-sm bg-sky-400/80" />
-              <span>Frame Time</span>
-            </div>
+            {graphMode === 'frametime' ? (
+              <>
+                <div className="flex items-center gap-1.5">
+                  <span className="w-2.5 h-2.5 rounded-sm bg-sky-400/80" />
+                  <span>&lt; Target</span>
+                </div>
+                <div className="flex items-center gap-1.5">
+                  <span className="w-2.5 h-2.5 rounded-sm bg-amber-400" />
+                  <span>&ge; 1.25x</span>
+                </div>
+                <div className="flex items-center gap-1.5">
+                  <span className="w-2.5 h-2.5 rounded-sm bg-rose-500" />
+                  <span>&ge; 2x</span>
+                </div>
+              </>
+            ) : (
+              <>
+                <div className="flex items-center gap-1.5 text-emerald-300 font-medium">
+                  <span className="w-2.5 h-2.5 rounded-sm bg-emerald-500" />
+                  <span>Game Thread</span>
+                </div>
+                <div className="flex items-center gap-1.5 text-purple-300 font-medium">
+                  <span className="w-2.5 h-2.5 rounded-sm bg-purple-500" />
+                  <span>Render Thread</span>
+                </div>
+                <div className="flex items-center gap-1.5 text-red-300 font-medium">
+                  <span className="w-2.5 h-2.5 rounded-sm bg-red-500" />
+                  <span>GPU</span>
+                </div>
+              </>
+            )}
             <div className="flex items-center gap-1.5">
               <span className="w-2.5 h-0.5 border-b-2 border-sky-400 border-dashed" />
               <span>Target ({targetMs.toFixed(1)} ms)</span>
@@ -1240,24 +1378,6 @@ export function FrameGraph({
               <span className="w-2.5 h-2.5 rounded-full bg-purple-500" />
               <span>Bookmark</span>
             </div>
-            {showGame && (
-              <div className="flex items-center gap-1 text-emerald-400">
-                <span className="w-2 h-0.5 bg-emerald-400" />
-                <span>Game</span>
-              </div>
-            )}
-            {showRender && (
-              <div className="flex items-center gap-1 text-purple-400">
-                <span className="w-2 h-0.5 bg-purple-400" />
-                <span>Render</span>
-              </div>
-            )}
-            {showGpu && (
-              <div className="flex items-center gap-1 text-orange-400">
-                <span className="w-2 h-0.5 bg-orange-400" />
-                <span>GPU</span>
-              </div>
-            )}
           </div>
 
           {/* Interaction Hint */}
@@ -1314,14 +1434,66 @@ export function FrameGraph({
                     <span>Frame: <span className="font-mono text-amber-300">{hoverInfo.frameMs.toFixed(1)} ms</span></span>
                   )}
                 </div>
-                {hoverInfo.gameMs !== undefined && <div className="text-emerald-400">Game: {hoverInfo.gameMs.toFixed(1)} ms</div>}
-                {hoverInfo.renderMs !== undefined && <div className="text-purple-400">Render: {hoverInfo.renderMs.toFixed(1)} ms</div>}
-                {hoverInfo.gpuMs !== undefined && <div className="text-orange-400">GPU: {hoverInfo.gpuMs.toFixed(1)} ms</div>}
+                {graphMode === 'threads' ? (
+                  <div className="flex flex-col gap-0.5 pt-0.5 mt-0.5 border-t border-slate-700/80 font-mono text-[11px]">
+                    <div className="flex items-center justify-between gap-3 text-emerald-400 font-semibold">
+                      <span>Game Thread:</span>
+                      <span>{(hoverInfo.gameMs ?? 0).toFixed(1)} ms</span>
+                    </div>
+                    <div className="flex items-center justify-between gap-3 text-purple-400 font-semibold">
+                      <span>Render Thread:</span>
+                      <span>{(hoverInfo.renderMs ?? 0).toFixed(1)} ms</span>
+                    </div>
+                    <div className="flex items-center justify-between gap-3 text-red-400 font-semibold">
+                      <span>GPU:</span>
+                      <span>{(hoverInfo.gpuMs ?? 0).toFixed(1)} ms</span>
+                    </div>
+                  </div>
+                ) : (
+                  <>
+                    {hoverInfo.gameMs !== undefined && hoverInfo.gameMs > 0 && <div className="text-emerald-400">Game: {hoverInfo.gameMs.toFixed(1)} ms</div>}
+                    {hoverInfo.renderMs !== undefined && hoverInfo.renderMs > 0 && <div className="text-purple-400">Render: {hoverInfo.renderMs.toFixed(1)} ms</div>}
+                    {hoverInfo.gpuMs !== undefined && hoverInfo.gpuMs > 0 && <div className="text-orange-400">GPU: {hoverInfo.gpuMs.toFixed(1)} ms</div>}
+                  </>
+                )}
               </>
             )}
           </div>
         )}
         </div>
+
+        {/* Range Indicator & Entire Trace Reset Bar below the canvas */}
+        {summary && (
+          <div className="flex flex-wrap items-center justify-between gap-2 px-3 py-1.5 bg-slate-900/90 border-t border-slate-800 text-xs">
+            <div className="flex items-center gap-2 text-xs text-slate-300">
+              <span className="text-sky-400 font-bold">Range:</span>
+              <span className="font-mono">
+                {selectedRange && Math.max(...selectedRange) - Math.min(...selectedRange) < summary.durationS - 0.05 ? (
+                  `${selectedRange[0].toFixed(2)}s – ${selectedRange[1].toFixed(2)}s (${(selectedRange[1] - selectedRange[0]).toFixed(2)}s)`
+                ) : (
+                  `Entire trace (${summary.durationS.toFixed(2)}s)`
+                )}
+              </span>
+              {rangeStats && (
+                <span className="text-[11px] text-slate-400 font-mono hidden md:inline border-l border-slate-700 pl-2">
+                  {rangeStats.frameCount.toLocaleString()} frames ({((rangeStats.durationS / Math.max(summary.durationS, 0.001)) * 100).toFixed(0)}%)
+                </span>
+              )}
+            </div>
+
+            {onResetRange && (
+              <button
+                type="button"
+                onClick={onResetRange}
+                disabled={!selectedRange || Math.max(...selectedRange) - Math.min(...selectedRange) >= summary.durationS - 0.05}
+                className="px-2.5 py-0.5 rounded bg-slate-800 hover:bg-slate-700 disabled:opacity-30 disabled:hover:bg-slate-800 text-slate-200 text-xs font-medium transition-colors border border-slate-700 shadow-sm cursor-pointer"
+                title="Reset selection to entire trace"
+              >
+                Entire trace
+              </button>
+            )}
+          </div>
+        )}
       </div>
 
       {/* Findings Lane directly under the graph, aligned to same x-axis */}
