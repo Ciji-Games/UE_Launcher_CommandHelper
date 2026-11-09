@@ -33,6 +33,10 @@ export interface TraceSummary {
   verdict: string;
   detectedChannels: string[];
   missingChannels: string[];
+  timeWeightedFps?: number;
+  timeOverBudgetPct?: number;
+  framesOverBudgetPct?: number;
+  regimeSummary?: string;
 }
 
 export interface FramePoint {
@@ -101,6 +105,16 @@ export interface ChannelSuggestion {
   missingChannels: string[];
 }
 
+export interface FindingContributor {
+  ruleId: string;
+  title: string;
+  threadRole: string;
+  timerName?: string;
+  explainsMs: number;
+  sharePct: number;
+  note?: string;
+}
+
 export interface FindingPayload {
   title: string;
   scale?: 'spike' | 'sustained';
@@ -111,6 +125,8 @@ export interface FindingPayload {
   explainsMs: number;
   /** In ms/frame excess gap for sustained findings, or peak frame excess ms for hitch findings */
   ofExcessMs: number;
+  actualTimeLostMs?: number;
+  explainedPct?: number;
   evidence: Evidence[];
   fixes: FixSuggestion[];
   verify: string;
@@ -128,6 +144,9 @@ export interface FindingPayload {
   }>;
   periodS?: number;
   channelSuggestion?: ChannelSuggestion;
+  contributors?: FindingContributor[];
+  isStartup?: boolean;
+  isAftermath?: boolean;
 }
 
 export interface Finding {

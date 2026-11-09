@@ -66,6 +66,20 @@ pub struct ChannelSuggestion {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct FindingContributor {
+    pub rule_id: String,
+    pub title: String,
+    pub thread_role: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub timer_name: Option<String>,
+    pub explains_ms: f64,
+    pub share_pct: f64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct FindingPayload {
     pub title: String,
     pub match_confidence: String, // "high" | "medium" | "low"
@@ -73,13 +87,27 @@ pub struct FindingPayload {
     pub fix_likelihood: String,
     pub explains_ms: f64,
     pub of_excess_ms: f64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub actual_time_lost_ms: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub explained_pct: Option<f64>,
     pub evidence: Vec<Evidence>,
     pub fixes: Vec<FixSuggestionDef>,
     pub verify: String,
     pub caveats: Vec<String>,
     pub episode_ids: Vec<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub period_s: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub channel_suggestion: Option<ChannelSuggestion>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub contributors: Vec<FindingContributor>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub is_startup: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub is_aftermath: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scale: Option<String>,
 }
 
 pub fn format_timer_display_name(tname: &str, rule_id: &str) -> String {
@@ -615,9 +643,13 @@ pub fn evaluate_and_save_findings(
     let mut matches_by_rule: std::collections::HashMap<String, Vec<EpisodeRuleMatch>> = std::collections::HashMap::new();
 
     for ep in episodes {
-        let target_frame_ms = if ep.median_ms > 0.0 { ep.median_ms } else { 16.6 };
-        let explainable_excess_ms = (ep.peak_ms - target_frame_ms).max(1.0);
         let num_frames = episode_num_frames.get(&ep.id).copied().unwrap_or(1.0);
+        let explainable_excess_ms = if ep.kind == "slow_region" {
+            (ep.median_ms - 16.67).max(1.0) * num_frames
+        } else {
+            let target_frame_ms = if ep.median_ms > 0.0 { ep.median_ms } else { 16.6 };
+            (ep.peak_ms - target_frame_ms).max(1.0)
+        };
         let empty_map = std::collections::HashMap::new();
         let ep_timers = episode_timer_aggregates.get(&ep.id).unwrap_or(&empty_map);
         let ep_bound_by = episode_bound_by.get(&ep.id).copied().unwrap_or("unattributed");
@@ -1152,6 +1184,8 @@ pub fn evaluate_and_save_findings(
                 fix_likelihood: rule.def.fix_likelihood.clone(),
                 explains_ms: total_explains_ms,
                 of_excess_ms: total_of_excess_ms,
+                actual_time_lost_ms: Some(total_explains_ms),
+                explained_pct: if total_of_excess_ms > 0.0 { Some((total_explains_ms / total_of_excess_ms * 100.0).clamp(0.0, 100.0)) } else { None },
                 evidence,
                 fixes: rule.def.fixes.clone(),
                 verify: rule.def.verify.clone(),
@@ -1159,6 +1193,10 @@ pub fn evaluate_and_save_findings(
                 episode_ids: episode_ids.clone(),
                 period_s: None,
                 channel_suggestion,
+                contributors: Vec::new(),
+                is_startup: None,
+                is_aftermath: None,
+                scale: None,
             };
 
             findings.push(DbFinding {
@@ -1184,6 +1222,8 @@ pub fn evaluate_and_save_findings(
             fix_likelihood: "low".to_string(),
             explains_ms: 0.0,
             of_excess_ms: total_excess,
+            actual_time_lost_ms: Some(0.0),
+            explained_pct: None,
             evidence: vec![Evidence {
                 label: "No profiled timer exceeded baseline thresholds sufficiently to establish a root cause.".to_string(),
                 value_ms: None,
@@ -1202,6 +1242,10 @@ pub fn evaluate_and_save_findings(
             episode_ids: episodes.iter().map(|e| e.id).collect(),
             period_s: None,
             channel_suggestion: None,
+            contributors: Vec::new(),
+            is_startup: None,
+            is_aftermath: None,
+            scale: None,
         };
 
         findings.push(DbFinding {
@@ -2040,5 +2084,57 @@ pub(crate) mod tests {
                 }
             }
         }
+    }
+    #[test]
+    fn test_synthetic_fast_then_slow_regime_ranked_first() {
+        let mut ctx = ScenarioContext::new();
+        ctx.seed_baseline_window_frames(1, 6);
+
+        // Add slow region episode with significant actual time lost
+        let ep_slow = DbEpisode {
+            id: 1,
+            kind: "slow_region".to_string(),
+            start_s: 16.0,
+            end_s: 16.5,
+            frame_from: 1000,
+            frame_to: 1005,
+            peak_ms: 45.0,
+            median_ms: 44.0,
+            bound_by: "gpu".to_string(),
+            periodic_group: None,
+        };
+
+        let ep_hitch = DbEpisode {
+            id: 2,
+            kind: "hitch".to_string(),
+            start_s: 5.0,
+            end_s: 5.1,
+            frame_from: 300,
+            frame_to: 301,
+            peak_ms: 35.0,
+            median_ms: 16.0,
+            bound_by: "game".to_string(),
+            periodic_group: None,
+        };
+
+        // Seed timers for slow region (Niagara on GPU across frames 1000..=1005)
+        for f in 1000..=1005 {
+            ctx.add_event_for_frame(f, 4, "NiagaraEmitterInstance", 30.0);
+        }
+        // Seed timers for hitch (GC on GameThread for frame 300)
+        ctx.add_event_for_frame(300, 1, "CollectGarbage", 20.0);
+
+        let (mut findings_slow, _) = ctx.evaluate(ep_slow);
+        let (mut findings_hitch, _) = ctx.evaluate(ep_hitch);
+
+        let mut all_findings = Vec::new();
+        all_findings.append(&mut findings_slow);
+        all_findings.append(&mut findings_hitch);
+
+        // Sort by rank descending
+        all_findings.sort_by(|a, b| b.rank.partial_cmp(&a.rank).unwrap_or(std::cmp::Ordering::Equal));
+
+        assert!(!all_findings.is_empty());
+        assert_eq!(all_findings[0].rule_id, "gpu-niagara-fx", "Sustained regime finding should be ranked first due to actual time lost");
     }
 }

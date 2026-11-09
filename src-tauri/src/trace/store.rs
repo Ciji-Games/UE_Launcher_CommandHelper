@@ -2,6 +2,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
+use crate::trace::csv_ingest::ProcessedFrame;
 
 pub const SCHEMA_VERSION: i32 = 13;
 
@@ -515,6 +516,32 @@ pub fn query_frame_buckets(
         buckets.push(r?);
     }
     Ok(buckets)
+}
+
+pub fn query_all_processed_frames(conn: &Connection) -> Result<Vec<ProcessedFrame>, rusqlite::Error> {
+    let mut stmt = conn.prepare(
+        "SELECT idx, engine_frame, start_s, interval_ms, game_ms, render_ms, gpu_ms 
+         FROM frames 
+         ORDER BY idx ASC",
+    )?;
+
+    let rows = stmt.query_map([], |row| {
+        Ok(ProcessedFrame {
+            idx: row.get(0)?,
+            engine_frame: row.get(1)?,
+            start_s: row.get(2)?,
+            interval_ms: row.get(3)?,
+            game_ms: row.get(4)?,
+            render_ms: row.get(5)?,
+            gpu_ms: row.get(6)?,
+        })
+    })?;
+
+    let mut frames = Vec::new();
+    for r in rows {
+        frames.push(r?);
+    }
+    Ok(frames)
 }
 
 pub fn query_episodes(conn: &Connection) -> Result<Vec<DbEpisode>, rusqlite::Error> {

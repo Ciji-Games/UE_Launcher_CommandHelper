@@ -22,10 +22,14 @@ pub struct FrameStats {
 #[serde(rename_all = "camelCase")]
 pub struct AnalysisOptions {
     pub target_fps: f64,
-    pub hitch_factor: f64,
-    pub hitch_min_extra_ms: f64,
-    pub hitch_floor_ms: f64,
-    pub max_episodes: usize,
+    #[serde(default)]
+    pub hitch_factor: Option<f64>,
+    #[serde(default)]
+    pub hitch_min_extra_ms: Option<f64>,
+    #[serde(default)]
+    pub hitch_floor_ms: Option<f64>,
+    #[serde(default)]
+    pub max_episodes: Option<usize>,
     pub baseline_samples: usize,
     pub max_window_rows: usize,
 }
@@ -34,14 +38,27 @@ impl Default for AnalysisOptions {
     fn default() -> Self {
         Self {
             target_fps: 60.0,
-            hitch_factor: 1.5,
-            hitch_min_extra_ms: 12.0,
-            hitch_floor_ms: 33.333,
-            max_episodes: 15,
+            hitch_factor: None,
+            hitch_min_extra_ms: None,
+            hitch_floor_ms: None,
+            max_episodes: None,
             baseline_samples: 6,
             max_window_rows: 5_000_000,
         }
     }
+}
+
+/// Computes whether a frame interval is considered a hitch / spike.
+///
+/// Criteria:
+/// - Must be significantly higher than the local moving median (>= 1.5 * local_median_ms)
+/// - Must exceed the target frametime budget (>= 1.5 * target_ms)
+/// - Absolute sanity floor: interval_ms > 100.0 ms is always a hitch even during slow plateaus.
+///
+/// Threshold: max(1.5 * target_ms, 1.5 * local_median_ms).
+pub fn is_hitch(interval_ms: f64, local_median_ms: f64, target_ms: f64) -> bool {
+    let threshold = (target_ms * 1.5).max(1.5 * local_median_ms);
+    interval_ms >= threshold || interval_ms > 100.0
 }
 
 pub fn calculate_percentile(sorted_values: &[f64], percentile: f64) -> f64 {
@@ -572,12 +589,8 @@ pub fn detect_episodes(
     let mut i = 0;
     while i < frames.len() {
         let local_med = local_medians[i];
-        let hitch_threshold = f64::max(
-            options.hitch_factor * local_med,
-            f64::max(local_med + options.hitch_min_extra_ms, target_ms + options.hitch_min_extra_ms),
-        );
 
-        if frames[i].interval_ms >= hitch_threshold {
+        if is_hitch(frames[i].interval_ms, local_med, target_ms) {
             let start_idx = i;
             let mut end_idx = i;
             let mut peak_ms = frames[i].interval_ms;
@@ -585,11 +598,7 @@ pub fn detect_episodes(
 
             while end_idx + 1 < frames.len() {
                 let next_med = local_medians[end_idx + 1];
-                let next_thresh = f64::max(
-                    options.hitch_factor * next_med,
-                    f64::max(next_med + options.hitch_min_extra_ms, target_ms + options.hitch_min_extra_ms),
-                );
-                if frames[end_idx + 1].interval_ms >= next_thresh {
+                if is_hitch(frames[end_idx + 1].interval_ms, next_med, target_ms) {
                     end_idx += 1;
                     peak_ms = peak_ms.max(frames[end_idx].interval_ms);
                     interval_sum += frames[end_idx].interval_ms;

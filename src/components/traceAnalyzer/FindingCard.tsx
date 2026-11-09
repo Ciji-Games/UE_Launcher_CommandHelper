@@ -253,6 +253,30 @@ export function FindingCard({
             </div>
           )}
 
+          {/* Contributing Subsystems & Operations */}
+          {p.contributors && p.contributors.length > 0 && (
+            <div className="flex flex-col gap-1.5 p-2.5 rounded-lg bg-slate-950/40 border border-slate-800/80 text-xs">
+              <span className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider">
+                Contributing Subsystems & Operations
+              </span>
+              <div className="flex flex-col gap-1 text-slate-300">
+                {p.contributors.map((c, i) => (
+                  <div key={`contrib-${i}`} className="flex items-center justify-between gap-2 py-0.5 border-b border-slate-800/40 last:border-0 font-mono text-[11px]">
+                    <div className="flex items-center gap-1.5 truncate">
+                      <span className="text-slate-400 uppercase text-[10px] px-1 rounded bg-slate-800 border border-slate-700 font-sans">{c.threadRole}</span>
+                      <span className="font-sans text-slate-200 truncate">{c.title || c.ruleId}</span>
+                      {c.timerName && <span className="text-slate-400 truncate">({c.timerName})</span>}
+                    </div>
+                    <div className="flex items-center gap-1.5 shrink-0 text-slate-300">
+                      <span>+{c.explainsMs.toFixed(1)} ms</span>
+                      <span className="text-sky-400 font-semibold">({c.sharePct.toFixed(0)}%)</span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
           {/* Need More Details / Recommended Channel Flags */}
           {p.channelSuggestion && (
             <div className="flex flex-col gap-1 p-2.5 bg-amber-950/20 border border-amber-600/30 rounded-lg text-xs">

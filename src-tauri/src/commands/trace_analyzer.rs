@@ -25,7 +25,7 @@ use crate::trace::rules::{evaluate_and_save_findings, generate_verdict};
 use crate::trace::source::TraceSource;
 use crate::trace::store::{
     clear_cache, compute_cache_key, get_cache_db_path, get_cache_info, get_meta,
-    init_db, query_bookmarks, query_episodes, query_findings, query_frame_buckets,
+    init_db, query_all_processed_frames, query_bookmarks, query_episodes, query_findings, query_frame_buckets,
     query_frame_points, set_meta, CacheInfo, DbChunkState, DbEpisode, DbFinding, DbIssue,
     DbOccurrence, FrameBucket, FramePoint, TraceBookmark, SCHEMA_VERSION,
 };
@@ -59,6 +59,14 @@ pub struct TraceSummary {
     pub verdict: String,
     pub detected_channels: Vec<String>,
     pub missing_channels: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub time_weighted_fps: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub time_over_budget_pct: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub frames_over_budget_pct: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub regime_summary: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -371,7 +379,7 @@ fn run_trace_analysis_pipeline_sync(
 
     // Check cache hit
     if db_path.is_file() {
-        if let Ok(conn) = Connection::open(&db_path) {
+        if let Ok(mut conn) = Connection::open(&db_path) {
             let status = get_meta(&conn, "status").ok().flatten();
             let cached_index_ver: Option<i32> = get_meta(&conn, "index_version").ok().flatten().and_then(|s| s.parse().ok());
             if status.as_deref() == Some("done") && cached_index_ver == Some(SCHEMA_VERSION) {
@@ -380,9 +388,20 @@ fn run_trace_analysis_pipeline_sync(
                 if cached_analysis_ver.as_deref() != Some(&current_analysis_ver) {
                     let _ = conn.execute("DELETE FROM issue", []);
                     let _ = conn.execute("DELETE FROM occurrence", []);
+                    let _ = conn.execute("DELETE FROM episodes", []);
+                    let _ = conn.execute("DELETE FROM findings", []);
                     let _ = conn.execute("UPDATE chunk_state SET state = 'queued', done_at = NULL", []);
                     let _ = set_meta(&conn, "analysis_version", &current_analysis_ver);
+                    let _ = set_meta(&conn, "target_fps", &format!("{:.1}", opts.target_fps));
+
+                    if let Ok(processed_frames) = query_all_processed_frames(&conn) {
+                        let stats = calculate_robust_stats(&processed_frames);
+                        let episodes = detect_episodes(&processed_frames, &stats, opts);
+                        let _ = save_episodes_to_db(&mut conn, &episodes);
+                        let _ = evaluate_and_save_findings(&mut conn, &episodes);
+                    }
                 }
+                let _ = set_meta(&conn, "target_fps", &format!("{:.1}", opts.target_fps));
                 drop(conn);
                 start_background_diagnosis_task(app.clone(), db_path.clone(), opts.target_fps);
                 let conn_read = Connection::open(&db_path).map_err(|e| e.to_string())?;
@@ -585,6 +604,30 @@ fn run_trace_analysis_pipeline_sync(
     // Spawn background diagnosis worker ahead of user
     start_background_diagnosis_task(app.clone(), db_path.clone(), opts.target_fps);
 
+    let time_weighted_fps = if stats.duration_s > 0.0 {
+        Some(stats.total_frames as f64 / stats.duration_s)
+    } else if stats.median_ms > 0.0 {
+        Some(1000.0 / stats.median_ms)
+    } else {
+        None
+    };
+
+    let target_ms = 1000.0 / opts.target_fps;
+    let total_interval_sum: f64 = processed_frames.iter().map(|f| f.interval_ms).sum();
+    let over_budget_time: f64 = processed_frames.iter().filter(|f| f.interval_ms > target_ms).map(|f| f.interval_ms).sum();
+    let time_over_budget_pct = if total_interval_sum > 0.0 {
+        Some((over_budget_time / total_interval_sum) * 100.0)
+    } else {
+        Some(0.0)
+    };
+
+    let over_budget_frames = processed_frames.iter().filter(|f| f.interval_ms > target_ms).count();
+    let frames_over_budget_pct = if stats.total_frames > 0 {
+        Some((over_budget_frames as f64 / stats.total_frames as f64) * 100.0)
+    } else {
+        Some(0.0)
+    };
+
     Ok(TraceSummary {
         trace_id: cache_key,
         path: trace_path_str,
@@ -596,12 +639,16 @@ fn run_trace_analysis_pipeline_sync(
         median_ms: stats.median_ms,
         p95_ms: stats.p95_ms,
         p99_ms: stats.p99_ms,
-        target_ms: 1000.0 / opts.target_fps,
+        target_ms,
         hitch_count,
         slow_region_count,
         verdict,
         detected_channels,
         missing_channels,
+        time_weighted_fps,
+        time_over_budget_pct,
+        frames_over_budget_pct,
+        regime_summary: None,
     })
 }
 
@@ -845,6 +892,65 @@ fn read_summary_from_db(
 
     let (detected_channels, missing_channels) = crate::trace::rules::detect_trace_channels(conn);
 
+    let target_ms = 1000.0 / opts.target_fps;
+    let time_weighted_fps = if duration_s > 0.0 {
+        Some(frame_count as f64 / duration_s)
+    } else if median_ms > 0.0 {
+        Some(1000.0 / median_ms)
+    } else {
+        None
+    };
+
+    let total_interval_sum: f64 = intervals.iter().sum();
+    let over_budget_time: f64 = intervals.iter().filter(|&&intv| intv > target_ms).sum();
+    let time_over_budget_pct = if total_interval_sum > 0.0 {
+        Some((over_budget_time / total_interval_sum) * 100.0)
+    } else {
+        Some(0.0)
+    };
+
+    let over_budget_frames = intervals.iter().filter(|&&intv| intv > target_ms).count();
+    let frames_over_budget_pct = if frame_count > 0 {
+        Some((over_budget_frames as f64 / frame_count as f64) * 100.0)
+    } else {
+        Some(0.0)
+    };
+
+    let mut regime_summary: Option<String> = None;
+    if let Ok(mut f_stmt) = conn.prepare("SELECT idx, start_s, interval_ms FROM frames ORDER BY idx ASC") {
+        if let Ok(rows) = f_stmt.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, f64>(1)?, r.get::<_, f64>(2)?))) {
+            let chrono_frames: Vec<(i64, f64, f64)> = rows.flatten().collect();
+            if chrono_frames.len() >= 60 {
+                let win = 30;
+                let mut i = 0;
+                while i + 2 * win <= chrono_frames.len() {
+                    let win1 = &chrono_frames[i..i + win];
+                    let win2 = &chrono_frames[i + win..i + 2 * win];
+
+                    let mut intv1: Vec<f64> = win1.iter().map(|f| f.2).collect();
+                    let mut intv2: Vec<f64> = win2.iter().map(|f| f.2).collect();
+                    intv1.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+                    intv2.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+
+                    let med1 = crate::trace::frames::calculate_percentile(&intv1, 0.5);
+                    let med2 = crate::trace::frames::calculate_percentile(&intv2, 0.5);
+
+                    if (med2 - med1).abs() >= 4.0 || (med1 > 0.0 && (med2 - med1) / med1 >= 0.25) {
+                        let shift_time_s = win2.first().map(|f| f.1).unwrap_or(0.0);
+                        let fps1 = if med1 > 0.0 { (1000.0 / med1).round() } else { 0.0 };
+                        let fps2 = if med2 > 0.0 { (1000.0 / med2).round() } else { 0.0 };
+                        regime_summary = Some(format!(
+                            "From {:.1}s: avg {:.1} ms vs {:.1} ms before (~{:.0} fps vs {:.0})",
+                            shift_time_s, med2, med1, fps2, fps1
+                        ));
+                        break;
+                    }
+                    i += win;
+                }
+            }
+        }
+    }
+
     Ok(TraceSummary {
         trace_id: cache_key.to_string(),
         path: trace_path.to_string(),
@@ -856,12 +962,16 @@ fn read_summary_from_db(
         median_ms,
         p95_ms,
         p99_ms,
-        target_ms: 1000.0 / opts.target_fps,
+        target_ms,
         hitch_count,
         slow_region_count,
         verdict,
         detected_channels,
         missing_channels,
+        time_weighted_fps,
+        time_over_budget_pct,
+        frames_over_budget_pct,
+        regime_summary,
     })
 }
 

@@ -63,18 +63,40 @@ export function SummaryHeader({
   const handleCopyReport = () => {
     if (!summary) return;
 
-    let md = `# Unreal Engine Trace Diagnosis Report\n\n`;
+    const isSelection = Boolean(
+      selectedRange &&
+      summary &&
+      Math.max(...selectedRange) - Math.min(...selectedRange) < summary.durationS - 0.05
+    );
+
+    let md = isSelection
+      ? `# Unreal Engine Trace Diagnosis Report (Selected Window: ${selectedRange![0].toFixed(2)}s – ${selectedRange![1].toFixed(2)}s)\n\n`
+      : `# Unreal Engine Trace Diagnosis Report (Full Trace: 0.00s – ${summary.durationS.toFixed(2)}s)\n\n`;
+
     md += `**Trace File**: \`${summary.path || 'Unknown'}\`\n`;
     md += `**Engine Version**: ${summary.engineVersion || 'Unknown'}\n`;
     md += `**Duration**: ${formatDuration(summary.durationS)} (${(summary.frameCount ?? 0).toLocaleString()} frames)\n`;
 
-    if (selectedRange) {
-      const dur = (selectedRange[1] - selectedRange[0]).toFixed(2);
-      md += `**Selected Window**: ${selectedRange[0].toFixed(2)}s - ${selectedRange[1].toFixed(2)}s (${dur}s)\n`;
+    if (isSelection) {
+      const dur = (selectedRange![1] - selectedRange![0]).toFixed(2);
+      md += `**Selected Window**: ${selectedRange![0].toFixed(2)}s - ${selectedRange![1].toFixed(2)}s (${dur}s)\n`;
     }
 
-    md += `**Performance**: Median ${medianFps} FPS (${(summary.medianMs ?? 0).toFixed(1)} ms) | p95: ${(summary.p95Ms ?? 0).toFixed(1)} ms | p99: ${(summary.p99Ms ?? 0).toFixed(1)} ms\n`;
+    const timeWeightedFps = summary.timeWeightedFps
+      ? Math.round(summary.timeWeightedFps)
+      : summary.durationS > 0
+      ? Math.round(summary.frameCount / summary.durationS)
+      : medianFps;
+
+    md += `**Performance**: Median ${medianFps} FPS (${(summary.medianMs ?? 0).toFixed(1)} ms) | Time-weighted: ${timeWeightedFps} FPS | p95: ${(summary.p95Ms ?? 0).toFixed(1)} ms | p99: ${(summary.p99Ms ?? 0).toFixed(1)} ms\n`;
+    if (summary.timeOverBudgetPct != null || summary.framesOverBudgetPct != null) {
+      md += `**Budget Adherence**: ${(summary.timeOverBudgetPct ?? 0).toFixed(1)}% of time / ${(summary.framesOverBudgetPct ?? 0).toFixed(1)}% of frames over target (${summary.targetMs ? (1000 / summary.targetMs).toFixed(0) : targetFps} FPS target)\n`;
+    }
     md += `**Issues**: ${summary.hitchCount ?? 0} hitch(es)\n\n`;
+
+    if (summary.regimeSummary) {
+      md += `**Regime Summary**: ${summary.regimeSummary}\n\n`;
+    }
 
     if (summary.isEditorBuild) {
       md += `> **Note**: Captured in Unreal Editor session. Slate and Editor overhead are included.\n\n`;
@@ -88,7 +110,7 @@ export function SummaryHeader({
       md += `\n`;
     }
 
-    // Export one entry per issue with every occurrence (Item 10)
+    // Export one entry per issue with every occurrence
     if (issues && issues.length > 0) {
       md += `### Diagnosed Issues (${issues.length})\n\n`;
       issues.forEach((item, idx) => {
@@ -117,11 +139,22 @@ export function SummaryHeader({
         md += `#### ${idx + 1}. ${p?.title || f.ruleId}\n`;
         md += `- **Confidence**: ${p?.matchConfidence || 'N/A'}\n`;
         md += `- **Fix Likelihood**: ${p?.fixLikelihood || f.fixLikelihood}\n`;
-        if (isSustained) {
-          md += `- **Time Impact**: ${(p?.explainsMs ?? 0).toFixed(1)} ms/frame explained (of ${(p?.ofExcessMs ?? 0).toFixed(1)} ms/frame excess gap)\n\n`;
-        } else {
-          md += `- **Time Impact**: ${(p?.explainsMs ?? 0).toFixed(1)} ms explained (of ${(p?.ofExcessMs ?? 0).toFixed(1)} ms peak excess)\n\n`;
+        if (p?.actualTimeLostMs != null && p.actualTimeLostMs > 0) {
+          md += `- **Actual Time Lost**: ${p.actualTimeLostMs.toFixed(1)} ms\n`;
         }
+        if (isSustained) {
+          md += `- **Time Impact**: ${(p?.explainsMs ?? 0).toFixed(1)} ms/frame explained (of ${(p?.ofExcessMs ?? 0).toFixed(1)} ms/frame excess gap)\n`;
+        } else {
+          md += `- **Time Impact**: ${(p?.explainsMs ?? 0).toFixed(1)} ms explained (of ${(p?.ofExcessMs ?? 0).toFixed(1)} ms peak excess)\n`;
+        }
+
+        if (p?.contributors && p.contributors.length > 0) {
+          md += `- **Contributors**:\n`;
+          p.contributors.forEach((c) => {
+            md += `  - ${c.title || c.ruleId} (${c.threadRole}): +${c.explainsMs.toFixed(1)} ms (${c.sharePct.toFixed(0)}% share)\n`;
+          });
+        }
+        md += `\n`;
 
         if (p?.fixes && p.fixes.length > 0) {
           md += `**Step 1 Fix**:\n- ${p.fixes[0].text} (Effort: ${p.fixes[0].effort})\n\n`;
@@ -387,6 +420,56 @@ export function SummaryHeader({
           )}
         </div>
       </div>
+
+      {/* Summary Performance & Budget Banner */}
+      {summary && (
+        <div className="flex flex-wrap items-center gap-x-4 gap-y-1.5 w-full pt-2 border-t border-slate-800 text-xs">
+          <div className="flex items-center gap-1.5 text-slate-300">
+            <span className="text-slate-400">Median:</span>
+            <span className="font-mono font-bold text-slate-100">{medianFps} FPS</span>
+            <span className="text-slate-400 font-mono">({(summary.medianMs ?? 0).toFixed(1)} ms)</span>
+          </div>
+
+          <div className="flex items-center gap-1.5 text-slate-300">
+            <span className="text-slate-400">Time-weighted:</span>
+            <span className="font-mono font-bold text-sky-400">
+              {summary.timeWeightedFps ? Math.round(summary.timeWeightedFps) : summary.durationS > 0 ? Math.round(summary.frameCount / summary.durationS) : medianFps} FPS
+            </span>
+          </div>
+
+          <div className="flex items-center gap-1.5 text-slate-300">
+            <span className="text-slate-400">p95:</span>
+            <span className="font-mono text-slate-200">{(summary.p95Ms ?? 0).toFixed(1)} ms</span>
+            <span className="text-slate-400 pl-1">p99:</span>
+            <span className="font-mono text-slate-200">{(summary.p99Ms ?? 0).toFixed(1)} ms</span>
+          </div>
+
+          {(summary.timeOverBudgetPct != null || summary.framesOverBudgetPct != null) && (
+            <div className="flex items-center gap-1.5 text-slate-300">
+              <span className="text-slate-400">Over Budget:</span>
+              <span className={`font-mono font-bold ${(summary.timeOverBudgetPct ?? 0) > 20 ? 'text-amber-400' : 'text-slate-200'}`}>
+                {(summary.timeOverBudgetPct ?? 0).toFixed(1)}% time
+              </span>
+              <span className="text-slate-500">/</span>
+              <span className="font-mono text-slate-300">{(summary.framesOverBudgetPct ?? 0).toFixed(1)}% frames</span>
+            </div>
+          )}
+
+          <div className="flex items-center gap-1.5 text-slate-300">
+            <span className="text-slate-400">Hitches:</span>
+            <span className={`font-mono font-bold ${(summary.hitchCount ?? 0) > 0 ? 'text-rose-400' : 'text-emerald-400'}`}>
+              {summary.hitchCount ?? 0}
+            </span>
+          </div>
+
+          {summary.regimeSummary && (
+            <div className="flex items-center gap-1.5 text-xs px-2 py-0.5 rounded bg-slate-800/80 border border-slate-700 text-sky-300 font-mono">
+              <span className="text-sky-400 font-sans font-semibold">Regime:</span>
+              <span>{summary.regimeSummary}</span>
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }

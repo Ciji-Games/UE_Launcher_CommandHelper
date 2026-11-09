@@ -2,6 +2,7 @@ use std::collections::{HashMap, HashSet};
 use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
 
+use crate::trace::frames::is_hitch;
 use crate::trace::rules::{load_compiled_rules, CompiledRule};
 use crate::trace::store::{DbIssue, DbOccurrence};
 use crate::trace::subsystem::{classify, is_view_counter, load_subsystems, CompiledSubsystem};
@@ -11,6 +12,7 @@ pub const SUSTAINED_WINDOW_S: f64 = 2.0;
 pub const SUSTAINED_HOP_S: f64 = 0.5;
 pub const MIN_WINDOW_DURATION_S: f64 = 0.5;
 pub const ROLLING_MEDIAN_WINDOW_S: f64 = 1.0;
+pub const SUSTAINED_MERGE_GAP_S: f64 = 0.5;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
@@ -76,6 +78,20 @@ pub struct WaitingOnEntry {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct ContributorEntry {
+    pub rule_id: String,
+    pub title: String,
+    pub thread_role: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub timer_name: Option<String>,
+    pub explains_ms: f64,
+    pub share_pct: f64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct DiagnosisEvidence {
     pub subsystem: String,
     pub subsystem_ms_per_frame: f64,
@@ -88,6 +104,12 @@ pub struct DiagnosisEvidence {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub queue: Option<String>,
     pub sanity_violation: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub contributors: Vec<ContributorEntry>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub is_startup: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub is_aftermath: Option<bool>,
 }
 
 #[derive(Debug, Clone)]
@@ -273,13 +295,15 @@ pub fn pick_limiting(profile: &WindowProfile) -> Vec<(i64, String)> {
     for th in profile.threads.values() {
         let active_ms = (th.wall_ms_per_frame - th.wait_ms_per_frame).max(0.0);
         let name_lower = th.thread_name.to_lowercase();
+        let role_lower = th.role.to_lowercase();
         if th.role == "gpu" {
             if name_lower.contains("compute") {
                 compute_gpu = Some((th, active_ms));
             } else if name_lower.contains("graphics") || name_lower.contains("3d") || best_gpu.is_none() {
                 best_gpu = Some((th, active_ms));
             }
-        } else {
+        } else if role_lower == "game" || role_lower == "render" || role_lower == "rhi"
+            || name_lower.contains("gamethread") || name_lower.contains("renderthread") || name_lower.contains("rhithread") {
             cpu_threads.push((th, active_ms));
         }
     }
@@ -348,10 +372,28 @@ pub fn evaluate_profile(
         return occurrences;
     }
 
-    let _gap_ms = (profile.avg_ms - profile.target_ms).max(0.0);
+    struct EvaluatedCandidate {
+        rule_id: String,
+        rule_title: String,
+        is_fallback: bool,
+        thread_role: String,
+        key_timer_id: i64,
+        tot_excess: f64,
+        tot_excl: f64,
+        tot_base: f64,
+        share_of_thread_excess: f64,
+        views: f64,
+        base_views: f64,
+        leaves: Vec<EvidenceLeaf>,
+        sub_id: String,
+        queue_tag: Option<String>,
+        confidence: String,
+    }
 
-    for (th_id, role) in limiting_threads {
-        let th_profile = match profile.threads.get(&th_id) {
+    let mut candidates: Vec<EvaluatedCandidate> = Vec::new();
+
+    for (th_id, role) in &limiting_threads {
+        let th_profile = match profile.threads.get(th_id) {
             Some(t) => t,
             None => continue,
         };
@@ -376,7 +418,6 @@ pub fn evaluate_profile(
         }
 
         let denominator = th_profile.work_excess_ms.max(0.1);
-        let mut emitted_for_thread = false;
 
         // Sort subsystems by total excess descending
         let mut sub_totals: Vec<(String, f64, f64, f64, f64, f64, f64, f64, Vec<&LeafStat>)> = Vec::new();
@@ -419,7 +460,7 @@ pub fn evaluate_profile(
             let matched_rule = rules.iter().find(|r| {
                 let role_ok = r.def.when.threads.is_empty()
                     || r.def.when.threads.iter().any(|t| {
-                        t == &role
+                        t == role
                             || (t == "cpu" && (role == "game" || role == "render" || role == "rhi"))
                     });
                 if !role_ok {
@@ -461,17 +502,27 @@ pub fn evaluate_profile(
                 false
             });
 
-            let rule_id = matched_rule.map(|r| r.def.id.clone()).unwrap_or_else(|| {
-                if role == "gpu" {
-                    "gpu-bound".to_string()
-                } else if role == "render" || role == "rhi" {
-                    "render-cpu".to_string()
-                } else if scale == "spike" {
-                    "cpu-hitch".to_string()
-                } else {
-                    "sustained-cpu-bound".to_string()
+            let is_fallback = match &matched_rule {
+                Some(r) => {
+                    let id = &r.def.id;
+                    id == "gpu-bound" || id == "render-cpu" || id == "cpu-hitch" || id == "sustained-cpu-bound" || id == "unattributed-gap"
                 }
-            });
+                None => true,
+            };
+
+            let (rule_id, rule_title) = if let Some(r) = matched_rule {
+                (r.def.id.clone(), r.def.title.clone())
+            } else {
+                if role == "gpu" {
+                    ("gpu-bound".to_string(), "GPU Bottleneck".to_string())
+                } else if role == "render" || role == "rhi" {
+                    ("render-cpu".to_string(), "Render Thread Bottleneck".to_string())
+                } else if scale == "spike" {
+                    ("cpu-hitch".to_string(), "CPU Hitch".to_string())
+                } else {
+                    ("sustained-cpu-bound".to_string(), "Sustained CPU Bottleneck".to_string())
+                }
+            };
 
             let key_timer_id = leaves.first().map(|l| l.timer_id).unwrap_or(0);
             let leaf_evidence: Vec<EvidenceLeaf> = leaves
@@ -505,101 +556,202 @@ pub fn evaluate_profile(
                 confidence = "medium".to_string();
             }
 
-            let evidence_struct = DiagnosisEvidence {
-                subsystem: sub_id.clone(),
-                subsystem_ms_per_frame: tot_excl,
-                subsystem_baseline_ms_per_frame: tot_base,
-                share_of_thread_excess,
-                views_per_frame: views,
-                baseline_views_per_frame: base_views,
-                leaves: leaf_evidence,
-                waiting_on: wait_entries.clone(),
-                queue: queue_tag.clone(),
-                sanity_violation: profile.has_sanity_violation,
-            };
-
-            let evidence_json = serde_json::to_string(&evidence_struct).unwrap_or_default();
-
-            occurrences.push(EvaluatedOccurrence {
+            candidates.push(EvaluatedCandidate {
                 rule_id,
-                key_timer_id,
+                rule_title,
+                is_fallback,
                 thread_role: role.clone(),
-                scale: scale.to_string(),
-                frame_from: profile.frame_from,
-                frame_to: profile.frame_to,
-                start_s,
-                end_s,
-                peak_frame_ms: profile.peak_ms,
-                mean_excess_ms: tot_excess,
-                sum_excess_ms: tot_excess * profile.frames_count as f64,
+                key_timer_id,
+                tot_excess,
+                tot_excl,
+                tot_base,
+                share_of_thread_excess,
+                views,
+                base_views,
+                leaves: leaf_evidence,
+                sub_id,
+                queue_tag: queue_tag.clone(),
                 confidence,
-                evidence_json,
             });
-
-            emitted_for_thread = true;
-        }
-
-        // FR-5 Never empty fallback
-        if !emitted_for_thread && profile.avg_ms > profile.target_ms * 1.05 {
-            let mut all_leaves: Vec<&LeafStat> = th_profile.timers.iter().filter(|t| !is_wait_timer(&t.name, &t.kind)).collect();
-            all_leaves.sort_by(|a, b| {
-                b.excess_ms
-                    .partial_cmp(&a.excess_ms)
-                    .unwrap_or(std::cmp::Ordering::Equal)
-                    .then_with(|| b.excl_ms.partial_cmp(&a.excl_ms).unwrap_or(std::cmp::Ordering::Equal))
-            });
-
-            if !all_leaves.is_empty() {
-                let key_timer_id = all_leaves[0].timer_id;
-                let leaf_evidence: Vec<EvidenceLeaf> = all_leaves
-                    .iter()
-                    .take(5)
-                    .map(|l| EvidenceLeaf {
-                        timer: l.name.clone(),
-                        path: l.path.clone(),
-                        ms_per_frame: l.excl_ms,
-                        baseline_ms_per_frame: l.base_ms,
-                        calls_per_frame: l.calls,
-                        baseline_calls_per_frame: l.base_calls,
-                    })
-                    .collect();
-
-                let tot_excess = th_profile.work_excess_ms;
-                let share_of_thread_excess = (tot_excess / denominator).clamp(0.0, 1.0);
-
-                let evidence_struct = DiagnosisEvidence {
-                    subsystem: "other".to_string(),
-                    subsystem_ms_per_frame: th_profile.wall_ms_per_frame - th_profile.wait_ms_per_frame,
-                    subsystem_baseline_ms_per_frame: 0.0,
-                    share_of_thread_excess,
-                    views_per_frame: 0.0,
-                    baseline_views_per_frame: 0.0,
-                    leaves: leaf_evidence,
-                    waiting_on: wait_entries.clone(),
-                    queue: queue_tag.clone(),
-                    sanity_violation: profile.has_sanity_violation,
-                };
-
-                let evidence_json = serde_json::to_string(&evidence_struct).unwrap_or_default();
-
-                occurrences.push(EvaluatedOccurrence {
-                    rule_id: "unattributed-gap".to_string(),
-                    key_timer_id,
-                    thread_role: role.clone(),
-                    scale: scale.to_string(),
-                    frame_from: profile.frame_from,
-                    frame_to: profile.frame_to,
-                    start_s,
-                    end_s,
-                    peak_frame_ms: profile.peak_ms,
-                    mean_excess_ms: tot_excess,
-                    sum_excess_ms: tot_excess * profile.frames_count as f64,
-                    confidence: "medium".to_string(),
-                    evidence_json,
-                });
-            }
         }
     }
+
+    let is_startup = scale == "spike" && profile.frame_from == 0 && profile.frame_to <= 12 && start_s < 0.55;
+
+    // Pick primary limiting thread
+    let primary_limiting_role = limiting_threads.first().map(|(_, r)| r.as_str()).unwrap_or("game");
+
+    // Has any specific (non-fallback) match?
+    let has_specific = candidates.iter().any(|c| !c.is_fallback);
+
+    // Filter candidates to suppress generic fallbacks when specific rules matched or role mismatch
+    let mut filtered_candidates: Vec<EvaluatedCandidate> = if has_specific {
+        candidates.into_iter().filter(|c| {
+            if c.is_fallback {
+                false
+            } else {
+                true
+            }
+        }).collect()
+    } else {
+        candidates.into_iter().filter(|c| c.thread_role == primary_limiting_role).collect()
+    };
+
+    if filtered_candidates.is_empty() {
+        // Fallback: unattributed gap on limiting thread
+        if profile.avg_ms > profile.target_ms * 1.05 {
+            let th_id = limiting_threads[0].0;
+            let role = &limiting_threads[0].1;
+            if let Some(th_profile) = profile.threads.get(&th_id) {
+                let queue_tag = if role == "gpu" {
+                    let lower = th_profile.thread_name.to_lowercase();
+                    if lower.contains("compute") {
+                        Some("compute".to_string())
+                    } else {
+                        Some("graphics".to_string())
+                    }
+                } else {
+                    None
+                };
+
+                let mut all_leaves: Vec<&LeafStat> = th_profile.timers.iter().filter(|t| !is_wait_timer(&t.name, &t.kind)).collect();
+                all_leaves.sort_by(|a, b| {
+                    b.excess_ms
+                        .partial_cmp(&a.excess_ms)
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                        .then_with(|| b.excl_ms.partial_cmp(&a.excl_ms).unwrap_or(std::cmp::Ordering::Equal))
+                });
+
+                if !all_leaves.is_empty() {
+                    let key_timer_id = all_leaves[0].timer_id;
+                    let leaf_evidence: Vec<EvidenceLeaf> = all_leaves
+                        .iter()
+                        .take(5)
+                        .map(|l| EvidenceLeaf {
+                            timer: l.name.clone(),
+                            path: l.path.clone(),
+                            ms_per_frame: l.excl_ms,
+                            baseline_ms_per_frame: l.base_ms,
+                            calls_per_frame: l.calls,
+                            baseline_calls_per_frame: l.base_calls,
+                        })
+                        .collect();
+
+                    let tot_excess = th_profile.work_excess_ms;
+                    let denominator = th_profile.work_excess_ms.max(0.1);
+                    let share_of_thread_excess = (tot_excess / denominator).clamp(0.0, 1.0);
+
+                    let evidence_struct = DiagnosisEvidence {
+                        subsystem: "other".to_string(),
+                        subsystem_ms_per_frame: th_profile.wall_ms_per_frame - th_profile.wait_ms_per_frame,
+                        subsystem_baseline_ms_per_frame: 0.0,
+                        share_of_thread_excess,
+                        views_per_frame: 0.0,
+                        baseline_views_per_frame: 0.0,
+                        leaves: leaf_evidence,
+                        waiting_on: wait_entries.clone(),
+                        queue: queue_tag.clone(),
+                        sanity_violation: profile.has_sanity_violation,
+                        contributors: Vec::new(),
+                        is_startup: if is_startup { Some(true) } else { None },
+                        is_aftermath: None,
+                    };
+
+                    let evidence_json = serde_json::to_string(&evidence_struct).unwrap_or_default();
+
+                    occurrences.push(EvaluatedOccurrence {
+                        rule_id: if is_startup { "startup-warmup".to_string() } else { "unattributed-gap".to_string() },
+                        key_timer_id,
+                        thread_role: role.clone(),
+                        scale: scale.to_string(),
+                        frame_from: profile.frame_from,
+                        frame_to: profile.frame_to,
+                        start_s,
+                        end_s,
+                        peak_frame_ms: profile.peak_ms,
+                        mean_excess_ms: tot_excess,
+                        sum_excess_ms: tot_excess * profile.frames_count as f64,
+                        confidence: "low".to_string(),
+                        evidence_json,
+                    });
+                }
+            }
+        }
+        return occurrences;
+    }
+
+    // Sort remaining candidates by tot_excess descending, prioritizing limiting role
+    println!("DEBUG 404 candidates for window {}..{}:", profile.frame_from, profile.frame_to);
+    for c in &filtered_candidates {
+        println!("  candidate: rule='{}' role='{}' is_fb={} excess={:.1}ms", c.rule_id, c.thread_role, c.is_fallback, c.tot_excess);
+    }
+    filtered_candidates.sort_by(|a, b| {
+        let a_role_match = if a.thread_role == primary_limiting_role { 1 } else { 0 };
+        let b_role_match = if b.thread_role == primary_limiting_role { 1 } else { 0 };
+        b_role_match.cmp(&a_role_match)
+            .then_with(|| b.tot_excess.partial_cmp(&a.tot_excess).unwrap_or(std::cmp::Ordering::Equal))
+    });
+
+    let primary = filtered_candidates.remove(0);
+
+    let mut contributors = Vec::new();
+    for c in filtered_candidates {
+        let share_pct = if primary.tot_excess > 0.0 {
+            (c.tot_excess / primary.tot_excess * 100.0).clamp(0.0, 100.0)
+        } else {
+            0.0
+        };
+
+        contributors.push(ContributorEntry {
+            rule_id: c.rule_id,
+            title: c.rule_title,
+            thread_role: c.thread_role,
+            timer_name: c.leaves.first().map(|l| l.timer.clone()),
+            explains_ms: c.tot_excess,
+            share_pct,
+            note: None,
+        });
+    }
+
+    let rule_id = if is_startup {
+        "startup-warmup".to_string()
+    } else {
+        primary.rule_id
+    };
+
+    let evidence_struct = DiagnosisEvidence {
+        subsystem: primary.sub_id,
+        subsystem_ms_per_frame: primary.tot_excl,
+        subsystem_baseline_ms_per_frame: primary.tot_base,
+        share_of_thread_excess: primary.share_of_thread_excess,
+        views_per_frame: primary.views,
+        baseline_views_per_frame: primary.base_views,
+        leaves: primary.leaves,
+        waiting_on: wait_entries,
+        queue: primary.queue_tag,
+        sanity_violation: profile.has_sanity_violation,
+        contributors,
+        is_startup: if is_startup { Some(true) } else { None },
+        is_aftermath: None,
+    };
+
+    let evidence_json = serde_json::to_string(&evidence_struct).unwrap_or_default();
+
+    occurrences.push(EvaluatedOccurrence {
+        rule_id,
+        key_timer_id: primary.key_timer_id,
+        thread_role: primary.thread_role,
+        scale: scale.to_string(),
+        frame_from: profile.frame_from,
+        frame_to: profile.frame_to,
+        start_s,
+        end_s,
+        peak_frame_ms: profile.peak_ms,
+        mean_excess_ms: primary.tot_excess,
+        sum_excess_ms: primary.tot_excess * profile.frames_count as f64,
+        confidence: primary.confidence,
+        evidence_json,
+    });
 
     occurrences
 }
@@ -816,8 +968,7 @@ pub fn diagnose_chunk(
         };
 
         let rolling_med = *rolling_median_map.get(&f_idx).unwrap_or(&16.6);
-        let spike_threshold = (target_ms * 1.5).max(1.8 * rolling_med);
-        let is_spike = f_item.interval_ms > spike_threshold || f_item.interval_ms > 100.0;
+        let is_spike = is_hitch(f_item.interval_ms, rolling_med, target_ms);
 
         if is_spike {
             curr_spike_frames.push(f_idx);
@@ -920,7 +1071,7 @@ pub fn diagnose_chunk(
     }
 
     // 3. Merge intra-chunk occurrences with same signature and gap tolerance
-    let merged_occurrences = merge_intra_chunk_occurrences(raw_occurrences, &frames_map, &frame_timers, &baselines);
+    let merged_occurrences = merge_intra_chunk_occurrences(raw_occurrences, &frames_map, &frame_timers, &baselines, target_ms);
 
     // 4. Save atomically to SQLite
     let tx = conn.transaction().map_err(|e| e.to_string())?;
@@ -1005,7 +1156,7 @@ pub fn diagnose_chunk(
     tx.commit().map_err(|e| e.to_string())?;
 
     // 5. Cross-chunk boundary stitching
-    let _ = stitch_chunk_boundaries(conn, chunk_id);
+    let _ = stitch_chunk_boundaries(conn, chunk_id, target_ms);
 
     Ok(merged_occurrences.len())
 }
@@ -1112,6 +1263,7 @@ fn merge_intra_chunk_occurrences(
     frames_map: &HashMap<i64, FrameItem>,
     frame_timers: &HashMap<i64, Vec<TimerItem>>,
     baselines: &HashMap<(i64, i64), (f64, f64, f64)>,
+    target_ms: f64,
 ) -> Vec<EvaluatedOccurrence> {
     if raw.is_empty() {
         return Vec::new();
@@ -1129,13 +1281,18 @@ fn merge_intra_chunk_occurrences(
     let mut merged: Vec<EvaluatedOccurrence> = Vec::new();
 
     for occ in raw {
-        let gap_tolerance = if occ.scale == "spike" { 2 } else { 30 }; // 1 hop tolerance for sustained
+        let max_gap_s = if occ.scale == "spike" {
+            (target_ms * 2.5) / 1000.0 // Allow up to ~2-3 target frames gap in seconds
+        } else {
+            SUSTAINED_MERGE_GAP_S // 0.5 s gap tolerance for sustained
+        };
 
         let can_merge = if let Some(last) = merged.last_mut() {
+            let time_gap = (occ.start_s - last.end_s).max(0.0);
             last.rule_id == occ.rule_id
                 && last.thread_role == occ.thread_role
                 && last.scale == occ.scale
-                && occ.frame_from <= last.frame_to + gap_tolerance + 1
+                && time_gap <= max_gap_s
         } else {
             false
         };
@@ -1193,7 +1350,7 @@ fn recompute_occurrence_metrics(
     (peak_frame_ms, sum_excess_ms, mean_excess_ms)
 }
 
-fn stitch_chunk_boundaries(conn: &mut Connection, chunk_id: i64) -> Result<(), String> {
+fn stitch_chunk_boundaries(conn: &mut Connection, chunk_id: i64, target_ms: f64) -> Result<(), String> {
     if chunk_id <= 0 {
         return Ok(());
     }
@@ -1220,13 +1377,21 @@ fn stitch_chunk_boundaries(conn: &mut Connection, chunk_id: i64) -> Result<(), S
         Err(_) => return Ok(()),
     };
 
-    let mut curr_occs: Vec<(i64, i64, i64, i64, String, f64, f64, f64, f64)> = Vec::new();
+    let curr_start_s: f64 = conn.query_row(
+        "SELECT start_s FROM frames WHERE idx = ?1",
+        params![curr_from],
+        |r| r.get(0),
+    ).unwrap_or(0.0);
+
+    let search_window_s = SUSTAINED_MERGE_GAP_S.max(1.0);
+
+    let mut curr_occs: Vec<(i64, i64, i64, i64, String, f64, f64, f64, f64, f64, String)> = Vec::new();
     {
         let mut stmt = conn
-            .prepare("SELECT occurrence_id, issue_id, frame_from, frame_to, confidence, peak_frame_ms, mean_excess_ms, sum_excess_ms, end_s FROM occurrence WHERE chunk_id = ?1 AND frame_from <= ?2")
+            .prepare("SELECT o.occurrence_id, o.issue_id, o.frame_from, o.frame_to, o.confidence, o.peak_frame_ms, o.mean_excess_ms, o.sum_excess_ms, o.start_s, o.end_s, i.scale FROM occurrence o JOIN issue i ON i.issue_id = o.issue_id WHERE o.chunk_id = ?1 AND o.start_s <= ?2")
             .map_err(|e| e.to_string())?;
         let rows = stmt
-            .query_map(params![chunk_id, curr_from + 30], |r| {
+            .query_map(params![chunk_id, curr_start_s + search_window_s], |r| {
                 Ok((
                     r.get(0)?,
                     r.get(1)?,
@@ -1237,6 +1402,8 @@ fn stitch_chunk_boundaries(conn: &mut Connection, chunk_id: i64) -> Result<(), S
                     r.get(6)?,
                     r.get(7)?,
                     r.get(8)?,
+                    r.get(9)?,
+                    r.get(10)?,
                 ))
             })
             .map_err(|e| e.to_string())?;
@@ -1245,13 +1412,13 @@ fn stitch_chunk_boundaries(conn: &mut Connection, chunk_id: i64) -> Result<(), S
         }
     }
 
-    let mut prev_occs: Vec<(i64, i64, i64, i64, String, f64, f64, f64, f64)> = Vec::new();
+    let mut prev_occs: Vec<(i64, i64, i64, i64, String, f64, f64, f64, f64, f64, String)> = Vec::new();
     {
         let mut stmt = conn
-            .prepare("SELECT occurrence_id, issue_id, frame_from, frame_to, confidence, peak_frame_ms, mean_excess_ms, sum_excess_ms, end_s FROM occurrence WHERE chunk_id = ?1 AND frame_to >= ?2")
+            .prepare("SELECT o.occurrence_id, o.issue_id, o.frame_from, o.frame_to, o.confidence, o.peak_frame_ms, o.mean_excess_ms, o.sum_excess_ms, o.start_s, o.end_s, i.scale FROM occurrence o JOIN issue i ON i.issue_id = o.issue_id WHERE o.chunk_id = ?1 AND o.end_s >= ?2")
             .map_err(|e| e.to_string())?;
         let rows = stmt
-            .query_map(params![prev_chunk_id, curr_from - 31], |r| {
+            .query_map(params![prev_chunk_id, curr_start_s - search_window_s], |r| {
                 Ok((
                     r.get(0)?,
                     r.get(1)?,
@@ -1262,6 +1429,8 @@ fn stitch_chunk_boundaries(conn: &mut Connection, chunk_id: i64) -> Result<(), S
                     r.get(6)?,
                     r.get(7)?,
                     r.get(8)?,
+                    r.get(9)?,
+                    r.get(10)?,
                 ))
             })
             .map_err(|e| e.to_string())?;
@@ -1270,11 +1439,17 @@ fn stitch_chunk_boundaries(conn: &mut Connection, chunk_id: i64) -> Result<(), S
         }
     }
 
-    for (p_occ_id, p_issue_id, _p_from, p_to, _p_conf, p_peak, _p_mean, p_sum, p_end_s) in &prev_occs {
-        for (c_occ_id, c_issue_id, _c_from, c_to, c_conf, c_peak, _c_mean, c_sum, c_end_s) in &curr_occs {
+    for (p_occ_id, p_issue_id, _p_from, p_to, _p_conf, p_peak, _p_mean, p_sum, _p_start_s, p_end_s, p_scale) in &prev_occs {
+        for (c_occ_id, c_issue_id, _c_from, c_to, c_conf, c_peak, _c_mean, c_sum, c_start_s, c_end_s, _c_scale) in &curr_occs {
             if p_issue_id == c_issue_id && *c_occ_id != *p_occ_id {
-                let gap = _c_from - p_to;
-                if gap <= 31 && gap >= -31 {
+                let max_gap_s = if p_scale == "spike" {
+                    (target_ms * 2.5) / 1000.0
+                } else {
+                    SUSTAINED_MERGE_GAP_S
+                };
+
+                let time_gap = (c_start_s - p_end_s).max(0.0);
+                if time_gap <= max_gap_s {
                     let merged_to = (*p_to).max(*c_to);
                     let merged_peak = p_peak.max(*c_peak);
                     let merged_end_s = p_end_s.max(*c_end_s);
@@ -1482,12 +1657,11 @@ mod tests {
         // Check that no occurrence is keyed on wait timer
         assert!(!occs.iter().any(|o| o.rule_id == "taskgraph-wait" || o.rule_id == "cpu-hitch" && o.thread_role == "rhi"));
 
-        // Check Niagara on compute queue is surfaced
-        assert!(occs.iter().any(|o| o.rule_id == "gpu-niagara-fx"));
-
         // Check Nanite / GPU occurrences
-        let gpu_occ = occs.iter().find(|o| o.thread_role == "gpu" && o.rule_id != "gpu-niagara-fx").expect("Should have GPU graphics occurrence");
+        let gpu_occ = occs.iter().find(|o| o.thread_role == "gpu").expect("Should have GPU graphics occurrence");
         let parsed_ev: DiagnosisEvidence = serde_json::from_str(&gpu_occ.evidence_json).unwrap();
+        assert!(gpu_occ.rule_id == "gpu-shadow-views" || gpu_occ.rule_id == "gpu-nanite");
+        assert!(parsed_ev.contributors.iter().any(|c| c.rule_id == "gpu-niagara-fx") || occs.iter().any(|o| o.rule_id == "gpu-niagara-fx"));
         assert_eq!(parsed_ev.subsystem, "nanite");
         assert!(parsed_ev.share_of_thread_excess >= 0.5);
         assert_eq!(parsed_ev.views_per_frame, 33.0);
@@ -1675,8 +1849,7 @@ mod tests {
             window_intervals.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
             let med = window_intervals[window_intervals.len() / 2];
 
-            let spike_threshold = (target_ms * 1.5f64).max(1.8f64 * med);
-            let is_spike = frames_map[&f_idx].interval_ms > spike_threshold || frames_map[&f_idx].interval_ms > 100.0;
+            let is_spike = is_hitch(frames_map[&f_idx].interval_ms, med, target_ms);
 
             if is_spike {
                 curr_spike_frames.push(f_idx);
@@ -1765,28 +1938,206 @@ mod tests {
     }
 
     #[test]
-    fn test_diagnose_real_trace_cache_if_present() {
-        let dir = std::path::Path::new(r"C:\Users\hp\AppData\Roaming\com.ue-launcher.app\trace_cache");
-        if !dir.exists() { return; }
-        let mut db_file = None;
-        if let Ok(entries) = std::fs::read_dir(dir) {
-            for entry in entries.flatten() {
-                let p = entry.path();
-                if p.extension().map_or(false, |ext| ext == "db") {
-                    db_file = Some(p);
-                    break;
+    fn test_one_episode_game_thread_dominance_yields_one_primary_no_gpu_bound() {
+        let rules = load_compiled_rules();
+        let subsystems = load_subsystems();
+
+        let mut threads = HashMap::new();
+        let game_th = ThreadProfile {
+            thread_id: 1,
+            thread_name: "GameThread".to_string(),
+            role: "game".to_string(),
+            wall_ms_per_frame: 100.0,
+            wait_ms_per_frame: 0.0,
+            work_excess_ms: 80.0,
+            timers: vec![
+                LeafStat {
+                    timer_id: 10,
+                    name: "CollectGarbage".to_string(),
+                    path: "Engine/Source/Runtime/CoreUObject/Private/UObject/GarbageCollection.cpp".to_string(),
+                    kind: "work".to_string(),
+                    subsystem: "gc".to_string(),
+                    excl_ms: 60.0,
+                    base_ms: 0.0,
+                    excess_ms: 60.0,
+                    calls: 1.0,
+                    base_calls: 0.0,
+                    frames_exceeded: 1,
+                },
+                LeafStat {
+                    timer_id: 11,
+                    name: "LoadPackage".to_string(),
+                    path: "Engine/Source/Runtime/CoreUObject/Private/UObject/UObjectGlobals.cpp".to_string(),
+                    kind: "work".to_string(),
+                    subsystem: "loading".to_string(),
+                    excl_ms: 20.0,
+                    base_ms: 0.0,
+                    excess_ms: 20.0,
+                    calls: 1.0,
+                    base_calls: 0.0,
+                    frames_exceeded: 1,
+                },
+            ],
+        };
+        let gpu_th = ThreadProfile {
+            thread_id: 2,
+            thread_name: "GPU0-Graphics0".to_string(),
+            role: "gpu".to_string(),
+            wall_ms_per_frame: 100.0,
+            wait_ms_per_frame: 0.0,
+            work_excess_ms: 80.0,
+            timers: vec![
+                LeafStat {
+                    timer_id: 20,
+                    name: "Frame".to_string(),
+                    path: "GPU/Frame".to_string(),
+                    kind: "work".to_string(),
+                    subsystem: "other".to_string(),
+                    excl_ms: 100.0,
+                    base_ms: 16.0,
+                    excess_ms: 84.0,
+                    calls: 1.0,
+                    base_calls: 1.0,
+                    frames_exceeded: 1,
+                },
+            ],
+        };
+        threads.insert(1, game_th);
+        threads.insert(2, gpu_th);
+
+        let profile = WindowProfile {
+            frame_from: 100,
+            frame_to: 105,
+            frames_count: 5,
+            avg_ms: 100.0,
+            peak_ms: 120.0,
+            target_ms: 16.67,
+            rolling_median_ms: 16.67,
+            has_sanity_violation: false,
+            threads,
+        };
+
+        let occs = evaluate_profile(&profile, &rules, &subsystems, "spike", 10.0, 10.5);
+        assert_eq!(occs.len(), 1, "Must emit exactly ONE primary occurrence for episode");
+        let primary = &occs[0];
+        assert_eq!(primary.rule_id, "gc-hitch", "Primary cause must be gc-hitch");
+        assert_eq!(primary.thread_role, "game", "Primary thread must be game thread");
+
+        // Verify contributors contain sync-load and no gpu-bound occurrence was emitted
+        let ev: DiagnosisEvidence = serde_json::from_str(&primary.evidence_json).unwrap();
+        assert!(ev.contributors.iter().any(|c| c.rule_id == "sync-load"), "sync-load must be a contributor");
+        assert!(!occs.iter().any(|o| o.rule_id == "gpu-bound"), "gpu-bound must NOT be emitted as a separate finding");
+    }
+
+    #[test]
+    fn test_startup_warmup_segment_labelled() {
+        let rules = load_compiled_rules();
+        let subsystems = load_subsystems();
+
+        let mut threads = HashMap::new();
+        let gpu_th = ThreadProfile {
+            thread_id: 2,
+            thread_name: "GPU0-Graphics0".to_string(),
+            role: "gpu".to_string(),
+            wall_ms_per_frame: 200.0,
+            wait_ms_per_frame: 0.0,
+            work_excess_ms: 180.0,
+            timers: vec![
+                LeafStat {
+                    timer_id: 20,
+                    name: "PostProcess".to_string(),
+                    path: "GPU/PostProcess".to_string(),
+                    kind: "work".to_string(),
+                    subsystem: "postprocess".to_string(),
+                    excl_ms: 150.0,
+                    base_ms: 5.0,
+                    excess_ms: 145.0,
+                    calls: 1.0,
+                    base_calls: 1.0,
+                    frames_exceeded: 3,
+                },
+            ],
+        };
+        threads.insert(2, gpu_th);
+
+        let profile = WindowProfile {
+            frame_from: 0,
+            frame_to: 5,
+            frames_count: 5,
+            avg_ms: 200.0,
+            peak_ms: 348.0,
+            target_ms: 16.67,
+            rolling_median_ms: 16.67,
+            has_sanity_violation: false,
+            threads,
+        };
+
+        let occs = evaluate_profile(&profile, &rules, &subsystems, "spike", 0.0, 0.4);
+        assert_eq!(occs.len(), 1);
+        assert_eq!(occs[0].rule_id, "startup-warmup");
+        let ev: DiagnosisEvidence = serde_json::from_str(&occs[0].evidence_json).unwrap();
+        assert_eq!(ev.is_startup, Some(true));
+    }
+
+    #[test]
+    fn test_graph_and_diagnosis_agree_on_hitches() {
+        use crate::trace::csv_ingest::ProcessedFrame;
+        use crate::trace::frames::{calculate_robust_stats, detect_episodes, is_hitch, AnalysisOptions};
+
+        for &fps in &[30.0, 60.0, 144.0] {
+            let target_ms = 1000.0 / fps;
+            let mut frames = Vec::new();
+            for i in 0..100 {
+                let interval = if i == 20 || i == 50 || i == 80 {
+                    target_ms * 3.0 // Hitch
+                } else {
+                    target_ms * 0.95 // Normal
+                };
+                frames.push(ProcessedFrame {
+                    idx: i,
+                    engine_frame: None,
+                    start_s: i as f64 * (target_ms / 1000.0),
+                    interval_ms: interval,
+                    game_ms: Some(interval * 0.5),
+                    render_ms: Some(interval * 0.5),
+                    gpu_ms: Some(interval * 0.8),
+                });
+            }
+
+            let stats = calculate_robust_stats(&frames);
+            let opts = AnalysisOptions {
+                target_fps: fps,
+                ..Default::default()
+            };
+
+            let episodes = detect_episodes(&frames, &stats, &opts);
+            let graph_hitch_frames: Vec<i64> = episodes
+                .iter()
+                .filter(|e| e.kind == "hitch")
+                .map(|e| e.frame_from)
+                .collect();
+
+            // Check is_hitch direct evaluation matches graph hitches
+            let mut diag_hitch_frames = Vec::new();
+            let local_meds = crate::trace::frames::calculate_local_medians(&frames, 1.0, stats.median_ms);
+            for (idx, f) in frames.iter().enumerate() {
+                if is_hitch(f.interval_ms, local_meds[idx], target_ms) {
+                    diag_hitch_frames.push(f.idx);
                 }
             }
+
+            assert_eq!(
+                graph_hitch_frames,
+                vec![20, 50, 80],
+                "Graph hitches mismatch at fps {}",
+                fps
+            );
+            assert_eq!(
+                diag_hitch_frames,
+                graph_hitch_frames,
+                "Diagnosis spikes and Graph hitches must agree at fps {}",
+                fps
+            );
         }
-        let p = match db_file { Some(p) => p, None => return };
-        let mut conn = rusqlite::Connection::open(&p).unwrap();
-        let _ = conn.execute("DELETE FROM occurrence", []);
-        let _ = conn.execute("DELETE FROM issue", []);
-        let _ = conn.execute("UPDATE chunk_state SET state = 'queued', done_at = NULL", []);
-        
-        let c0 = diagnose_chunk(&mut conn, 0, 60.0).unwrap();
-        let c1 = diagnose_chunk(&mut conn, 1, 60.0).unwrap();
-        let c2 = diagnose_chunk(&mut conn, 2, 60.0).unwrap();
-        assert!(c0 + c1 + c2 >= 0);
     }
 }

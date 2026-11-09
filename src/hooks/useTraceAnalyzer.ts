@@ -51,6 +51,8 @@ export function useTraceAnalyzer() {
 
   const [bookmarks, setBookmarks] = useState<TraceBookmark[]>([]);
   const [selectedRange, setSelectedRange] = useState<[number, number] | null>(null);
+  const selectedRangeRef = useRef<[number, number] | null>(null);
+  selectedRangeRef.current = selectedRange;
   const [rangeStats, setRangeStats] = useState<RangeStatisticsResponse | null>(null);
   const [rangeStatsLoading, setRangeStatsLoading] = useState(false);
 
@@ -144,7 +146,24 @@ export function useTraceAnalyzer() {
     });
 
     listen('trace-analyzer:findings-ready', () => {
-      // Diagnostic findings ready
+      if (summary?.traceId) {
+        invoke<Finding[]>('trace_get_findings', { traceId: summary.traceId })
+          .then((fnds) => {
+            const parsedFindings: Finding[] = fnds.map((f) => {
+              try {
+                const parsed = JSON.parse(f.payload) as FindingPayload;
+                return { ...f, parsedPayload: parsed };
+              } catch {
+                return f;
+              }
+            });
+            setFindings(parsedFindings);
+          })
+          .catch(() => {});
+        if (selectedRangeRef.current) {
+          fetchRangeStatistics(selectedRangeRef.current[0], selectedRangeRef.current[1]);
+        }
+      }
     }).then((fn) => {
       unlistenFindings = fn;
     });
@@ -157,6 +176,22 @@ export function useTraceAnalyzer() {
         invoke<IssueWithOccurrences[]>('trace_get_issues', { traceId: summary.traceId })
           .then((iss) => setIssues(iss))
           .catch(() => {});
+        invoke<Finding[]>('trace_get_findings', { traceId: summary.traceId })
+          .then((fnds) => {
+            const parsedFindings: Finding[] = fnds.map((f) => {
+              try {
+                const parsed = JSON.parse(f.payload) as FindingPayload;
+                return { ...f, parsedPayload: parsed };
+              } catch {
+                return f;
+              }
+            });
+            setFindings(parsedFindings);
+          })
+          .catch(() => {});
+        if (selectedRangeRef.current) {
+          fetchRangeStatistics(selectedRangeRef.current[0], selectedRangeRef.current[1]);
+        }
       }
     }).then((fn) => {
       unlistenChunkDone = fn;
@@ -456,11 +491,32 @@ export function useTraceAnalyzer() {
           options: newOpts,
         });
         setSummary(res);
+
+        const [eps, fnds] = await Promise.all([
+          invoke<Episode[]>('trace_get_episodes', { traceId: res.traceId }),
+          invoke<Finding[]>('trace_get_findings', { traceId: res.traceId }),
+        ]);
+
+        const parsedFindings: Finding[] = fnds.map((f) => {
+          try {
+            const parsed = JSON.parse(f.payload) as FindingPayload;
+            return { ...f, parsedPayload: parsed };
+          } catch {
+            return f;
+          }
+        });
+
+        setEpisodes(eps);
+        setFindings(parsedFindings);
+
+        if (selectedRangeRef.current) {
+          fetchRangeStatistics(selectedRangeRef.current[0], selectedRangeRef.current[1]);
+        }
       } catch (e) {
         console.error('Failed to re-analyze trace:', e);
       }
     },
-    [summary, isAnalyzing, options, insightsInfo]
+    [summary, isAnalyzing, options, insightsInfo, fetchRangeStatistics]
   );
 
   // Clear all local trace cache databases
