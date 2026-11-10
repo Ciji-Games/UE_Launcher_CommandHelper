@@ -36,6 +36,13 @@ const TOOLS = [
 
 type ToolId = (typeof TOOLS)[number]['id'];
 
+const HIDE_OUTPUT_LOG_TOOL_IDS: readonly ToolId[] = [
+  'shader',
+  'log-analyzer',
+  'trace-analyzer',
+  'include-finder',
+];
+
 function ToolIcon({ id }: { id: ToolId }) {
   const paths: Record<ToolId, string> = {
     'include-finder': 'M10 20l4-16m4 4l4 4-4 4M6 16l-4-4 4-4',
@@ -72,7 +79,10 @@ export function ToolBoxTab({ initialRegenerateProjectPath }: { initialRegenerate
   const [userToggledLog, setUserToggledLog] = useState<boolean | null>(null);
   const { running, shouldOpenOutputLog } = useProgress();
 
-  const showOutputLog = userToggledLog !== null ? userToggledLog : Boolean(running && shouldOpenOutputLog);
+  const isOutputLogHidden = HIDE_OUTPUT_LOG_TOOL_IDS.includes(selectedToolId);
+  const showOutputLog =
+    !isOutputLogHidden &&
+    (userToggledLog !== null ? userToggledLog : Boolean(running && shouldOpenOutputLog));
 
   const selectedTool = TOOLS.find((t) => t.id === selectedToolId);
   const SelectedPanel = selectedTool?.panel ?? RegenerateProjectPanel;
@@ -129,31 +139,33 @@ export function ToolBoxTab({ initialRegenerateProjectPath }: { initialRegenerate
       </div>
 
       {/* Output Log - collapsible, collapsed by default, expanded when a tool runs */}
-      <div
-        className={`flex flex-col min-w-0 transition-all overflow-hidden rounded-lg border border-slate-600/60 bg-slate-800/40 ${
-          showOutputLog ? 'flex-[4_1_0] min-h-0' : 'shrink-0'
-        }`}
-      >
-        <button
-          type="button"
-          onClick={() => setUserToggledLog(!showOutputLog)}
-          className="flex items-center justify-between w-full px-4 py-2 hover:bg-slate-700/50 text-left transition-colors"
+      {!isOutputLogHidden && (
+        <div
+          className={`flex flex-col min-w-0 transition-all overflow-hidden rounded-lg border border-slate-600/60 bg-slate-800/40 ${
+            showOutputLog ? 'flex-[4_1_0] min-h-0' : 'shrink-0'
+          }`}
         >
-          <span className="text-sm font-medium text-slate-300">Output Log</span>
-          <span
-            className={`inline-block text-slate-400 text-xs transition-transform ${
-              showOutputLog ? 'rotate-180' : ''
-            }`}
+          <button
+            type="button"
+            onClick={() => setUserToggledLog(!showOutputLog)}
+            className="flex items-center justify-between w-full px-4 py-2 hover:bg-slate-700/50 text-left transition-colors"
           >
-            ▼
-          </span>
-        </button>
-        {showOutputLog && (
-          <div className="flex-1 min-h-0 flex flex-col min-w-0 overflow-hidden border-t border-slate-600/60 p-4">
-            <OutputLogPanel />
-          </div>
-        )}
-      </div>
+            <span className="text-sm font-medium text-slate-300">Output Log</span>
+            <span
+              className={`inline-block text-slate-400 text-xs transition-transform ${
+                showOutputLog ? 'rotate-180' : ''
+              }`}
+            >
+              ▼
+            </span>
+          </button>
+          {showOutputLog && (
+            <div className="flex-1 min-h-0 flex flex-col min-w-0 overflow-hidden border-t border-slate-600/60 p-4">
+              <OutputLogPanel />
+            </div>
+          )}
+        </div>
+      )}
     </div>
     </LogAnalyzerImportProvider>
   );

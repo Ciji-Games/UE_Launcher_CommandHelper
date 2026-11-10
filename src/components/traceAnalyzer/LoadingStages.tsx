@@ -1,3 +1,4 @@
+import { useEffect, useRef, useState } from 'react';
 import type { ImportProgressPayload, TraceProgressPayload, TraceStage } from '../../types/traceAnalyzer';
 
 interface LoadingStagesProps {
@@ -27,7 +28,34 @@ export function LoadingStages({ progress, importProgress, onCancel }: LoadingSta
   const currentStage = progress?.stage || 'locating_insights';
   const isGameMode = currentStage === 'launching_game' || currentStage === 'monitoring_game';
 
-  const elapsedSec = ((importProgress?.elapsedMs || progress?.elapsedMs || 0) / 1000).toFixed(1);
+  const [elapsedMs, setElapsedMs] = useState(0);
+  const startTimeRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    const initialElapsedMs = importProgress?.elapsedMs || progress?.elapsedMs || 0;
+    if (startTimeRef.current === null) {
+      startTimeRef.current = Date.now() - initialElapsedMs;
+    } else {
+      const backendMs = importProgress?.elapsedMs || progress?.elapsedMs;
+      if (backendMs !== undefined && backendMs > 0) {
+        const impliedStart = Date.now() - backendMs;
+        if (Math.abs(impliedStart - startTimeRef.current) > 1000) {
+          startTimeRef.current = impliedStart;
+        }
+      }
+    }
+  }, [importProgress?.elapsedMs, progress?.elapsedMs]);
+
+  useEffect(() => {
+    const interval = setInterval(() => {
+      if (startTimeRef.current !== null) {
+        setElapsedMs(Math.max(0, Date.now() - startTimeRef.current));
+      }
+    }, 1000);
+    return () => clearInterval(interval);
+  }, []);
+
+  const elapsedSec = Math.floor(elapsedMs / 1000);
   const remainingSec = importProgress?.estimatedRemainingMs
     ? `${(importProgress.estimatedRemainingMs / 1000).toFixed(0)}s remaining`
     : null;
