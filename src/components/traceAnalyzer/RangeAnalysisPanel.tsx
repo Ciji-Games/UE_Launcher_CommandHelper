@@ -99,15 +99,33 @@ export function RangeAnalysisPanel({
     const { medianMs, overBudgetPct, threadMedians, waitingOn } = stats;
     const isOverBudget = medianMs > targetMs || overBudgetPct > 15 || hitchCount > 0;
     const worstMs = maxHitchMs !== undefined && maxHitchMs > 0 ? maxHitchMs : stats.maxMs;
-    const { gameMs = 0, renderMs = 0, gpuMs = 0, limitingThread = 'game' } = threadMedians || {};
+    const limitingThread = threadMedians?.limitingThread || 'game';
+
+    const hasGame =
+      threadMedians?.hasGameData !== undefined
+        ? Boolean(threadMedians.hasGameData)
+        : threadMedians?.activeGameMs != null || threadMedians?.gameMs != null;
+    const hasRender =
+      threadMedians?.hasRenderData !== undefined
+        ? Boolean(threadMedians.hasRenderData)
+        : threadMedians?.activeRenderMs != null || threadMedians?.renderMs != null;
+    const hasGpu =
+      threadMedians?.hasGpuData !== undefined
+        ? Boolean(threadMedians.hasGpuData)
+        : threadMedians?.activeGpuMs != null || threadMedians?.gpuMs != null;
+
+    const gameMs = hasGame ? (threadMedians?.gameMs ?? threadMedians?.activeGameMs ?? 0) : 0;
+    const renderMs = hasRender ? (threadMedians?.renderMs ?? threadMedians?.activeRenderMs ?? 0) : 0;
+    const gpuMs = hasGpu ? (threadMedians?.gpuMs ?? threadMedians?.activeGpuMs ?? 0) : 0;
 
     const hasGpuWait =
-      waitingOn?.some(
+      hasGpu &&
+      (waitingOn?.some(
         (w) =>
           w.timer.toLowerCase().includes('reflex') ||
           w.timer.toLowerCase().includes('gpu') ||
           w.timer.toLowerCase().includes('waitforgpu')
-      ) || (gameMs > gpuMs && gpuMs > targetMs);
+      ) || (gameMs > gpuMs && gpuMs > targetMs));
 
     const hasWorkerWait = waitingOn?.some(
       (w) =>
@@ -128,20 +146,26 @@ export function RangeAnalysisPanel({
 
     let bottleneckSentence = '';
     if (!isOverBudget) {
-      bottleneckSentence = `Balanced: all threads (Game, Render, GPU) are running within budget.`;
-    } else if (limitingThread === 'gpu' || (gpuMs >= gameMs && gpuMs >= renderMs && gpuMs > 0)) {
+      if (!hasGpu && !hasRender) {
+        bottleneckSentence = `Balanced: Game thread is running within budget (${gameMs.toFixed(1)} ms); GPU and Render channels were not captured.`;
+      } else if (!hasGpu) {
+        bottleneckSentence = `Balanced: Game and Render threads are running within budget; GPU channel was not captured.`;
+      } else {
+        bottleneckSentence = `Balanced: all profiled threads (Game, Render, GPU) are running within budget.`;
+      }
+    } else if (hasGpu && (limitingThread === 'gpu' || (gpuMs >= gameMs && gpuMs >= renderMs && gpuMs > 0))) {
       if (hasGpuWait) {
         bottleneckSentence = `GPU-bound: ${gpuMs.toFixed(1)} ms per frame against a ${targetMs.toFixed(1)} ms budget; the game thread is waiting on it.`;
       } else {
         bottleneckSentence = `GPU-bound: ${gpuMs.toFixed(1)} ms per frame against a ${targetMs.toFixed(1)} ms budget.`;
       }
-    } else if (limitingThread === 'game' || (gameMs >= renderMs && gameMs > 0)) {
+    } else if (hasGame && (limitingThread === 'game' || (gameMs >= renderMs && gameMs > 0))) {
       if (hasWorkerWait) {
         bottleneckSentence = `Game-bound: ${gameMs.toFixed(1)} ms per frame against a ${targetMs.toFixed(1)} ms budget; the game thread is stalled waiting on worker tasks.`;
       } else {
         bottleneckSentence = `Game-bound: ${gameMs.toFixed(1)} ms per frame against a ${targetMs.toFixed(1)} ms budget.`;
       }
-    } else if (limitingThread === 'render' || renderMs > 0) {
+    } else if (hasRender && (limitingThread === 'render' || renderMs > 0)) {
       bottleneckSentence = `Render-bound: ${renderMs.toFixed(1)} ms per frame against a ${targetMs.toFixed(1)} ms budget.`;
     } else if (limitingThread === 'idle') {
       bottleneckSentence = `V-Sync limited: frames are waiting on display refresh rate.`;
@@ -204,21 +228,38 @@ export function RangeAnalysisPanel({
   }
 
   const { medianMs, p95Ms, overBudgetPct, threadMedians, waitingOn } = stats;
-  const {
-    gameMs = 0,
-    activeGameMs = gameMs,
-    waitGameMs = 0,
-    renderMs = 0,
-    activeRenderMs = renderMs,
-    waitRenderMs = 0,
-    gpuMs = 0,
-    activeGpuMs = gpuMs,
-    waitGpuMs = 0,
-  } = threadMedians || {};
+
+  const hasGame =
+    threadMedians?.hasGameData !== undefined
+      ? Boolean(threadMedians.hasGameData)
+      : threadMedians?.activeGameMs != null || threadMedians?.gameMs != null;
+  const hasRender =
+    threadMedians?.hasRenderData !== undefined
+      ? Boolean(threadMedians.hasRenderData)
+      : threadMedians?.activeRenderMs != null || threadMedians?.renderMs != null;
+  const hasGpu =
+    threadMedians?.hasGpuData !== undefined
+      ? Boolean(threadMedians.hasGpuData)
+      : threadMedians?.activeGpuMs != null || threadMedians?.gpuMs != null;
+
+  const activeGameMs = hasGame ? (threadMedians?.activeGameMs ?? threadMedians?.gameMs ?? 0) : 0;
+  const waitGameMs = hasGame ? (threadMedians?.waitGameMs ?? 0) : 0;
+
+  const activeRenderMs = hasRender ? (threadMedians?.activeRenderMs ?? threadMedians?.renderMs ?? 0) : 0;
+  const waitRenderMs = hasRender ? (threadMedians?.waitRenderMs ?? 0) : 0;
+
+  const activeGpuMs = hasGpu ? (threadMedians?.activeGpuMs ?? threadMedians?.gpuMs ?? 0) : 0;
+  const waitGpuMs = hasGpu ? (threadMedians?.waitGpuMs ?? 0) : 0;
+
   const isOverBudget = verdict.isOverBudget;
 
   // Active hardware time bars scaling: max(value, budget) * 1.1, clamp fill to 100%, budget marker at true position
-  const maxThreadVal = Math.max(activeGpuMs + waitGpuMs, activeGameMs + waitGameMs, activeRenderMs + waitRenderMs, targetMs);
+  const maxThreadVal = Math.max(
+    hasGpu ? activeGpuMs + waitGpuMs : 0,
+    hasGame ? activeGameMs + waitGameMs : 0,
+    hasRender ? activeRenderMs + waitRenderMs : 0,
+    targetMs
+  );
   const axisMax = Math.max(maxThreadVal, targetMs) * 1.1;
   const budgetMarkerPct = Math.min(100, Math.max(0, (targetMs / axisMax) * 100));
 
@@ -232,12 +273,54 @@ export function RangeAnalysisPanel({
 
   const displayedSubsystems = showAllSubsystems ? groupedSubsystems : groupedSubsystems.slice(0, 5);
 
-  const renderThreadBar = (label: string, activeMs: number, waitMs: number, role: 'gpu' | 'game' | 'render') => {
+  const renderThreadBar = (
+    label: string,
+    activeMs: number,
+    waitMs: number,
+    hasData: boolean,
+    role: 'gpu' | 'game' | 'render'
+  ) => {
+    if (!hasData) {
+      return (
+        <div className="flex flex-col gap-1 flex-1 min-w-[180px] opacity-60">
+          <div className="flex items-center justify-between text-xs">
+            <span className="text-slate-400 font-medium">{label}</span>
+            <div className="flex items-center gap-1.5" title="No timing events recorded for this channel in the trace capture.">
+              <span className="text-slate-500 italic text-[11px] font-sans">
+                Not captured in trace
+              </span>
+            </div>
+          </div>
+          <div
+            className="h-2 rounded bg-slate-800/40 border border-slate-700/50 overflow-hidden relative flex"
+            title="Channel not recorded in this trace"
+          >
+            {/* Target Budget Marker */}
+            <div
+              className="absolute top-0 bottom-0 w-0.5 bg-slate-600/50 z-10"
+              style={{ left: `${budgetMarkerPct}%` }}
+              title={`Target budget: ${targetMs.toFixed(1)} ms/frame`}
+            />
+            {/* Greyed out / diagonal stripe background */}
+            <div
+              className="h-full w-full bg-slate-800/20"
+              style={{
+                backgroundImage:
+                  'repeating-linear-gradient(45deg, transparent, transparent 3px, rgba(255,255,255,0.03) 3px, rgba(255,255,255,0.03) 6px)',
+              }}
+            />
+          </div>
+        </div>
+      );
+    }
+
     const isThreadOver = activeMs > targetMs;
     const isExtreme = activeMs > targetMs * 3.0;
     const activeFillPct = Math.min(100, Math.max(0, (activeMs / axisMax) * 100));
     const waitFillPct = Math.min(100 - activeFillPct, Math.max(0, (waitMs / axisMax) * 100));
     const multiple = (activeMs / targetMs).toFixed(1);
+
+    const formattedActive = activeMs > 0 && activeMs < 0.05 ? '< 0.1' : activeMs.toFixed(1);
 
     let barColor = 'bg-emerald-500';
     let textColor = 'text-emerald-400 font-mono';
@@ -260,7 +343,7 @@ export function RangeAnalysisPanel({
           <span className="text-slate-300 font-medium">{label}</span>
           <div className="flex items-center gap-1.5">
             <span className={textColor}>
-              {activeMs.toFixed(1)} ms
+              {formattedActive} ms
               {waitMs >= 0.1 && (
                 <span className="text-slate-400 font-normal text-[11px] ml-1">
                   (+{waitMs.toFixed(1)} ms wait)
@@ -371,9 +454,9 @@ export function RangeAnalysisPanel({
           </div>
 
           <div className="flex flex-wrap items-center gap-3">
-            {renderThreadBar('GPU', activeGpuMs, waitGpuMs, 'gpu')}
-            {renderThreadBar('Game Thread', activeGameMs, waitGameMs, 'game')}
-            {renderThreadBar('Render Thread', activeRenderMs, waitRenderMs, 'render')}
+            {renderThreadBar('GPU', activeGpuMs, waitGpuMs, hasGpu, 'gpu')}
+            {renderThreadBar('Game Thread', activeGameMs, waitGameMs, hasGame, 'game')}
+            {renderThreadBar('Render Thread', activeRenderMs, waitRenderMs, hasRender, 'render')}
           </div>
         </div>
 

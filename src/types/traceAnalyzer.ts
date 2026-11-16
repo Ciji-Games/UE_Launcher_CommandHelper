@@ -170,15 +170,18 @@ export interface BucketBreakdown {
 }
 
 export interface ThreadMedians {
-  gameMs: number;
-  activeGameMs?: number;
-  waitGameMs?: number;
-  renderMs: number;
-  activeRenderMs?: number;
-  waitRenderMs?: number;
-  gpuMs: number;
-  activeGpuMs?: number;
-  waitGpuMs?: number;
+  gameMs?: number | null;
+  activeGameMs?: number | null;
+  waitGameMs?: number | null;
+  renderMs?: number | null;
+  activeRenderMs?: number | null;
+  waitRenderMs?: number | null;
+  gpuMs?: number | null;
+  activeGpuMs?: number | null;
+  waitGpuMs?: number | null;
+  hasGameData?: boolean;
+  hasRenderData?: boolean;
+  hasGpuData?: boolean;
   limitingThread: 'gpu' | 'game' | 'render' | 'idle' | string;
 }
 

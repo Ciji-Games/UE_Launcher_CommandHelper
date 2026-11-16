@@ -73,7 +73,23 @@ export function describeRange(
   }
 
   // Bottleneck attribution
-  const { gameMs = 0, renderMs = 0, gpuMs = 0, limitingThread: rawLimiting = 'game' } = stats.threadMedians || {};
+  const {
+    hasGameData,
+    hasRenderData,
+    hasGpuData,
+    gameMs: rawGameMs,
+    renderMs: rawRenderMs,
+    gpuMs: rawGpuMs,
+    limitingThread: rawLimiting = 'game',
+  } = stats.threadMedians || {};
+
+  const hasGame = hasGameData !== undefined ? Boolean(hasGameData) : rawGameMs != null;
+  const hasRender = hasRenderData !== undefined ? Boolean(hasRenderData) : rawRenderMs != null;
+  const hasGpu = hasGpuData !== undefined ? Boolean(hasGpuData) : rawGpuMs != null;
+
+  const gameMs = hasGame ? (rawGameMs ?? 0) : 0;
+  const renderMs = hasRender ? (rawRenderMs ?? 0) : 0;
+  const gpuMs = hasGpu ? (rawGpuMs ?? 0) : 0;
 
   let limitingThread: LimitingThreadName = 'Unattributed';
   let bottleneckSummary = '';
@@ -82,18 +98,21 @@ export function describeRange(
     if (rawLimiting === 'idle') {
       limitingThread = 'Idle / V-Sync';
       bottleneckSummary = `Execution is healthy and V-Sync / refresh rate limited.`;
-    } else if (gpuMs > 0 && gpuMs >= gameMs && gpuMs >= renderMs) {
+    } else if (hasGpu && gpuMs > 0 && gpuMs >= gameMs && gpuMs >= renderMs) {
       limitingThread = 'GPU';
       bottleneckSummary = `GPU takes ${gpuMs.toFixed(1)} ms (within the ${targetMs.toFixed(1)} ms budget).`;
-    } else if (gameMs > 0 && gameMs >= renderMs) {
+    } else if (hasGame && gameMs > 0 && gameMs >= renderMs) {
       limitingThread = 'Game Thread';
       bottleneckSummary = `Game Thread takes ${gameMs.toFixed(1)} ms (within the ${targetMs.toFixed(1)} ms budget).`;
+    } else if (!hasGpu && !hasRender) {
+      limitingThread = 'Balanced';
+      bottleneckSummary = `Balanced: Game Thread is running within the ${targetMs.toFixed(1)} ms budget (${gameMs.toFixed(1)} ms); GPU and Render channels were not captured.`;
     } else {
       limitingThread = 'Balanced';
-      bottleneckSummary = `Balanced: all threads are running well within the ${targetMs.toFixed(1)} ms budget.`;
+      bottleneckSummary = `Balanced: all profiled threads are running well within the ${targetMs.toFixed(1)} ms budget.`;
     }
   } else {
-    if (rawLimiting === 'gpu' || (gpuMs >= gameMs && gpuMs >= renderMs && gpuMs > 0)) {
+    if (hasGpu && (rawLimiting === 'gpu' || (gpuMs >= gameMs && gpuMs >= renderMs && gpuMs > 0))) {
       limitingThread = 'GPU';
       const isGameWaiting = gameMs > gpuMs;
       const otherText = isGameWaiting
@@ -102,13 +121,13 @@ export function describeRange(
         ? `versus ${gameMs.toFixed(1)} ms on the game thread.`
         : 'dominating frame time.';
       bottleneckSummary = `The GPU is the limit: ${gpuMs.toFixed(1)} ms per frame, ${otherText}`;
-    } else if (rawLimiting === 'render' || (renderMs >= gameMs && renderMs >= gpuMs && renderMs > 0)) {
+    } else if (hasRender && (rawLimiting === 'render' || (renderMs >= gameMs && renderMs >= gpuMs && renderMs > 0))) {
       limitingThread = 'Render Thread';
       const otherText = gameMs > 0 ? `versus ${gameMs.toFixed(1)} ms on the game thread.` : 'dominating frame time.';
       bottleneckSummary = `The Render Thread is the limit: ${renderMs.toFixed(1)} ms per frame, ${otherText}`;
-    } else if (rawLimiting === 'game' || (gameMs >= renderMs && gameMs > 0)) {
+    } else if (hasGame && (rawLimiting === 'game' || (gameMs >= renderMs && gameMs > 0))) {
       limitingThread = 'Game Thread';
-      const otherText = gpuMs > 0 ? `versus ${gpuMs.toFixed(1)} ms on the GPU.` : 'dominating frame time.';
+      const otherText = hasGpu && gpuMs > 0 ? `versus ${gpuMs.toFixed(1)} ms on the GPU.` : 'dominating frame time.';
       bottleneckSummary = `The Game Thread is the limit: ${gameMs.toFixed(1)} ms per frame, ${otherText}`;
     } else if (rawLimiting === 'idle') {
       limitingThread = 'Idle / V-Sync';

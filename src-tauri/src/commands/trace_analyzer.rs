@@ -72,15 +72,18 @@ pub struct TraceSummary {
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct ThreadMedians {
-    pub game_ms: f64,
-    pub active_game_ms: f64,
-    pub wait_game_ms: f64,
-    pub render_ms: f64,
-    pub active_render_ms: f64,
-    pub wait_render_ms: f64,
-    pub gpu_ms: f64,
-    pub active_gpu_ms: f64,
-    pub wait_gpu_ms: f64,
+    pub game_ms: Option<f64>,
+    pub active_game_ms: Option<f64>,
+    pub wait_game_ms: Option<f64>,
+    pub render_ms: Option<f64>,
+    pub active_render_ms: Option<f64>,
+    pub wait_render_ms: Option<f64>,
+    pub gpu_ms: Option<f64>,
+    pub active_gpu_ms: Option<f64>,
+    pub wait_gpu_ms: Option<f64>,
+    pub has_game_data: bool,
+    pub has_render_data: bool,
+    pub has_gpu_data: bool,
     pub limiting_thread: String, // "gpu" | "game" | "render" | "idle"
 }
 
@@ -1372,69 +1375,93 @@ pub fn compute_range_statistics(
     }
 
     let mut game_times: Vec<f64> = frames.iter().filter_map(|f| f.game_ms).collect();
+    let has_game_data = !game_times.is_empty();
     game_times.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-    let median_game_ms = if game_times.is_empty() { 0.0 } else { calculate_percentile(&game_times, 0.5) };
+    let median_game_ms = if game_times.is_empty() { None } else { Some(calculate_percentile(&game_times, 0.5)) };
 
-    let mut active_game_times: Vec<f64> = frames.iter().map(|f| {
-        let wall = f.game_ms.unwrap_or(0.0);
-        let wait = frame_waits.get(&(f.idx, "game".to_string())).copied().unwrap_or(0.0);
-        (wall - wait).max(0.0)
+    let mut active_game_times: Vec<f64> = frames.iter().filter_map(|f| {
+        f.game_ms.map(|wall| {
+            let wait = frame_waits.get(&(f.idx, "game".to_string())).copied().unwrap_or(0.0);
+            (wall - wait).max(0.0)
+        })
     }).collect();
     active_game_times.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-    let active_game_ms = if active_game_times.is_empty() { 0.0 } else { calculate_percentile(&active_game_times, 0.5) };
+    let active_game_ms = if active_game_times.is_empty() { None } else { Some(calculate_percentile(&active_game_times, 0.5)) };
 
-    let mut wait_game_times: Vec<f64> = frames.iter().map(|f| {
-        frame_waits.get(&(f.idx, "game".to_string())).copied().unwrap_or(0.0)
+    let mut wait_game_times: Vec<f64> = frames.iter().filter_map(|f| {
+        if f.game_ms.is_some() {
+            Some(frame_waits.get(&(f.idx, "game".to_string())).copied().unwrap_or(0.0))
+        } else {
+            None
+        }
     }).collect();
     wait_game_times.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-    let wait_game_ms = if wait_game_times.is_empty() { 0.0 } else { calculate_percentile(&wait_game_times, 0.5) };
+    let wait_game_ms = if wait_game_times.is_empty() { None } else { Some(calculate_percentile(&wait_game_times, 0.5)) };
 
     let mut render_times: Vec<f64> = frames.iter().filter_map(|f| f.render_ms).collect();
+    let has_render_data = !render_times.is_empty();
     render_times.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-    let median_render_ms = if render_times.is_empty() { 0.0 } else { calculate_percentile(&render_times, 0.5) };
+    let median_render_ms = if render_times.is_empty() { None } else { Some(calculate_percentile(&render_times, 0.5)) };
 
-    let mut active_render_times: Vec<f64> = frames.iter().map(|f| {
-        let wall = f.render_ms.unwrap_or(0.0);
-        let wait = frame_waits.get(&(f.idx, "render".to_string())).copied().unwrap_or(0.0);
-        (wall - wait).max(0.0)
+    let mut active_render_times: Vec<f64> = frames.iter().filter_map(|f| {
+        f.render_ms.map(|wall| {
+            let wait = frame_waits.get(&(f.idx, "render".to_string())).copied().unwrap_or(0.0);
+            (wall - wait).max(0.0)
+        })
     }).collect();
     active_render_times.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-    let active_render_ms = if active_render_times.is_empty() { 0.0 } else { calculate_percentile(&active_render_times, 0.5) };
+    let active_render_ms = if active_render_times.is_empty() { None } else { Some(calculate_percentile(&active_render_times, 0.5)) };
 
-    let mut wait_render_times: Vec<f64> = frames.iter().map(|f| {
-        frame_waits.get(&(f.idx, "render".to_string())).copied().unwrap_or(0.0)
+    let mut wait_render_times: Vec<f64> = frames.iter().filter_map(|f| {
+        if f.render_ms.is_some() {
+            Some(frame_waits.get(&(f.idx, "render".to_string())).copied().unwrap_or(0.0))
+        } else {
+            None
+        }
     }).collect();
     wait_render_times.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-    let wait_render_ms = if wait_render_times.is_empty() { 0.0 } else { calculate_percentile(&wait_render_times, 0.5) };
+    let wait_render_ms = if wait_render_times.is_empty() { None } else { Some(calculate_percentile(&wait_render_times, 0.5)) };
 
     let mut gpu_times: Vec<f64> = frames.iter().filter_map(|f| f.gpu_ms).collect();
+    let has_gpu_data = !gpu_times.is_empty();
     gpu_times.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-    let median_gpu_ms = if gpu_times.is_empty() { 0.0 } else { calculate_percentile(&gpu_times, 0.5) };
+    let median_gpu_ms = if gpu_times.is_empty() { None } else { Some(calculate_percentile(&gpu_times, 0.5)) };
 
-    let mut active_gpu_times: Vec<f64> = frames.iter().map(|f| {
-        let wall = f.gpu_ms.unwrap_or(0.0);
-        let wait = frame_waits.get(&(f.idx, "gpu".to_string())).copied().unwrap_or(0.0);
-        (wall - wait).max(0.0)
+    let mut active_gpu_times: Vec<f64> = frames.iter().filter_map(|f| {
+        f.gpu_ms.map(|wall| {
+            let wait = frame_waits.get(&(f.idx, "gpu".to_string())).copied().unwrap_or(0.0);
+            (wall - wait).max(0.0)
+        })
     }).collect();
     active_gpu_times.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-    let active_gpu_ms = if active_gpu_times.is_empty() { 0.0 } else { calculate_percentile(&active_gpu_times, 0.5) };
+    let active_gpu_ms = if active_gpu_times.is_empty() { None } else { Some(calculate_percentile(&active_gpu_times, 0.5)) };
 
-    let mut wait_gpu_times: Vec<f64> = frames.iter().map(|f| {
-        frame_waits.get(&(f.idx, "gpu".to_string())).copied().unwrap_or(0.0)
+    let mut wait_gpu_times: Vec<f64> = frames.iter().filter_map(|f| {
+        if f.gpu_ms.is_some() {
+            Some(frame_waits.get(&(f.idx, "gpu".to_string())).copied().unwrap_or(0.0))
+        } else {
+            None
+        }
     }).collect();
     wait_gpu_times.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-    let wait_gpu_ms = if wait_gpu_times.is_empty() { 0.0 } else { calculate_percentile(&wait_gpu_times, 0.5) };
+    let wait_gpu_ms = if wait_gpu_times.is_empty() { None } else { Some(calculate_percentile(&wait_gpu_times, 0.5)) };
 
-    let limiting_thread_str = if active_gpu_ms >= active_game_ms && active_gpu_ms >= active_render_ms && active_gpu_ms > 0.0 {
+    let act_gpu = active_gpu_ms.unwrap_or(0.0);
+    let act_game = active_game_ms.unwrap_or(0.0);
+    let act_render = active_render_ms.unwrap_or(0.0);
+
+    let limiting_thread_str = if has_gpu_data && act_gpu >= act_game && act_gpu >= act_render && act_gpu > 0.0 {
         "gpu"
-    } else if active_game_ms >= active_render_ms && active_game_ms > 0.0 {
+    } else if has_game_data && act_game >= act_render && act_game > 0.0 {
         "game"
-    } else if active_render_ms > 0.0 {
+    } else if has_render_data && act_render > 0.0 {
         "render"
-    } else if median_ms > 0.0 && active_gpu_ms == 0.0 && active_game_ms == 0.0 && active_render_ms == 0.0 {
+    } else if median_ms > 0.0 && act_gpu == 0.0 && act_game == 0.0 && act_render == 0.0 {
         "idle"
-    } else {
+    } else if has_game_data {
         "game"
+    } else {
+        "unattributed"
     };
 
     let thread_medians = ThreadMedians {
@@ -1447,6 +1474,9 @@ pub fn compute_range_statistics(
         gpu_ms: median_gpu_ms,
         active_gpu_ms,
         wait_gpu_ms,
+        has_game_data,
+        has_render_data,
+        has_gpu_data,
         limiting_thread: limiting_thread_str.to_string(),
     };
 
@@ -2030,9 +2060,9 @@ pub fn compute_range_statistics(
         if let Some(top_timer) = limiting_work_timers.first() {
             let (name, _bucket, _subsystem, path, _thread_role, avg_ms_per_frame, _total_excl, base_ms, call_count, _base_calls, _queue, _excess_ms) = top_timer;
             let active_thread_time = match limiting_role.as_str() {
-                "gpu" => thread_medians.active_gpu_ms,
-                "game" => thread_medians.active_game_ms,
-                "render" => thread_medians.active_render_ms,
+                "gpu" => thread_medians.active_gpu_ms.unwrap_or(0.0),
+                "game" => thread_medians.active_game_ms.unwrap_or(0.0),
+                "render" => thread_medians.active_render_ms.unwrap_or(0.0),
                 _ => median_ms,
             };
             let share_of_active_pct = if active_thread_time > 0.001 {
@@ -2525,11 +2555,38 @@ mod tests {
         assert_eq!(stats.frame_count, 4);
         assert!(stats.median_ms > 0.0);
         assert_eq!(stats.thread_medians.limiting_thread, "gpu");
-        assert!(stats.thread_medians.gpu_ms > 0.0);
+        assert!(stats.thread_medians.gpu_ms.unwrap_or(0.0) > 0.0);
         assert!(!stats.top_timers.is_empty());
         assert_eq!(stats.top_timers[0].name, "ShadowDepths");
         assert_eq!(stats.top_timers[0].thread_role, "gpu");
         assert!(stats.top_timers[0].avg_ms_per_frame > 0.0);
+    }
+
+    #[test]
+    fn test_missing_hardware_channels_thread_medians() {
+        let conn = Connection::open_in_memory().unwrap();
+        init_db(&conn).unwrap();
+
+        // Insert frames with GameThread times only (render_ms and gpu_ms are NULL)
+        conn.execute(
+            "INSERT INTO frames (idx, start_s, interval_ms, game_ms, render_ms, gpu_ms) VALUES 
+             (0, 1.0, 16.0, 14.5, NULL, NULL),
+             (1, 1.016, 16.2, 14.8, NULL, NULL),
+             (2, 1.032, 15.9, 14.2, NULL, NULL)",
+            [],
+        ).unwrap();
+
+        let stats = compute_range_statistics(&conn, 1.0, 1.05).unwrap();
+        assert_eq!(stats.frame_count, 3);
+        assert!(stats.thread_medians.has_game_data);
+        assert_eq!(stats.thread_medians.game_ms.is_some(), true);
+        assert!(!stats.thread_medians.has_render_data);
+        assert_eq!(stats.thread_medians.render_ms, None);
+        assert_eq!(stats.thread_medians.active_render_ms, None);
+        assert!(!stats.thread_medians.has_gpu_data);
+        assert_eq!(stats.thread_medians.gpu_ms, None);
+        assert_eq!(stats.thread_medians.active_gpu_ms, None);
+        assert_eq!(stats.thread_medians.limiting_thread, "game");
     }
 
     #[test]
