@@ -246,8 +246,8 @@ pub fn read_frame_events(path: &Path) -> Result<Vec<FrameEvent>, String> {
             0
         };
         let start_s = match record[start_idx].parse::<f64>() {
-            Ok(v) => v,
-            Err(_) => continue,
+            Ok(v) if v.is_finite() && v >= 0.0 => v,
+            _ => continue,
         };
         let end_s = match record[end_idx].parse::<f64>() {
             Ok(v) => v,
@@ -330,49 +330,83 @@ pub fn process_and_ingest_frames(
 
     for i in 0..game_events.len() {
         let curr = game_events[i];
-        let game_ms = (curr.end_s - curr.start_s) * 1000.0;
+        let raw_game_ms = if curr.end_s.is_finite() && curr.end_s >= curr.start_s {
+            let ms = (curr.end_s - curr.start_s) * 1000.0;
+            if ms.is_finite() && ms > 0.0 {
+                Some(ms)
+            } else {
+                None
+            }
+        } else {
+            None
+        };
 
         let interval_ms = if i + 1 < game_events.len() {
             let next = game_events[i + 1];
-            (next.start_s - curr.start_s) * 1000.0
+            let delta_ms = (next.start_s - curr.start_s) * 1000.0;
+            if delta_ms.is_finite() && delta_ms > 0.0 {
+                delta_ms
+            } else {
+                raw_game_ms.unwrap_or(16.67)
+            }
         } else {
-            game_ms
+            raw_game_ms.unwrap_or_else(|| {
+                if i > 0 {
+                    processed_frames.last().map(|f: &ProcessedFrame| f.interval_ms).unwrap_or(16.67)
+                } else {
+                    16.67
+                }
+            })
         };
 
-        // Align render frame: find the first render event whose start is >= curr.start_s
-        // or closest in time
+        // Align render frame: find the first render event whose start is >= curr.start_s - 0.2
         let mut render_ms = None;
-        while render_idx < render_events.len() && render_events[render_idx].end_s < curr.start_s {
+        while render_idx < render_events.len() && render_events[render_idx].start_s < curr.start_s - 0.2 {
             render_idx += 1;
         }
         if render_idx < render_events.len() {
             let r_ev = render_events[render_idx];
-            // If it starts within a reasonable window (e.g. within 2 frames)
             if (r_ev.start_s - curr.start_s).abs() < 0.2 {
-                render_ms = Some((r_ev.end_s - r_ev.start_s) * 1000.0);
+                if r_ev.end_s.is_finite() && r_ev.end_s >= r_ev.start_s {
+                    let ms = (r_ev.end_s - r_ev.start_s) * 1000.0;
+                    if ms.is_finite() && ms > 0.0 {
+                        render_ms = Some(ms);
+                    }
+                }
             }
         }
 
         // Align GPU frame
         let mut gpu_ms = None;
-        while gpu_idx < selected_gpu_events.len() && selected_gpu_events[gpu_idx].end_s < curr.start_s {
+        while gpu_idx < selected_gpu_events.len() && selected_gpu_events[gpu_idx].start_s < curr.start_s - 0.2 {
             gpu_idx += 1;
         }
         if gpu_idx < selected_gpu_events.len() {
             let g_ev = selected_gpu_events[gpu_idx];
             if (g_ev.start_s - curr.start_s).abs() < 0.2 {
-                gpu_ms = Some((g_ev.end_s - g_ev.start_s) * 1000.0);
+                if g_ev.end_s.is_finite() && g_ev.end_s >= g_ev.start_s {
+                    let ms = (g_ev.end_s - g_ev.start_s) * 1000.0;
+                    if ms.is_finite() && ms > 0.0 {
+                        gpu_ms = Some(ms);
+                    }
+                }
             }
         }
 
         let normalized_start_s = (curr.start_s - trace_start_s).max(0.0);
+        let valid_interval_ms = if interval_ms.is_finite() && interval_ms > 0.0 {
+            interval_ms
+        } else {
+            16.67
+        };
+        let valid_game_ms = raw_game_ms.unwrap_or(valid_interval_ms);
 
         processed_frames.push(ProcessedFrame {
             idx: i as i64,
             engine_frame: None,
             start_s: normalized_start_s,
-            interval_ms: interval_ms.max(0.001),
-            game_ms: Some(game_ms.max(0.001)),
+            interval_ms: valid_interval_ms.max(0.001),
+            game_ms: Some(valid_game_ms.max(0.001)),
             render_ms,
             gpu_ms,
         });
@@ -544,13 +578,14 @@ pub fn ingest_bookmarks_csv(
             continue;
         }
 
-        let start_raw: f64 = match record[start_idx].parse() {
-            Ok(v) => v,
-            Err(_) => continue,
+        let start_raw: f64 = match record[start_idx].parse::<f64>() {
+            Ok(v) if v.is_finite() => v,
+            _ => continue,
         };
         let end_raw: f64 = end_idx
             .and_then(|idx| record.get(idx))
-            .and_then(|v| v.parse().ok())
+            .and_then(|v| v.parse::<f64>().ok())
+            .filter(|v: &f64| v.is_finite() && *v >= start_raw)
             .unwrap_or(start_raw);
 
         let thread_id = thread_idx
@@ -782,5 +817,49 @@ mod tests {
 
         assert_eq!(bookmarks[3].name, "BossFight");
         assert_eq!(bookmarks[3].start_s, 55.0);
+    }
+
+    #[test]
+    fn test_process_and_ingest_frames_with_infinite_and_nan_tail() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        init_db(&conn).unwrap();
+
+        let threads = vec![
+            RawThread { id: 1, name: "GameThread".to_string(), group: "Game".to_string(), role: "game".to_string() },
+            RawThread { id: 2, name: "RenderThread".to_string(), group: "Render".to_string(), role: "render".to_string() },
+            RawThread { id: 3, name: "GPU-Graphics".to_string(), group: "GPU".to_string(), role: "gpu".to_string() },
+        ];
+
+        let events = vec![
+            FrameEvent { thread_id: 1, timer_id: 1, start_s: 0.0, end_s: 0.016, depth: 0 },
+            FrameEvent { thread_id: 1, timer_id: 1, start_s: 0.016, end_s: 0.032, depth: 0 },
+            // Unterminated tail event with end_s = inf
+            FrameEvent { thread_id: 1, timer_id: 1, start_s: 0.032, end_s: f64::INFINITY, depth: 0 },
+            // Render and GPU events with inf end_s
+            FrameEvent { thread_id: 2, timer_id: 2, start_s: 0.0, end_s: 0.015, depth: 0 },
+            FrameEvent { thread_id: 2, timer_id: 2, start_s: 0.032, end_s: f64::INFINITY, depth: 0 },
+            FrameEvent { thread_id: 3, timer_id: 3, start_s: 0.0, end_s: 0.014, depth: 0 },
+            FrameEvent { thread_id: 3, timer_id: 3, start_s: 0.032, end_s: f64::INFINITY, depth: 0 },
+        ];
+
+        let processed = process_and_ingest_frames(&mut conn, &threads, &events).unwrap();
+        assert_eq!(processed.len(), 3);
+
+        for f in &processed {
+            assert!(f.interval_ms.is_finite(), "interval_ms must be finite");
+            assert!(f.interval_ms > 0.0, "interval_ms must be positive");
+            if let Some(g) = f.game_ms {
+                assert!(g.is_finite(), "game_ms must be finite");
+            }
+            if let Some(r) = f.render_ms {
+                assert!(r.is_finite(), "render_ms must be finite");
+            }
+            if let Some(gp) = f.gpu_ms {
+                assert!(gp.is_finite(), "gpu_ms must be finite");
+            }
+        }
+
+        // Verify last frame uses previous frame interval or fallback
+        assert!((processed[2].interval_ms - 16.0).abs() < 1e-3);
     }
 }

@@ -70,13 +70,21 @@ pub fn compute_exclusive_times_with_hierarchy(
 
         for &idx in &indices {
             let ev = &events[idx];
-            let ev_duration = (ev.end_s - ev.start_s).max(0.0);
+            let ev_duration = if ev.end_s.is_finite() && ev.end_s >= ev.start_s {
+                (ev.end_s - ev.start_s).max(0.0)
+            } else {
+                0.0
+            };
 
             // Pop any completed scopes that ended before or at the start of this event
             while let Some(top) = stack.last() {
                 if ev.start_s >= top.end_s - 1e-9 {
                     let popped = stack.pop().unwrap();
-                    let direct_excl_s = (popped.duration_s - popped.children_duration_s).max(0.0);
+                    let direct_excl_s = if popped.duration_s.is_finite() && popped.children_duration_s.is_finite() {
+                        (popped.duration_s - popped.children_duration_s).max(0.0)
+                    } else {
+                        0.0
+                    };
                     excl_ms_results[popped.index] = direct_excl_s * 1000.0;
                 } else {
                     break;
@@ -100,14 +108,18 @@ pub fn compute_exclusive_times_with_hierarchy(
             stack.push(StackEntry {
                 index: idx,
                 duration_s: ev_duration,
-                end_s: ev.end_s,
+                end_s: if ev.end_s.is_finite() && ev.end_s >= ev.start_s { ev.end_s } else { ev.start_s },
                 children_duration_s: 0.0,
             });
         }
 
         // Pop remaining scopes
         while let Some(popped) = stack.pop() {
-            let direct_excl_s = (popped.duration_s - popped.children_duration_s).max(0.0);
+            let direct_excl_s = if popped.duration_s.is_finite() && popped.children_duration_s.is_finite() {
+                (popped.duration_s - popped.children_duration_s).max(0.0)
+            } else {
+                0.0
+            };
             excl_ms_results[popped.index] = direct_excl_s * 1000.0;
         }
     }
@@ -194,12 +206,12 @@ pub fn ingest_slice_timing_events_stream(
             Err(_) => continue,
         };
         let start_s = match record[start_idx].parse::<f64>() {
-            Ok(v) => (v - trace_start_s).max(0.0),
-            Err(_) => continue,
+            Ok(v) if v.is_finite() => (v - trace_start_s).max(0.0),
+            _ => continue,
         };
         let end_s = match record[end_idx].parse::<f64>() {
-            Ok(v) => (v - trace_start_s).max(0.0),
-            Err(_) => continue,
+            Ok(v) if v.is_finite() => (v - trace_start_s).max(start_s),
+            _ => start_s,
         };
         let depth = depth_idx
             .and_then(|idx| record.get(idx))
@@ -240,7 +252,12 @@ pub fn ingest_slice_timing_events_stream(
         let frame_end_s = if candidate_idx + 1 < frames.len() {
             frames[candidate_idx + 1].start_s
         } else {
-            cand.start_s + (cand.interval_ms / 1000.0)
+            let last_intv_s = if cand.interval_ms.is_finite() && cand.interval_ms >= 0.0 {
+                cand.interval_ms / 1000.0
+            } else {
+                0.01667
+            };
+            cand.start_s + last_intv_s
         };
 
         if ev.start_s >= cand.start_s && ev.start_s < frame_end_s {
@@ -250,9 +267,10 @@ pub fn ingest_slice_timing_events_stream(
                 calls: 0,
                 max_ms: 0.0,
             });
-            entry.excl_ms += ev.excl_ms;
+            let excl = if ev.excl_ms.is_finite() && ev.excl_ms >= 0.0 { ev.excl_ms } else { 0.0 };
+            entry.excl_ms += excl;
             entry.calls += 1;
-            entry.max_ms = entry.max_ms.max(ev.excl_ms);
+            entry.max_ms = entry.max_ms.max(excl);
         }
     }
 

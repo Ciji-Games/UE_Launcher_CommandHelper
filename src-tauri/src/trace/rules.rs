@@ -1243,10 +1243,13 @@ pub fn evaluate_and_save_findings(
     let mut frame_points: Vec<crate::trace::regime::FrameTimePoint> = Vec::new();
     if let Ok(mut stmt) = conn.prepare("SELECT idx, start_s, interval_ms FROM frames ORDER BY idx ASC") {
         if let Ok(rows) = stmt.query_map([], |r| {
+            let idx: i64 = r.get(0)?;
+            let start_s: f64 = r.get(1)?;
+            let interval_ms: f64 = r.get(2)?;
             Ok(crate::trace::regime::FrameTimePoint {
-                idx: r.get(0)?,
-                start_s: r.get(1)?,
-                interval_ms: r.get(2)?,
+                idx,
+                start_s: if start_s.is_finite() { start_s } else { 0.0 },
+                interval_ms: if interval_ms.is_finite() && interval_ms > 0.0 { interval_ms } else { 16.67 },
             })
         }) {
             frame_points = rows.flatten().collect();
@@ -1255,8 +1258,16 @@ pub fn evaluate_and_save_findings(
 
     let detected_regimes = crate::trace::regime::detect_regimes(&frame_points, 16.67);
     if let Some(reg) = detected_regimes.first() {
-        let prev_med = reg.previous_median_ms.unwrap_or(0.0);
-        let prev_fps = reg.previous_fps.unwrap_or(0.0);
+        let prev_med = if reg.previous_median_ms.unwrap_or(0.0).is_finite() {
+            reg.previous_median_ms.unwrap_or(0.0)
+        } else {
+            16.67
+        };
+        let prev_fps = if reg.previous_fps.unwrap_or(0.0).is_finite() {
+            reg.previous_fps.unwrap_or(0.0)
+        } else {
+            60.0
+        };
 
         // Compute actual time lost over baseline in the regime window
         let mut actual_time_lost_ms = 0.0;

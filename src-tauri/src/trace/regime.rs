@@ -42,7 +42,7 @@ pub fn detect_regimes(
     // Filter frames after startup warm-up
     let non_startup_frames: Vec<&FrameTimePoint> = frames
         .iter()
-        .filter(|f| f.start_s >= startup_threshold_s)
+        .filter(|f| f.start_s.is_finite() && f.start_s >= startup_threshold_s && f.interval_ms.is_finite())
         .collect();
 
     if non_startup_frames.is_empty() {
@@ -50,7 +50,14 @@ pub fn detect_regimes(
     }
 
     let trace_start_s = non_startup_frames.first().unwrap().start_s;
-    let trace_end_s = non_startup_frames.last().unwrap().start_s + (non_startup_frames.last().unwrap().interval_ms / 1000.0);
+    let last_frame = non_startup_frames.last().unwrap();
+    let last_interval_s = (last_frame.interval_ms / 1000.0).max(0.0);
+    let trace_end_s = last_frame.start_s + last_interval_s;
+
+    if !trace_start_s.is_finite() || !trace_end_s.is_finite() || trace_end_s <= trace_start_s {
+        return Vec::new();
+    }
+
     let total_duration_s = trace_end_s - trace_start_s;
 
     if total_duration_s < min_durable_duration_s * 2.0 {
@@ -62,6 +69,9 @@ pub fn detect_regimes(
 
     let mut curr_w_start_s = trace_start_s;
     while curr_w_start_s + window_duration_s <= trace_end_s + 0.001 {
+        if !curr_w_start_s.is_finite() {
+            break;
+        }
         let curr_w_end_s = curr_w_start_s + window_duration_s;
         let win_frames: Vec<&&FrameTimePoint> = non_startup_frames
             .iter()
@@ -234,4 +244,41 @@ pub fn calculate_regime_top_deltas(
             )
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_detect_regimes_with_infinite_interval_terminates() {
+        let mut frames = Vec::new();
+        for i in 0..100 {
+            frames.push(FrameTimePoint {
+                idx: i,
+                start_s: (i as f64) * 0.0166,
+                interval_ms: 16.6,
+            });
+        }
+        // Corrupted/infinite tail frame
+        frames.push(FrameTimePoint {
+            idx: 100,
+            start_s: 1.66,
+            interval_ms: f64::INFINITY,
+        });
+
+        // Must terminate safely and not hang in an infinite loop
+        let regimes = detect_regimes(&frames, 16.67);
+        let _ = regimes;
+    }
+
+    #[test]
+    fn test_detect_regimes_with_all_nan_or_inf() {
+        let frames = vec![
+            FrameTimePoint { idx: 0, start_s: f64::NAN, interval_ms: f64::NAN },
+            FrameTimePoint { idx: 1, start_s: f64::INFINITY, interval_ms: f64::INFINITY },
+        ];
+        let regimes = detect_regimes(&frames, 16.67);
+        assert!(regimes.is_empty());
+    }
 }

@@ -66,18 +66,20 @@ pub fn calculate_percentile(sorted_values: &[f64], percentile: f64) -> f64 {
         return 0.0;
     }
     if sorted_values.len() == 1 {
-        return sorted_values[0];
+        let v = sorted_values[0];
+        return if v.is_finite() { v } else { 0.0 };
     }
-    let p = percentile.clamp(0.0, 1.0);
+    let p = if percentile.is_finite() { percentile.clamp(0.0, 1.0) } else { 0.5 };
     let rank = p * (sorted_values.len() - 1) as f64;
     let lower = rank.floor() as usize;
     let upper = rank.ceil() as usize;
-    if lower == upper {
+    let res = if lower == upper {
         sorted_values[lower]
     } else {
         let weight = rank - lower as f64;
         sorted_values[lower] * (1.0 - weight) + sorted_values[upper] * weight
-    }
+    };
+    if res.is_finite() { res } else { 0.0 }
 }
 
 #[allow(dead_code)]
@@ -104,7 +106,10 @@ pub fn calculate_robust_stats(frames: &[ProcessedFrame]) -> FrameStats {
         };
     }
 
-    let mut intervals: Vec<f64> = frames.iter().map(|f| f.interval_ms).collect();
+    let mut intervals: Vec<f64> = frames
+        .iter()
+        .map(|f| if f.interval_ms.is_finite() && f.interval_ms > 0.0 { f.interval_ms } else { 16.67 })
+        .collect();
     intervals.sort_by(|a, b| a.partial_cmp(b).unwrap_or(Ordering::Equal));
 
     let min_ms = intervals.first().copied().unwrap_or(0.0);
@@ -120,17 +125,22 @@ pub fn calculate_robust_stats(frames: &[ProcessedFrame]) -> FrameStats {
 
     let start_s = frames.first().map(|f| f.start_s).unwrap_or(0.0);
     let last = frames.last().unwrap();
-    let duration_s = (last.start_s + last.interval_ms / 1000.0) - start_s;
+    let last_intv_s = if last.interval_ms.is_finite() && last.interval_ms >= 0.0 {
+        last.interval_ms / 1000.0
+    } else {
+        0.01667
+    };
+    let duration_s = (last.start_s + last_intv_s) - start_s;
 
     FrameStats {
         total_frames: frames.len(),
-        duration_s: duration_s.max(0.0),
-        median_ms,
-        mad_ms,
-        p95_ms,
-        p99_ms,
-        min_ms,
-        max_ms,
+        duration_s: if duration_s.is_finite() { duration_s.max(0.0) } else { 0.0 },
+        median_ms: if median_ms.is_finite() { median_ms } else { 0.0 },
+        mad_ms: if mad_ms.is_finite() { mad_ms } else { 0.0 },
+        p95_ms: if p95_ms.is_finite() { p95_ms } else { 0.0 },
+        p99_ms: if p99_ms.is_finite() { p99_ms } else { 0.0 },
+        min_ms: if min_ms.is_finite() { min_ms } else { 0.0 },
+        max_ms: if max_ms.is_finite() { max_ms } else { 0.0 },
     }
 }
 
