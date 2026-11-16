@@ -265,6 +265,93 @@ const PAD_R = 20;
 const PAD_T = 24;
 const PAD_B = 25;
 
+function computeMaxYScale(
+  seriesData: FrameSeriesResponse | null,
+  graphMode: 'frametime' | 'threads',
+  scaleMode: 'p99' | 'fit',
+  targetMs: number
+): { maxY: number; absoluteMaxMs: number } {
+  const safeTarget = typeof targetMs === 'number' && Number.isFinite(targetMs) && targetMs > 0 ? targetMs : 16.67;
+  const baseTargetY = Math.max(safeTarget * 3.8, 45.0);
+  let absoluteMaxMs = baseTargetY;
+
+  if (!seriesData) {
+    return { maxY: baseTargetY, absoluteMaxMs };
+  }
+
+  const vals: number[] = [];
+  if (seriesData.isBucketed && seriesData.buckets.length > 0) {
+    for (const b of seriesData.buckets) {
+      const peakVal =
+        graphMode === 'threads'
+          ? (b.gameMs || 0) + (b.renderMs || 0) + (b.gpuMs || 0) || b.maxMs || b.avgMs || 0
+          : b.maxMs || b.avgMs || 0;
+      if (typeof peakVal === 'number' && Number.isFinite(peakVal) && peakVal > absoluteMaxMs) {
+        absoluteMaxMs = peakVal;
+      }
+
+      const regularVal =
+        graphMode === 'threads'
+          ? (b.gameMs || 0) + (b.renderMs || 0) + (b.gpuMs || 0) || b.avgMs || 0
+          : b.avgMs || 0;
+      if (typeof regularVal === 'number' && Number.isFinite(regularVal) && regularVal > 0) {
+        vals.push(regularVal);
+      }
+    }
+  } else if (!seriesData.isBucketed && seriesData.points.length > 0) {
+    for (const p of seriesData.points) {
+      const val =
+        graphMode === 'threads'
+          ? (p.gameMs || 0) + (p.renderMs || 0) + (p.gpuMs || 0) || p.frameMs || 0
+          : p.frameMs || 0;
+      if (typeof val === 'number' && Number.isFinite(val) && val > 0) {
+        if (val > absoluteMaxMs) {
+          absoluteMaxMs = val;
+        }
+        vals.push(val);
+      }
+    }
+  }
+
+  if (scaleMode === 'fit') {
+    const fitMax = Math.max(absoluteMaxMs * 1.12, baseTargetY);
+    return { maxY: fitMax, absoluteMaxMs };
+  }
+
+  // Auto (p99) Zoom Mode:
+  // Optimize vertical resolution for regular frames by ignoring huge outlier spikes.
+  if (vals.length === 0) {
+    return { maxY: baseTargetY, absoluteMaxMs };
+  }
+
+  vals.sort((a, b) => a - b);
+  const n = vals.length;
+  const p50 = vals[Math.floor(n * 0.5)] ?? safeTarget;
+  const p90 = vals[Math.floor(n * 0.9)] ?? p50;
+  const p95 = vals[Math.floor(n * 0.95)] ?? p90;
+  const p99 = vals[Math.floor(n * 0.99)] ?? p95;
+
+  // The regular baseline represents typical frame time in the view
+  const regularBaseline = Math.max(p95, p50, safeTarget);
+
+  // Outlier cap: scale beyond this multiple of regular frame time would
+  // compress normal frame bars to unreadable heights.
+  const maxAllowedAutoY = Math.max(regularBaseline * 2.2, safeTarget * 4.2, 50.0);
+
+  // Compute candidate Y scale based on normal distribution percentiles
+  let candidateY = Math.max(baseTargetY, p95 * 1.35);
+
+  // If p99 is within reasonable bound of regular frames (not a huge isolated spike), include it
+  if (p99 <= regularBaseline * 2.5) {
+    candidateY = Math.max(candidateY, p99 * 1.2);
+  }
+
+  // Clamp Auto Zoom scale so huge spikes never squish regular bars
+  const autoMaxY = Math.min(candidateY, maxAllowedAutoY);
+
+  return { maxY: autoMaxY, absoluteMaxMs };
+}
+
 export function FrameGraph({
   summary,
   durationS,
@@ -395,48 +482,7 @@ export function FrameGraph({
     const graphH = height - padT - padB;
 
     // Determine max Y scale (ms)
-    let maxY = Math.max(targetMs * 4.2, 45.0);
-    let absoluteMaxMs = maxY;
-
-    if (seriesData) {
-      if (seriesData.isBucketed && seriesData.buckets.length > 0) {
-        for (const b of seriesData.buckets) {
-          const val = graphMode === 'threads'
-            ? ((b.gameMs || 0) + (b.renderMs || 0) + (b.gpuMs || 0) || b.maxMs)
-            : b.maxMs;
-          if (val > absoluteMaxMs) absoluteMaxMs = val;
-        }
-        if (scaleMode === 'fit') {
-          maxY = Math.max(maxY, absoluteMaxMs * 1.12);
-        } else {
-          const sortedVals = seriesData.buckets.map((b) =>
-            graphMode === 'threads'
-              ? ((b.gameMs || 0) + (b.renderMs || 0) + (b.gpuMs || 0) || b.avgMs)
-              : b.avgMs
-          ).sort((a, b) => a - b);
-          const p99_5 = sortedVals[Math.floor(sortedVals.length * 0.995)] ?? sortedVals[sortedVals.length - 1];
-          maxY = Math.max(maxY, p99_5 * 1.35);
-        }
-      } else if (!seriesData.isBucketed && seriesData.points.length > 0) {
-        for (const p of seriesData.points) {
-          const val = graphMode === 'threads'
-            ? ((p.gameMs || 0) + (p.renderMs || 0) + (p.gpuMs || 0) || p.frameMs)
-            : p.frameMs;
-          if (val > absoluteMaxMs) absoluteMaxMs = val;
-        }
-        if (scaleMode === 'fit') {
-          maxY = Math.max(maxY, absoluteMaxMs * 1.12);
-        } else {
-          const sortedVals = seriesData.points.map((p) =>
-            graphMode === 'threads'
-              ? ((p.gameMs || 0) + (p.renderMs || 0) + (p.gpuMs || 0) || p.frameMs)
-              : p.frameMs
-          ).sort((a, b) => a - b);
-          const p99_5 = sortedVals[Math.floor(sortedVals.length * 0.995)] ?? sortedVals[sortedVals.length - 1];
-          maxY = Math.max(maxY, p99_5 * 1.35);
-        }
-      }
-    }
+    const { maxY } = computeMaxYScale(seriesData, graphMode, scaleMode, targetMs);
 
     const timeToX = (t: number) => padL + ((t - vStart) / vDuration) * graphW;
     const msToY = (ms: number) => {
