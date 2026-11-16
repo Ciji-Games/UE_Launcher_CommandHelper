@@ -1238,7 +1238,7 @@ pub fn evaluate_and_save_findings(
         }
     }
 
-    // 8. Regime-level Finding Synthesis & Sustained Finding Nesting
+    // 8. Regime-level Finding Synthesis & Sustained Finding Attribution
     // Query chronological frames from DB to run detect_regimes
     let mut frame_points: Vec<crate::trace::regime::FrameTimePoint> = Vec::new();
     if let Ok(mut stmt) = conn.prepare("SELECT idx, start_s, interval_ms FROM frames ORDER BY idx ASC") {
@@ -1257,7 +1257,7 @@ pub fn evaluate_and_save_findings(
     }
 
     let detected_regimes = crate::trace::regime::detect_regimes(&frame_points, 16.67);
-    if let Some(reg) = detected_regimes.first() {
+    for reg in &detected_regimes {
         let prev_med = if reg.previous_median_ms.unwrap_or(0.0).is_finite() {
             reg.previous_median_ms.unwrap_or(0.0)
         } else {
@@ -1269,8 +1269,12 @@ pub fn evaluate_and_save_findings(
             60.0
         };
 
+        let delta_ms_per_frame = (reg.median_ms - prev_med).max(0.0);
+        let duration_s = (reg.end_s - reg.start_s).max(0.1);
+        let frame_count = (reg.frame_to - reg.frame_from + 1).max(1) as f64;
+
         // Compute actual time lost over baseline in the regime window
-        let mut actual_time_lost_ms = 0.0;
+        let mut actual_time_lost_total_ms = 0.0;
         let mut regime_episode_ids = Vec::new();
 
         for ep in episodes {
@@ -1281,35 +1285,67 @@ pub fn evaluate_and_save_findings(
 
         for fp in &frame_points {
             if fp.idx >= reg.frame_from && fp.idx <= reg.frame_to {
-                actual_time_lost_ms += (fp.interval_ms - prev_med.max(16.67)).max(0.0);
+                actual_time_lost_total_ms += (fp.interval_ms - prev_med.max(16.67)).max(0.0);
             }
         }
-        if actual_time_lost_ms == 0.0 {
-            actual_time_lost_ms = (reg.avg_ms - prev_med.max(16.67)).max(0.0) * (reg.frame_to - reg.frame_from + 1).max(1) as f64;
+        if actual_time_lost_total_ms == 0.0 {
+            actual_time_lost_total_ms = delta_ms_per_frame * frame_count;
         }
 
-        // Identify sustained findings that overlap this regime (>= 50% overlap)
-        let mut regime_contributors: Vec<FindingContributor> = Vec::new();
-        let mut nested_finding_ids = std::collections::HashSet::new();
+        let before_from = (reg.frame_from - 100).max(0);
+        let before_to = (reg.frame_from - 1).max(0);
+        let timer_deltas = crate::trace::regime::query_regime_timer_deltas(
+            conn,
+            before_from,
+            before_to,
+            reg.frame_from,
+            reg.frame_to,
+        );
 
+        // Identify dominant bottleneck thread role and sum of deltas per role
+        let mut game_delta = 0.0;
+        let mut render_delta = 0.0;
+        let mut gpu_delta = 0.0;
+
+        for td in &timer_deltas {
+            match td.role.to_lowercase().as_str() {
+                "game" => game_delta += td.delta_ms,
+                "render" => render_delta += td.delta_ms,
+                "gpu" => gpu_delta += td.delta_ms,
+                _ => {}
+            }
+        }
+
+        let (dominant_role, dominant_delta) = if gpu_delta >= game_delta && gpu_delta >= render_delta && gpu_delta > 0.0 {
+            ("GPU", gpu_delta)
+        } else if game_delta >= render_delta && game_delta > 0.0 {
+            ("Game Thread", game_delta)
+        } else if render_delta > 0.0 {
+            ("Render Thread", render_delta)
+        } else {
+            ("Execution", delta_ms_per_frame)
+        };
+
+        let finding_title = format!(
+            "Sustained {} Bottleneck (~{:.0} FPS vs {:.0} baseline, +{:.1} ms/frame)",
+            dominant_role, reg.fps, prev_fps, delta_ms_per_frame
+        );
+
+        // Identify contributors from existing findings within this window without deleting them
+        let mut regime_contributors: Vec<FindingContributor> = Vec::new();
         for f in &findings {
             let payload: Option<FindingPayload> = serde_json::from_str(&f.payload).ok();
             if let Some(p) = payload {
-                // If it belongs to slow_region episodes overlapping the regime
                 let is_overlapping = p.episode_ids.iter().any(|ep_id| regime_episode_ids.contains(ep_id));
-                let is_sustained = episodes.iter().any(|ep| p.episode_ids.contains(&ep.id) && ep.kind == "slow_region");
-
-                if is_overlapping || is_sustained {
-                    nested_finding_ids.insert(f.id);
+                if is_overlapping {
                     let explains = p.explains_ms;
-                    let share_pct = if actual_time_lost_ms > 0.0 {
-                        (explains / actual_time_lost_ms * 100.0).clamp(0.0, 100.0)
+                    let share_pct = if actual_time_lost_total_ms > 0.0 {
+                        (explains / actual_time_lost_total_ms * 100.0).clamp(0.0, 100.0)
                     } else {
                         0.0
                     };
-
                     let timer_name = p.evidence.first().and_then(|e| e.label.split(':').next().map(|s| s.trim().to_string()));
-                    let role = p.evidence.first().and_then(|e| e.thread.clone()).unwrap_or_else(|| "gpu".to_string());
+                    let role = p.evidence.first().and_then(|e| e.thread.clone()).unwrap_or_else(|| "game".to_string());
 
                     regime_contributors.push(FindingContributor {
                         rule_id: f.rule_id.clone(),
@@ -1323,86 +1359,142 @@ pub fn evaluate_and_save_findings(
                 }
             }
         }
-
-        // Sort contributors by explains_ms descending
         regime_contributors.sort_by(|a, b| b.explains_ms.partial_cmp(&a.explains_ms).unwrap_or(std::cmp::Ordering::Equal));
 
-        if !regime_contributors.is_empty() {
-            // Remove nested findings from top-level list
-            findings.retain(|f| !nested_finding_ids.contains(&f.id));
-
-            let before_from = (reg.frame_from - 100).max(0);
-            let before_to = (reg.frame_from - 1).max(0);
-            let top_deltas = crate::trace::regime::calculate_regime_top_deltas(
-                conn,
-                before_from,
-                before_to,
-                reg.frame_from,
-                reg.frame_to,
-            );
-
-            let mut evidence = vec![
-                Evidence {
-                    label: format!(
-                        "From {:.2}s to {:.2}s: average frame time {:.1} ms vs {:.1} ms before (~{:.0} fps vs {:.0}).",
-                        reg.start_s, reg.end_s, reg.avg_ms, prev_med, reg.fps, prev_fps
-                    ),
-                    value_ms: Some(reg.avg_ms),
-                    baseline_ms: Some(prev_med),
-                    calls: None,
-                    thread: Some("GPU".to_string()),
-                    note: Some("Sustained performance regime change".to_string()),
-                }
-            ];
-
-            for d in &top_deltas {
-                evidence.push(Evidence {
-                    label: format!("Top growing scope: {}", d),
-                    value_ms: None,
-                    baseline_ms: None,
-                    calls: None,
-                    thread: None,
-                    note: None,
-                });
+        let mut evidence = vec![
+            Evidence {
+                label: format!(
+                    "From {:.2}s to {:.2}s ({:.1}s duration): average frame time increased from {:.1} ms (~{:.0} fps) to {:.1} ms (~{:.0} fps).",
+                    reg.start_s, reg.end_s, duration_s, prev_med, prev_fps, reg.avg_ms, reg.fps
+                ),
+                value_ms: Some(reg.avg_ms),
+                baseline_ms: Some(prev_med),
+                calls: None,
+                thread: Some(dominant_role.to_string()),
+                note: Some("Sustained performance degradation regime".to_string()),
+            },
+            Evidence {
+                label: format!(
+                    "Dominant bottleneck channel: {} (+{:.1} ms/frame increase across growing passes).",
+                    dominant_role, dominant_delta
+                ),
+                value_ms: Some(dominant_delta),
+                baseline_ms: None,
+                calls: None,
+                thread: Some(dominant_role.to_string()),
+                note: None,
             }
+        ];
 
-            let regime_payload = FindingPayload {
-                title: format!("Performance Regime Shift (~{:.0} FPS vs {:.0})", reg.fps, prev_fps),
-                match_confidence: "high".to_string(),
-                match_score: 1.0,
-                fix_likelihood: "medium".to_string(),
-                explains_ms: actual_time_lost_ms,
-                of_excess_ms: actual_time_lost_ms,
-                actual_time_lost_ms: Some(actual_time_lost_ms),
-                explained_pct: Some(100.0),
-                evidence,
-                fixes: vec![FixSuggestionDef {
-                    text: "Review contributing passes active during this sustained period to reduce rendering load.".to_string(),
-                    effort: "medium".to_string(),
-                    cvars_or_apis: None,
-                }],
-                verify: "Verify frame times return to baseline in subsequent captures.".to_string(),
-                caveats: vec![],
-                episode_ids: regime_episode_ids.clone(),
-                period_s: None,
-                channel_suggestion: None,
-                contributors: regime_contributors,
-                is_startup: None,
-                is_aftermath: None,
-                scale: Some("sustained".to_string()),
-            };
-
-            findings.push(DbFinding {
-                id: next_finding_id,
-                rule_id: "regime-shift".to_string(),
-                rank: actual_time_lost_ms.max(1000.0), // Rank highly due to large actual time lost
-                match_confidence: 1.0,
-                fix_likelihood: "medium".to_string(),
-                episode_ids: regime_episode_ids,
-                payload: serde_json::to_string(&regime_payload).unwrap_or_default(),
+        for d in timer_deltas.iter().take(5) {
+            evidence.push(Evidence {
+                label: format!(
+                    "Top growing timer: {} [{}]: {:.1} -> {:.1} ms (+{:.1} ms/frame)",
+                    d.name, d.role, d.before_avg, d.after_avg, d.delta_ms
+                ),
+                value_ms: Some(d.after_avg),
+                baseline_ms: Some(d.before_avg),
+                calls: None,
+                thread: Some(d.role.clone()),
+                note: None,
             });
-            next_finding_id += 1;
         }
+
+        let top_timer_name = timer_deltas.first().map(|d| d.name.as_str()).unwrap_or("");
+        let top_timer_lower = top_timer_name.to_lowercase();
+
+        let mut fixes = Vec::new();
+        if top_timer_lower.contains("bp_") || top_timer_lower.contains("blueprint") || top_timer_lower.contains("executeubergraph") {
+            fixes.push(FixSuggestionDef {
+                text: format!("Optimize Blueprint tick rate and node execution in '{}'. Disable 'Start with Tick Enabled' if unneeded, increase TickInterval, or migrate heavy loops to C++.", top_timer_name),
+                effort: "medium".to_string(),
+                cvars_or_apis: Some(vec!["t.MaxFPS".to_string(), "a.ParallelAnimUpdate 1".to_string()]),
+            });
+            fixes.push(FixSuggestionDef {
+                text: "Avoid per-frame GetAllActorsOfClass, line traces, or large dynamic array reallocations in Blueprint ticks.".to_string(),
+                effort: "low".to_string(),
+                cvars_or_apis: None,
+            });
+        } else if top_timer_lower.contains("taskgraph") || top_timer_lower.contains("waitfortask") || top_timer_lower.contains("worker") {
+            fixes.push(FixSuggestionDef {
+                text: "Investigate worker thread tasks stalling the Game Thread in TaskGraph. Verify worker tasks are not blocked on mutex contention, file I/O, or synchronous asset loads.".to_string(),
+                effort: "medium".to_string(),
+                cvars_or_apis: None,
+            });
+            fixes.push(FixSuggestionDef {
+                text: "Review TaskGraph task batching and ensure asynchronous tasks have sufficient thread pool capacity.".to_string(),
+                effort: "low".to_string(),
+                cvars_or_apis: None,
+            });
+        } else if top_timer_lower.contains("garbage") || top_timer_lower.contains("collectgarbage") || top_timer_lower.contains("destroy") {
+            fixes.push(FixSuggestionDef {
+                text: "Tune Garbage Collection frequency and object destruction to reduce purge overhead during gameplay.".to_string(),
+                effort: "low".to_string(),
+                cvars_or_apis: Some(vec!["gc.TimeBetweenPurgingPendingKillObjects 60".to_string(), "gc.IncrementalBeginDestroyEnabled 1".to_string()]),
+            });
+        } else if top_timer_lower.contains("initviews") || top_timer_lower.contains("visibility") || dominant_role == "Render Thread" {
+            fixes.push(FixSuggestionDef {
+                text: "Reduce RenderThread visibility overhead and draw call counts during this scene. Implement aggressive distance culling and mesh instancing (ISM / HISM).".to_string(),
+                effort: "medium".to_string(),
+                cvars_or_apis: Some(vec!["r.Visibility.CullDistanceScale 0.8".to_string(), "r.MeshDrawCommands.DynamicInstancing 1".to_string()]),
+            });
+            fixes.push(FixSuggestionDef {
+                text: "Check for high dynamic primitive counts or unculled shadow casters in the current camera view frustum.".to_string(),
+                effort: "medium".to_string(),
+                cvars_or_apis: None,
+            });
+        } else if top_timer_lower.contains("shadow") || top_timer_lower.contains("vsm") {
+            fixes.push(FixSuggestionDef {
+                text: "Reduce shadow pass complexity during this view. Decrease shadow cascade distance or tune Virtual Shadow Map resolution limits.".to_string(),
+                effort: "low".to_string(),
+                cvars_or_apis: Some(vec!["r.Shadow.DistanceScale 0.8".to_string(), "r.Shadow.Virtual.ResolutionLodBias 1.0".to_string()]),
+            });
+        } else if top_timer_lower.contains("nanite") || top_timer_lower.contains("lumen") || dominant_role == "GPU" {
+            fixes.push(FixSuggestionDef {
+                text: "Tune GPU scalability parameters for the dominant rendering passes active in this scene.".to_string(),
+                effort: "low".to_string(),
+                cvars_or_apis: Some(vec!["r.Nanite.MaxPixelsPerEdge 2.0".to_string(), "r.Lumen.ScreenProbeGather.DownsampleFactor 16".to_string()]),
+            });
+        } else {
+            fixes.push(FixSuggestionDef {
+                text: format!("Profile and reduce {} load during this sustained period, focusing on the top growing operations identified in the evidence.", dominant_role),
+                effort: "medium".to_string(),
+                cvars_or_apis: None,
+            });
+        }
+
+        let regime_payload = FindingPayload {
+            title: finding_title,
+            match_confidence: "high".to_string(),
+            match_score: 1.0,
+            fix_likelihood: "often".to_string(),
+            explains_ms: delta_ms_per_frame,
+            of_excess_ms: delta_ms_per_frame,
+            actual_time_lost_ms: Some(actual_time_lost_total_ms),
+            explained_pct: Some(100.0),
+            evidence,
+            fixes,
+            verify: "Re-run the trace capture under identical gameplay conditions to confirm frame times return to baseline.".to_string(),
+            caveats: vec![],
+            episode_ids: regime_episode_ids.clone(),
+            period_s: None,
+            channel_suggestion: None,
+            contributors: regime_contributors,
+            is_startup: None,
+            is_aftermath: None,
+            scale: Some("sustained".to_string()),
+        };
+
+        findings.push(DbFinding {
+            id: next_finding_id,
+            rule_id: "regime-shift".to_string(),
+            rank: delta_ms_per_frame.max(10.0),
+            match_confidence: 1.0,
+            fix_likelihood: "often".to_string(),
+            episode_ids: regime_episode_ids,
+            payload: serde_json::to_string(&regime_payload).unwrap_or_default(),
+        });
+        next_finding_id += 1;
     }
 
     // 9. If no rule cleared thresholds, emit a single 'inconclusive' finding
@@ -2364,5 +2456,92 @@ pub(crate) mod tests {
         }
         let spike_regimes = detect_regimes(&spike_frames, 16.67);
         assert!(spike_regimes.is_empty(), "Startup spike alone must not be detected as a regime");
+    }
+
+    #[test]
+    fn test_actionable_regime_finding_synthesis() {
+        let mut ctx = ScenarioContext::new();
+        ctx.conn.execute("DELETE FROM frames", []).unwrap();
+
+        // Insert frames table rows:
+        // 0..10s: ~16.6ms (frames 0..600)
+        for i in 0..600 {
+            ctx.conn.execute(
+                "INSERT INTO frames (idx, start_s, interval_ms, game_ms) VALUES (?1, ?2, 16.6, 16.6)",
+                params![i as i64, (i as f64) * 0.0166],
+            ).unwrap();
+        }
+        // 10..25s: ~45ms (frames 600..933)
+        for i in 600..=933 {
+            ctx.conn.execute(
+                "INSERT INTO frames (idx, start_s, interval_ms, game_ms) VALUES (?1, ?2, 45.0, 45.0)",
+                params![i as i64, 10.0 + ((i - 600) as f64) * 0.045],
+            ).unwrap();
+        }
+
+        // Seed 1..10s baseline frames (16.6ms)
+        ctx.seed_baseline_window_frames(1, 10);
+
+        // Add slow region episode at 10.0s..25.0s (45ms per frame)
+        let ep_regime = DbEpisode {
+            id: 1,
+            kind: "slow_region".to_string(),
+            start_s: 10.0,
+            end_s: 25.0,
+            frame_from: 600,
+            frame_to: 933,
+            peak_ms: 45.0,
+            median_ms: 45.0,
+            bound_by: "game".to_string(),
+            periodic_group: None,
+        };
+
+        // Add BP tick events during the slow regime
+        for f in 600..=933 {
+            ctx.add_event_for_frame(f, 1, "ExecuteUbergraph_BP_EnemySpawner", 25.0);
+        }
+
+        let all_findings = ctx.evaluate_all(&[ep_regime]);
+        assert!(!all_findings.is_empty(), "Expected findings to be generated");
+
+        // Check that regime finding was generated
+        let regime_f = all_findings.iter().find(|f| f.rule_id == "regime-shift");
+        assert!(regime_f.is_some(), "Expected regime-shift finding");
+
+        let r_payload: FindingPayload = serde_json::from_str(&regime_f.unwrap().payload).unwrap();
+        assert!(r_payload.title.contains("Sustained Game Thread Bottleneck"), "Title should identify Game Thread bottleneck: {}", r_payload.title);
+        assert!(r_payload.explains_ms > 0.0 && r_payload.explains_ms < 100.0, "explains_ms should be per-frame ms delta, got: {}", r_payload.explains_ms);
+        assert!(!r_payload.fixes.is_empty(), "Expected actionable fix recommendations");
+        assert!(r_payload.fixes[0].text.to_lowercase().contains("blueprint") || r_payload.fixes[0].text.to_lowercase().contains("tick"));
+
+        // Granular bp-tick finding must ALSO be preserved and not deleted
+        let bp_f = all_findings.iter().find(|f| f.rule_id == "bp-tick");
+        assert!(bp_f.is_some(), "Granular bp-tick finding must be retained and not deleted by regime synthesis");
+    }
+
+    #[test]
+    fn test_startup_transition_not_flagged_as_regime() {
+        use crate::trace::regime::{detect_regimes, FrameTimePoint};
+
+        let mut frames = Vec::new();
+        // 0..8s: 300ms startup
+        for i in 0..27 {
+            frames.push(FrameTimePoint {
+                idx: i,
+                start_s: (i as f64) * 0.3,
+                interval_ms: 300.0,
+            });
+        }
+        // 8..60s: steady 14ms (72 FPS) gameplay
+        for i in 27..3000 {
+            frames.push(FrameTimePoint {
+                idx: i,
+                start_s: 8.0 + ((i - 27) as f64) * 0.014,
+                interval_ms: 14.0,
+            });
+        }
+
+        let regimes = detect_regimes(&frames, 16.67);
+        assert!(regimes.is_empty(), "Transition from slow startup to fast gameplay must not be detected as a degradation regime");
     }
 }

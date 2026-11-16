@@ -16,6 +16,17 @@ pub struct PerformanceRegime {
     pub top_deltas: Vec<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RegimeTimerDelta {
+    pub timer_id: i64,
+    pub name: String,
+    pub role: String,
+    pub before_avg: f64,
+    pub after_avg: f64,
+    pub delta_ms: f64,
+}
+
 #[derive(Debug, Clone)]
 pub struct FrameTimePoint {
     pub idx: i64,
@@ -23,19 +34,18 @@ pub struct FrameTimePoint {
     pub interval_ms: f64,
 }
 
-/// Detects durable performance regimes using time-based sliding windows.
-/// Ignores initial startup warm-up (first 0.75s or high transient init period).
-/// Requires a durable shift holding for at least several windows (e.g. >= 2.0s duration)
-/// with a significant frame time delta (>= max(4.0 ms, 25% shift)).
+/// Detects durable performance degradation regimes using time-based sliding windows.
+/// Ignores initial engine startup/loading period.
+/// Only flags true performance degradations (where frame times stepped up and frame rate dropped).
 pub fn detect_regimes(
     frames: &[FrameTimePoint],
-    _target_ms: f64,
+    target_ms: f64,
 ) -> Vec<PerformanceRegime> {
     if frames.len() < 10 {
         return Vec::new();
     }
 
-    let startup_threshold_s = 0.75;
+    let startup_threshold_s = 1.0;
     let window_duration_s = 1.0;
     let min_durable_duration_s = 2.0;
 
@@ -59,7 +69,6 @@ pub fn detect_regimes(
     }
 
     let total_duration_s = trace_end_s - trace_start_s;
-
     if total_duration_s < min_durable_duration_s * 2.0 {
         return Vec::new();
     }
@@ -94,16 +103,29 @@ pub fn detect_regimes(
         return Vec::new();
     }
 
-    let mut regimes = Vec::new();
+    // Skip leading startup windows where frame times are very high (> 100ms or > 3x target)
+    let mut effective_start_idx = 0;
+    while effective_start_idx < window_medians.len() / 2 && window_medians[effective_start_idx].0 < 10.0 {
+        if window_medians[effective_start_idx].4 > 100.0 || window_medians[effective_start_idx].4 > target_ms * 3.0 {
+            effective_start_idx += 1;
+        } else {
+            break;
+        }
+    }
 
-    // Look for step changes between adjacent window blocks (at least 2 windows before, and durable for at least 2 windows after)
+    let usable_windows = &window_medians[effective_start_idx..];
+    if usable_windows.len() < 4 {
+        return Vec::new();
+    }
+
+    let mut regimes = Vec::new();
     let k = 2; // window radius
     let mut best_shift_idx = None;
     let mut max_delta = 0.0;
 
-    for i in k..=(window_medians.len() - k) {
-        let before_windows = &window_medians[i.saturating_sub(k)..i];
-        let after_windows = &window_medians[i..(i + k).min(window_medians.len())];
+    for i in k..=(usable_windows.len() - k) {
+        let before_windows = &usable_windows[i.saturating_sub(k)..i];
+        let after_windows = &usable_windows[i..(i + k).min(usable_windows.len())];
 
         let mut before_meds: Vec<f64> = before_windows.iter().map(|w| w.4).collect();
         let mut after_meds: Vec<f64> = after_windows.iter().map(|w| w.4).collect();
@@ -113,18 +135,24 @@ pub fn detect_regimes(
         let med_before = crate::trace::frames::calculate_percentile(&before_meds, 0.5);
         let med_after = crate::trace::frames::calculate_percentile(&after_meds, 0.5);
 
-        let delta = (med_after - med_before).abs();
-        let is_significant = delta >= 4.0 || (med_before > 0.0 && (delta / med_before) >= 0.25);
+        // A performance degradation regime MUST have med_after > med_before (performance worsened)
+        let delta = med_after - med_before;
+        let is_significant_degradation = delta >= 4.0 && (
+            (med_before > 0.0 && (delta / med_before) >= 0.25) || med_after > target_ms * 1.15
+        );
 
-        if is_significant && delta > max_delta {
+        // med_before should be sane gameplay baseline, not startup loading
+        let before_is_baseline = med_before < 100.0;
+
+        if is_significant_degradation && before_is_baseline && delta > max_delta {
             max_delta = delta;
             best_shift_idx = Some(i);
         }
     }
 
     if let Some(shift_idx) = best_shift_idx {
-        let before_windows = &window_medians[..shift_idx];
-        let after_windows = &window_medians[shift_idx..];
+        let before_windows = &usable_windows[..shift_idx];
+        let after_windows = &usable_windows[shift_idx..];
 
         let mut before_meds: Vec<f64> = before_windows.iter().map(|w| w.4).collect();
         let mut after_meds: Vec<f64> = after_windows.iter().map(|w| w.4).collect();
@@ -134,10 +162,22 @@ pub fn detect_regimes(
         let med_before = crate::trace::frames::calculate_percentile(&before_meds, 0.5);
         let med_after = crate::trace::frames::calculate_percentile(&after_meds, 0.5);
 
-        let shift_time_s = after_windows.first().unwrap().0;
-        let frame_from = after_windows.first().unwrap().2;
-        let frame_to = after_windows.last().unwrap().3;
-        let end_s = after_windows.last().unwrap().1;
+        // Find how long performance remains elevated above baseline
+        let mut elevated_end_idx = after_windows.len();
+        let elevated_threshold = med_before + (med_after - med_before) * 0.5;
+        for (idx, w) in after_windows.iter().enumerate().skip(k) {
+            if w.4 < elevated_threshold && w.4 <= target_ms * 1.10 {
+                elevated_end_idx = idx;
+                break;
+            }
+        }
+
+        let sustained_after_windows = &after_windows[..elevated_end_idx.max(k)];
+
+        let shift_time_s = sustained_after_windows.first().unwrap().0;
+        let frame_from = sustained_after_windows.first().unwrap().2;
+        let frame_to = sustained_after_windows.last().unwrap().3;
+        let end_s = sustained_after_windows.last().unwrap().1;
 
         // Compute avg & median for the regime segment
         let regime_frames: Vec<&&FrameTimePoint> = non_startup_frames
@@ -169,14 +209,14 @@ pub fn detect_regimes(
     regimes
 }
 
-/// Calculates top exclusive timer growths between the segment before and the regime segment after
-pub fn calculate_regime_top_deltas(
+/// Queries top exclusive timer growths between the baseline segment before and the regime segment after
+pub fn query_regime_timer_deltas(
     conn: &Connection,
     before_frame_from: i64,
     before_frame_to: i64,
     after_frame_from: i64,
     after_frame_to: i64,
-) -> Vec<String> {
+) -> Vec<RegimeTimerDelta> {
     let before_count = (before_frame_to - before_frame_from + 1).max(1) as f64;
     let after_count = (after_frame_to - after_frame_from + 1).max(1) as f64;
 
@@ -194,19 +234,12 @@ pub fn calculate_regime_top_deltas(
         Err(_) => return Vec::new(),
     };
 
-    struct TimerDelta {
-        name: String,
-        role: String,
-        before_avg: f64,
-        after_avg: f64,
-        delta_ms: f64,
-    }
-
     let mut deltas = Vec::new();
 
     let rows = stmt.query_map(
         rusqlite::params![before_frame_from, before_frame_to, after_frame_from, after_frame_to],
         |r| {
+            let timer_id: i64 = r.get(0)?;
             let name: String = r.get(1)?;
             let role: String = r.get(2)?;
             let before_sum: f64 = r.get(3)?;
@@ -214,7 +247,8 @@ pub fn calculate_regime_top_deltas(
             let before_avg = before_sum / before_count;
             let after_avg = after_sum / after_count;
             let delta_ms = after_avg - before_avg;
-            Ok(TimerDelta {
+            Ok(RegimeTimerDelta {
+                timer_id,
                 name,
                 role,
                 before_avg,
@@ -226,13 +260,31 @@ pub fn calculate_regime_top_deltas(
 
     if let Ok(rows) = rows {
         for r in rows.flatten() {
-            if r.delta_ms >= 0.5 {
+            if r.delta_ms >= 0.3 {
                 deltas.push(r);
             }
         }
     }
 
     deltas.sort_by(|a, b| b.delta_ms.partial_cmp(&a.delta_ms).unwrap_or(std::cmp::Ordering::Equal));
+    deltas
+}
+
+/// Calculates top exclusive timer growths between the segment before and the regime segment after
+pub fn calculate_regime_top_deltas(
+    conn: &Connection,
+    before_frame_from: i64,
+    before_frame_to: i64,
+    after_frame_from: i64,
+    after_frame_to: i64,
+) -> Vec<String> {
+    let deltas = query_regime_timer_deltas(
+        conn,
+        before_frame_from,
+        before_frame_to,
+        after_frame_from,
+        after_frame_to,
+    );
 
     deltas
         .into_iter()
